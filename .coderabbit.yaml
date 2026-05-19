@@ -1,0 +1,37 @@
+# CodeRabbit configuration
+# Docs: https://docs.coderabbit.ai/guides/configure-coderabbit
+reviews:
+  # Profile: "chill" generates fewer comments, focuses on significant issues
+  profile: chill
+
+  # Auto-review settings
+  auto_review:
+    enabled: true
+    base_branches:
+      - 'main'
+    drafts: false
+    ignore_title_keywords:
+      - 'WIP'
+      - 'DO NOT MERGE'
+
+  # File/path filters — skip generated/mechanical files
+  path_filters:
+    - '!**/zz_generated.deepcopy.go'
+    - '!config/crd/bases/**'
+    - '!config/rbac/role.yaml'
+    - '!go.sum'
+    - '!api/go.sum'
+    - '!vendor/**'
+
+  # Review behavior
+  collapse_walkthrough: true
+  poem: false
+  high_level_summary: true
+  review_status: true
+  commit_status: true
+
+  # Sequence diagrams for complex logic (chill profile limits these to significant changes)
+  sequence_diagrams: true
+
+chat:
+  auto_reply: false
