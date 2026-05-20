@@ -29,6 +29,19 @@ rules:
 - apiGroups:
   - agentic.openshift.io
   resources:
+  - analysisresults/status
+  - escalationresults/status
+  - executionresults/status
+  - proposalapprovals/status
+  - proposals/status
+  - verificationresults/status
+  verbs:
+  - get
+  - patch
+  - update
+- apiGroups:
+  - agentic.openshift.io
+  resources:
   - proposalapprovals
   - proposals
   verbs:
@@ -39,15 +52,6 @@ rules:
   - patch
   - update
   - watch
-- apiGroups:
-  - agentic.openshift.io
-  resources:
-  - proposalapprovals/status
-  - proposals/status
-  verbs:
-  - get
-  - patch
-  - update
 - apiGroups:
   - agentic.openshift.io
   resources:
@@ -66,13 +70,21 @@ rules:
   - extensions.agents.x-k8s.io
   resources:
   - sandboxclaims
+  verbs:
+  - create
+  - delete
+  - get
+  - list
+  - watch
+- apiGroups:
+  - extensions.agents.x-k8s.io
+  resources:
   - sandboxtemplates
   verbs:
   - create
   - delete
   - get
   - list
-  - patch
   - update
   - watch
 - apiGroups:

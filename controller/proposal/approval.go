@@ -59,13 +59,13 @@ func ensureProposalApproval(
 			}
 			switch ps.Name {
 			case agenticv1alpha1.SandboxStepAnalysis:
-				stage.Analysis = agenticv1alpha1.AnalysisApproval{}
+				stage.Analysis = agenticv1alpha1.AnalysisApproval{Agent: proposal.Spec.Analysis.Agent}
 			case agenticv1alpha1.SandboxStepExecution:
-				stage.Execution = agenticv1alpha1.ExecutionApproval{}
+				stage.Execution = agenticv1alpha1.ExecutionApproval{Agent: proposal.Spec.Execution.Agent}
 			case agenticv1alpha1.SandboxStepVerification:
-				stage.Verification = agenticv1alpha1.VerificationApproval{}
+				stage.Verification = agenticv1alpha1.VerificationApproval{Agent: proposal.Spec.Verification.Agent}
 			case agenticv1alpha1.SandboxStepEscalation:
-				stage.Escalation = agenticv1alpha1.EscalationApproval{}
+				stage.Escalation = agenticv1alpha1.EscalationApproval{Agent: proposal.Spec.Analysis.Agent}
 			}
 			autoStages = append(autoStages, stage)
 		}

@@ -23,6 +23,10 @@ var (
 	}
 )
 
+// +kubebuilder:rbac:groups=extensions.agents.x-k8s.io,resources=sandboxtemplates,verbs=get;list;watch;create;update;delete
+// +kubebuilder:rbac:groups=extensions.agents.x-k8s.io,resources=sandboxclaims,verbs=get;list;watch;create;delete
+// +kubebuilder:rbac:groups=agents.x-k8s.io,resources=sandboxes,verbs=get;list;watch
+
 // SandboxProvider abstracts sandbox lifecycle for testability.
 type SandboxProvider interface {
 	Claim(ctx context.Context, proposalName, step, templateName string) (claimName string, err error)

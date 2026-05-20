@@ -70,10 +70,16 @@ vet: ## Run go vet against code.
 
 .PHONY: test
 test: fmt vet ## Run unit tests (main + api + cli modules).
-	# Root module: controller, cli, etc.
-	go test ./... -count=1
+	# Root module: controller, cli, etc. (exclude test/e2e — needs -tags=e2e and a running mock; see test-e2e).
+	go test $$(go list ./... | grep -vF 'github.com/openshift/lightspeed-agentic-operator/test/e2e') -count=1
 	# API module is separate go.mod; GOWORK=off avoids picking up a repo root go.work.
 	cd api && GOWORK=off go test ./... -count=1
+
+##@ Testing
+
+.PHONY: test-e2e
+test-e2e: ## Run e2e tests against a live cluster (operator must be running). See test/e2e/ for prereqs.
+	go test -tags=e2e ./test/e2e/... -count=1 -v -timeout 30m
 
 .PHONY: api-lint
 api-lint: ## Kube API linter on api/ (needs golangci-lint on PATH; builds plugin to bin/). See README.md.
