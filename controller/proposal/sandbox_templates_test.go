@@ -242,8 +242,11 @@ func TestComputeTemplateHash_DifferentRequiredSecrets(t *testing.T) {
 
 // --- patchLLMCredentials tests ---
 
-func assertCredentialVolumeMount(t *testing.T, tmpl *unstructured.Unstructured) {
+func assertCredentialMounts(t *testing.T, tmpl *unstructured.Unstructured) {
 	t.Helper()
+	if !hasSecretEnvFrom(tmpl, "my-llm-secret") {
+		t.Error("missing envFrom secretRef for my-llm-secret")
+	}
 	containers, _, _ := unstructured.NestedSlice(tmpl.Object, "spec", "podTemplate", "spec", "containers")
 	if len(containers) == 0 {
 		t.Fatal("no containers")
@@ -276,10 +279,7 @@ func TestPatchLLMCredentials_Anthropic(t *testing.T) {
 		t.Fatalf("patchLLMCredentials: %v", err)
 	}
 
-	if !hasSecretEnvFrom(tmpl, "my-llm-secret") {
-		t.Error("missing envFrom secretRef for my-llm-secret")
-	}
-	assertCredentialVolumeMount(t, tmpl)
+	assertCredentialMounts(t, tmpl)
 
 	envs := getEnvVars(tmpl)
 	if e, ok := findEnv(envs, "LIGHTSPEED_PROVIDER"); !ok {
@@ -309,10 +309,7 @@ func TestPatchLLMCredentials_Vertex(t *testing.T) {
 		t.Fatalf("patchLLMCredentials: %v", err)
 	}
 
-	if !hasSecretEnvFrom(tmpl, "my-llm-secret") {
-		t.Error("missing envFrom secretRef for my-llm-secret")
-	}
-	assertCredentialVolumeMount(t, tmpl)
+	assertCredentialMounts(t, tmpl)
 
 	envs := getEnvVars(tmpl)
 	if e, ok := findEnv(envs, "LIGHTSPEED_PROVIDER"); !ok {
@@ -352,7 +349,7 @@ func TestPatchLLMCredentials_Bedrock(t *testing.T) {
 		t.Fatalf("patchLLMCredentials: %v", err)
 	}
 
-	assertCredentialVolumeMount(t, tmpl)
+	assertCredentialMounts(t, tmpl)
 
 	envs := getEnvVars(tmpl)
 	if e, ok := findEnv(envs, "LIGHTSPEED_PROVIDER"); !ok {
@@ -382,7 +379,7 @@ func TestPatchLLMCredentials_OpenAI(t *testing.T) {
 		t.Fatalf("patchLLMCredentials: %v", err)
 	}
 
-	assertCredentialVolumeMount(t, tmpl)
+	assertCredentialMounts(t, tmpl)
 
 	envs := getEnvVars(tmpl)
 	if e, ok := findEnv(envs, "LIGHTSPEED_PROVIDER"); !ok {
@@ -412,7 +409,7 @@ func TestPatchLLMCredentials_Azure(t *testing.T) {
 		t.Fatalf("patchLLMCredentials: %v", err)
 	}
 
-	assertCredentialVolumeMount(t, tmpl)
+	assertCredentialMounts(t, tmpl)
 
 	envs := getEnvVars(tmpl)
 	if e, ok := findEnv(envs, "LIGHTSPEED_PROVIDER"); !ok {
