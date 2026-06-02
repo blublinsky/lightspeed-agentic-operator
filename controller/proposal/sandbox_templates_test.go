@@ -327,7 +327,7 @@ func TestPatchLLMCredentials_Vertex(t *testing.T) {
 	}
 	if e, ok := findEnv(envs, "LIGHTSPEED_MODEL_PROVIDER"); !ok {
 		t.Error("missing LIGHTSPEED_MODEL_PROVIDER")
-	} else if e["value"] != string(agenticv1alpha1.GoogleCloudVertexModelProviderAnthropic) {
+	} else if e["value"] != "anthropic" {
 		t.Errorf("LIGHTSPEED_MODEL_PROVIDER = %q", e["value"])
 	}
 	if e, ok := findEnv(envs, "LIGHTSPEED_PROVIDER_PROJECT"); !ok {

@@ -289,7 +289,7 @@ func patchLLMCredentials(tmpl *unstructured.Unstructured, llm *agenticv1alpha1.L
 		}
 	case agenticv1alpha1.LLMProviderGoogleCloudVertex:
 		cfg := llm.Spec.GoogleCloudVertex
-		if err := setEnvVar(tmpl, "LIGHTSPEED_MODEL_PROVIDER", string(cfg.ModelProvider)); err != nil {
+		if err := setEnvVar(tmpl, "LIGHTSPEED_MODEL_PROVIDER", strings.ToLower(string(cfg.ModelProvider))); err != nil {
 			return fmt.Errorf("set LIGHTSPEED_MODEL_PROVIDER: %w", err)
 		}
 		if err := setEnvVar(tmpl, "LIGHTSPEED_PROVIDER_PROJECT", cfg.ProjectID); err != nil {
