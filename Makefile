@@ -49,10 +49,6 @@ help: ## Display this help.
 # Deployment/RBAC from make deploy / make undeploy.
 OPERATOR_NAMESPACE ?= default
 
-# Name of the base SandboxTemplate the reconciler resolves per step
-# (flag --template-name in cmd/main.go).
-TEMPLATE_NAME ?= lightspeed-agent
-
 # Local `make run` defaults avoid clashing with other processes on :8080/:8081.
 METRICS_BIND_ADDRESS ?= :18080
 HEALTH_PROBE_BIND_ADDRESS ?= :18081
@@ -243,7 +239,6 @@ run: install install-agent-sandbox vet ## install + install-agent-sandbox (no-op
 	# Same kubeconfig discovery as other controller-runtime apps (see README.md).
 	go run ./cmd/main.go \
 		--namespace=$(OPERATOR_NAMESPACE) \
-		--template-name=$(TEMPLATE_NAME) \
 		--metrics-bind-address=$(METRICS_BIND_ADDRESS) \
 		--health-probe-bind-address=$(HEALTH_PROBE_BIND_ADDRESS)
 
