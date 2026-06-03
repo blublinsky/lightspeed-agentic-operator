@@ -30,7 +30,6 @@ spec:
           command:
             - /manager
           args:
-            - --template-name=lightspeed-agent
             - --metrics-bind-address=:8080
             - --health-probe-bind-address=:8081
           env:
