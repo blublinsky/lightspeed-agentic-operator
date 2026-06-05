@@ -5,6 +5,16 @@ metadata:
   name: agentic-operator-manager-role
 rules:
 - apiGroups:
+  - ""
+  resources:
+  - pods
+  verbs:
+  - create
+  - delete
+  - get
+  - list
+  - watch
+- apiGroups:
   - agentic.openshift.io
   resources:
   - agents
