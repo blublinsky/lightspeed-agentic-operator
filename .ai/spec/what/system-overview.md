@@ -49,11 +49,12 @@ The lightspeed-agentic-operator is a Kubernetes operator that watches `Proposal`
 | `--health-probe-bind-address` | string | `:8081` | Health probe endpoint bind address |
 | `--agentic-console-image` | string | `""` | Console plugin container image |
 | `--agentic-sandbox-image` | string | `""` | Sandbox container image |
+| `--sandbox-mode` | string | `bare-pod` | Sandbox mode: `bare-pod` (direct Pod management) or `sandbox-claim` (Agent Sandbox API) |
 
 ## Constraints
 
 - The operator assumes it is the sole controller for `agentic.openshift.io/v1alpha1` resources; running multiple replicas without leader election would cause conflicts.
-- Sandbox provisioning depends on the Sandbox API CRDs being installed in the cluster (`SandboxClaim`, `Sandbox`, `SandboxTemplate`).
+- Sandbox provisioning via `SandboxClaim` depends on the Sandbox API CRDs being installed in the cluster; this dependency only applies when `--sandbox-mode=sandbox-claim`. The default `bare-pod` mode has no external CRD dependency.
 - The operator requires OpenShift APIs for console plugin deployment; running on vanilla Kubernetes skips console integration.
 
 ## Planned Changes

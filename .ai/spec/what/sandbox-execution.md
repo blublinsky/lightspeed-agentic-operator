@@ -4,10 +4,10 @@ Behavioral specification for how workflow steps run inside ephemeral **sandboxes
 
 ## Behavioral Rules
 
-1. **Sandbox API objects**: For each step invocation, the controller MUST create a namespaced **SandboxClaim** (API group `extensions.agents.x-k8s.io`, `v1alpha1`) that references a **SandboxTemplate** by name and uses a shutdown policy that deletes the sandbox when released.
+1. **[sandbox-claim mode only] Sandbox API objects**: For each step invocation, the controller MUST create a namespaced **SandboxClaim** (API group `extensions.agents.x-k8s.io`, `v1alpha1`) that references a **SandboxTemplate** by name and uses a shutdown policy that deletes the sandbox when released.
 2. **Operator namespace**: Sandbox claims and sandbox workloads MUST reside in the **operator’s configured namespace** (process flag `namespace` or equivalent environment substitution), not necessarily the `Proposal` namespace.
-3. **Template selection**: Before claiming, the controller MUST ensure a **derived** `SandboxTemplate` exists: it clones a **base** template identified by configured default template name, patches it with generic LLM configuration env vars (see rule 16a), credential mounts, and tools (skills, MCP, required secrets), and names it deterministically using a hash of relevant inputs so identical configurations reuse the same template. The operator MUST NOT set SDK-specific env vars (e.g. `ANTHROPIC_MODEL`, `CLAUDE_CODE_USE_VERTEX`, `OPENAI_BASE_URL`); all SDK-specific mapping is the sandbox's responsibility.
-4. **Template immutability & GC**: If a derived template for the same agent + step + hash already exists, creation MUST be a no-op. Older derived templates for the same agent+step with different names SHOULD be garbage-collected after successful creation of the newest.
+3. **[sandbox-claim mode only] Template selection**: Before claiming, the controller MUST ensure a **derived** `SandboxTemplate` exists: it clones a **base** template identified by configured default template name, patches it with generic LLM configuration env vars (see rule 16a), credential mounts, and tools (skills, MCP, required secrets), and names it deterministically using a hash of relevant inputs so identical configurations reuse the same template. The operator MUST NOT set SDK-specific env vars (e.g. `ANTHROPIC_MODEL`, `CLAUDE_CODE_USE_VERTEX`, `OPENAI_BASE_URL`); all SDK-specific mapping is the sandbox's responsibility.
+4. **[sandbox-claim mode only] Template immutability & GC**: If a derived template for the same agent + step + hash already exists, creation MUST be a no-op. Older derived templates for the same agent+step with different names SHOULD be garbage-collected after successful creation of the newest.
 5. **Claim naming**: Claim names MUST be derived from proposal name and step label, truncated to valid Kubernetes name length limits.
 6. **Readiness**: The controller MUST poll sandbox/claim status until the backing `Sandbox` reports `Ready=True` (standard condition pattern) and exposes a **service FQDN** for in-cluster HTTP, or until a configurable **sandbox wait budget** elapses (error path).
 7. **Endpoint construction**: Agent HTTP URL MUST be formed from the readiness endpoint; if the endpoint is not already an absolute URL with HTTP scheme, the client MUST prefix standard cluster HTTP scheme and port expected for the agent container.
@@ -56,9 +56,20 @@ Behavioral specification for how workflow steps run inside ephemeral **sandboxes
 29. **Concurrency cap**: Maximum concurrent proposal reconciles SHOULD respect `ApprovalPolicy.spec.maxConcurrentProposals` when present (see `crd-api.md`).
 30. **Container probes**: The controller MUST set `readinessProbe` (HTTP GET `/ready` on port 8080) and `livenessProbe` (HTTP GET `/health` on port 8080) on the first container of every derived `SandboxTemplate`. This ensures Kubernetes does not mark pods as Ready until the agent HTTP server is actually serving, preventing race conditions between `WaitReady()` and `POST /v1/agent/run`.
 
+### Sandbox Mode
+
+31. **Sandbox mode selection**: The operator MUST accept a `--sandbox-mode` startup flag with values `bare-pod` (default) and `sandbox-claim`. When the flag is omitted or empty, the operator MUST default to `bare-pod` mode.
+32. **Bare pod lifecycle**: In `bare-pod` mode, for each step invocation the controller MUST create a namespaced `Pod` (core/v1) in the operator namespace with a pod spec assembled by `PodSpecBuilder`. Pod name MUST follow the same `ls-{step}-{proposalName}` truncation convention as SandboxClaim naming. Labels MUST include proposal name and step for identification.
+33. **Bare pod readiness**: In `bare-pod` mode, the controller MUST poll the Pod's conditions until `Ready=True` and extract `status.podIP` as the agent endpoint, or until the sandbox wait budget elapses (error path).
+34. **Bare pod endpoint**: In `bare-pod` mode, the agent HTTP URL MUST be formed from the pod IP; if the IP is not already an absolute URL with HTTP scheme, the client MUST prefix `http://` and append `:8080`.
+35. **Bare pod release**: In `bare-pod` mode, on proposal deletion and terminal phases, the controller MUST delete bare Pods by name. Idempotent via NotFound handling.
+36. **PodSpecBuilder**: Both `bare-pod` and `sandbox-claim` modes MUST use a shared `PodSpecBuilder` for pod-spec assembly (env vars, credential mounts, skills, MCP, probes, security context). In `sandbox-claim` mode, the shared helper functions that `PodSpecBuilder` uses are also used by the unstructured template derivation path. In `bare-pod` mode, the builder's output is used directly as the Pod spec.
+37. **Bare pod RBAC**: In `bare-pod` mode, the operator's ClusterRole MUST include Pod create/delete/get/list/watch verbs. In `sandbox-claim` mode, the operator requires permissions for SandboxClaim, SandboxTemplate, and Sandbox resources.
+38. **Bootstrap conditioning**: In `bare-pod` mode, the operator MUST create the `lightspeed-agent` ServiceAccount in the operator namespace (needed for RBAC materialization) but MUST skip `SandboxTemplate` creation. In `sandbox-claim` mode, the operator creates both ServiceAccount and base `SandboxTemplate` (current behavior).
+
 ## Configuration Surface
 
-- Operator process: namespace (operator install namespace), base sandbox template name
+- Operator process: namespace (operator install namespace), base sandbox template name, `--sandbox-mode` (`bare-pod` default, `sandbox-claim` optional)
 - `SandboxTemplate` base object name in operator namespace (default from operator bootstrap)
 - `Proposal.metadata.namespace` (secrets + result CRs)
 - `spec.tools`, per-step `spec.*.tools` (`SkillsSource`, `MCPServerConfig`, `SecretRequirement`)
@@ -73,6 +84,8 @@ Behavioral specification for how workflow steps run inside ephemeral **sandboxes
 - Sandbox features that depend on **OCI image volumes** require Kubernetes version support as documented on `ToolsSpec` / `SkillsSource` API comments.
 - Required Secret **keys** for optional proposal-mounted secrets using `EnvVar` MUST match what the template expects (MCP header secrets and generic required secrets may differ — MCP env-from pattern in implementation may expect a specific key name for token-like secrets).
 - Agent HTTP is cluster-internal; clients MUST NOT assume public internet TLS semantics.
+- In `bare-pod` mode, no Agent Sandbox API CRDs (`SandboxClaim`, `SandboxTemplate`, `Sandbox`) need to be installed.
+- In `sandbox-claim` mode, Sandbox API CRDs remain required (same as current constraint).
 
 ## Planned Changes
 
