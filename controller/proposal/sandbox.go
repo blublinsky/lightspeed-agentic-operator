@@ -12,6 +12,8 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
+
+	agenticv1alpha1 "github.com/openshift/lightspeed-agentic-operator/api/v1alpha1"
 )
 
 var (
@@ -29,6 +31,7 @@ var (
 
 // SandboxProvider abstracts sandbox lifecycle for testability.
 type SandboxProvider interface {
+	SetStep(agent *agenticv1alpha1.Agent, llm *agenticv1alpha1.LLMProvider, tools *agenticv1alpha1.ToolsSpec)
 	Claim(ctx context.Context, proposalName, step, templateName string) (claimName string, err error)
 	WaitReady(ctx context.Context, claimName string, timeout time.Duration) (endpoint string, err error)
 	Release(ctx context.Context, claimName string) error
@@ -36,12 +39,25 @@ type SandboxProvider interface {
 
 // SandboxManager handles SandboxClaim lifecycle for proposal execution.
 type SandboxManager struct {
-	Client    client.Client
-	Namespace string
+	Client           client.Client
+	Namespace        string
+	BaseTemplateName string
+
+	agent *agenticv1alpha1.Agent
+	llm   *agenticv1alpha1.LLMProvider
+	tools *agenticv1alpha1.ToolsSpec
 }
 
-func NewSandboxManager(c client.Client, namespace string) *SandboxManager {
-	return &SandboxManager{Client: c, Namespace: namespace}
+func NewSandboxManager(c client.Client, namespace, baseTemplateName string) *SandboxManager {
+	return &SandboxManager{Client: c, Namespace: namespace, BaseTemplateName: baseTemplateName}
+}
+
+// SetStep stores the per-step agent configuration so that Claim can
+// derive the correct SandboxTemplate automatically.
+func (m *SandboxManager) SetStep(agent *agenticv1alpha1.Agent, llm *agenticv1alpha1.LLMProvider, tools *agenticv1alpha1.ToolsSpec) {
+	m.agent = agent
+	m.llm = llm
+	m.tools = tools
 }
 
 func (m *SandboxManager) buildClaim(claimName, proposalName, step, templateName string) *unstructured.Unstructured {
@@ -69,8 +85,13 @@ func (m *SandboxManager) buildClaim(claimName, proposalName, step, templateName 
 	}
 }
 
-func (m *SandboxManager) Claim(ctx context.Context, proposalName, step, templateName string) (string, error) {
+func (m *SandboxManager) Claim(ctx context.Context, proposalName, step, _ string) (string, error) {
 	log := logf.FromContext(ctx)
+
+	templateName, err := EnsureAgentTemplate(ctx, m.Client, m.BaseTemplateName, m.Namespace, step, m.agent, m.llm, m.tools)
+	if err != nil {
+		return "", fmt.Errorf("ensure agent template: %w", err)
+	}
 
 	claimName := truncateK8sName(fmt.Sprintf("ls-%s-%s", step, proposalName))
 

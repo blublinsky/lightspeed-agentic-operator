@@ -18,19 +18,20 @@ func testScheme() *runtime.Scheme {
 	return s
 }
 
-func testConfig() BaseSandboxConfig {
-	return BaseSandboxConfig{
-		Image:     "quay.io/test/agentic-sandbox:latest",
-		Namespace: "openshift-lightspeed",
+func testConfig() BootstrapConfig {
+	return BootstrapConfig{
+		Image:       "quay.io/test/agentic-sandbox:latest",
+		Namespace:   "openshift-lightspeed",
+		SandboxMode: "sandbox-claim",
 	}
 }
 
-func TestEnsureBaseSandboxTemplate_CreatesResources(t *testing.T) {
+func TestEnsureBootstrapResources_CreatesResources(t *testing.T) {
 	fc := fake.NewClientBuilder().WithScheme(testScheme()).Build()
 	cfg := testConfig()
 
-	if err := EnsureBaseSandboxTemplate(context.Background(), fc, cfg); err != nil {
-		t.Fatalf("EnsureBaseSandboxTemplate: %v", err)
+	if err := EnsureBootstrapResources(context.Background(), fc, cfg); err != nil {
+		t.Fatalf("EnsureBootstrapResources: %v", err)
 	}
 
 	var sa corev1.ServiceAccount
@@ -85,23 +86,23 @@ func TestEnsureBaseSandboxTemplate_CreatesResources(t *testing.T) {
 	}
 }
 
-func TestEnsureBaseSandboxTemplate_Idempotent(t *testing.T) {
+func TestEnsureBootstrapResources_Idempotent(t *testing.T) {
 	fc := fake.NewClientBuilder().WithScheme(testScheme()).Build()
 	cfg := testConfig()
 
-	if err := EnsureBaseSandboxTemplate(context.Background(), fc, cfg); err != nil {
+	if err := EnsureBootstrapResources(context.Background(), fc, cfg); err != nil {
 		t.Fatalf("first call: %v", err)
 	}
-	if err := EnsureBaseSandboxTemplate(context.Background(), fc, cfg); err != nil {
+	if err := EnsureBootstrapResources(context.Background(), fc, cfg); err != nil {
 		t.Fatalf("second call (idempotent): %v", err)
 	}
 }
 
-func TestEnsureBaseSandboxTemplate_SkipsWhenNoImage(t *testing.T) {
+func TestEnsureBootstrapResources_SkipsWhenNoImage(t *testing.T) {
 	fc := fake.NewClientBuilder().WithScheme(testScheme()).Build()
-	cfg := BaseSandboxConfig{Namespace: "openshift-lightspeed"}
+	cfg := BootstrapConfig{Namespace: "openshift-lightspeed"}
 
-	if err := EnsureBaseSandboxTemplate(context.Background(), fc, cfg); err != nil {
+	if err := EnsureBootstrapResources(context.Background(), fc, cfg); err != nil {
 		t.Fatalf("should not error with empty image: %v", err)
 	}
 
@@ -117,7 +118,7 @@ func TestEnsureBaseSandboxTemplate_SkipsWhenNoImage(t *testing.T) {
 	}
 }
 
-func TestEnsureBaseSandboxTemplate_PartialExists(t *testing.T) {
+func TestEnsureBootstrapResources_PartialExists(t *testing.T) {
 	sa := &corev1.ServiceAccount{}
 	sa.Name = templateName
 	sa.Namespace = "openshift-lightspeed"
@@ -125,7 +126,7 @@ func TestEnsureBaseSandboxTemplate_PartialExists(t *testing.T) {
 	fc := fake.NewClientBuilder().WithScheme(testScheme()).WithObjects(sa).Build()
 	cfg := testConfig()
 
-	if err := EnsureBaseSandboxTemplate(context.Background(), fc, cfg); err != nil {
+	if err := EnsureBootstrapResources(context.Background(), fc, cfg); err != nil {
 		t.Fatalf("should succeed when SA exists: %v", err)
 	}
 
@@ -137,5 +138,89 @@ func TestEnsureBaseSandboxTemplate_PartialExists(t *testing.T) {
 		Name: templateName, Namespace: cfg.Namespace,
 	}, tmpl); err != nil {
 		t.Errorf("SandboxTemplate not created: %v", err)
+	}
+}
+
+func TestEnsureBootstrapResources_BarePod_SAOnly(t *testing.T) {
+	fc := fake.NewClientBuilder().WithScheme(testScheme()).Build()
+	cfg := BootstrapConfig{
+		Image:       "quay.io/test/sandbox:latest",
+		Namespace:   "openshift-lightspeed",
+		SandboxMode: "bare-pod",
+	}
+
+	if err := EnsureBootstrapResources(context.Background(), fc, cfg); err != nil {
+		t.Fatalf("EnsureBootstrapResources: %v", err)
+	}
+
+	var sa corev1.ServiceAccount
+	if err := fc.Get(context.Background(), types.NamespacedName{
+		Name: templateName, Namespace: cfg.Namespace,
+	}, &sa); err != nil {
+		t.Errorf("ServiceAccount not created: %v", err)
+	}
+
+	tmpl := &unstructured.Unstructured{}
+	tmpl.SetGroupVersionKind(schema.GroupVersionKind{
+		Group: "extensions.agents.x-k8s.io", Version: "v1alpha1", Kind: "SandboxTemplate",
+	})
+	err := fc.Get(context.Background(), types.NamespacedName{
+		Name: templateName, Namespace: cfg.Namespace,
+	}, tmpl)
+	if err == nil {
+		t.Error("SandboxTemplate should not be created in bare-pod mode")
+	}
+}
+
+func TestEnsureBootstrapResources_SandboxClaim_CreatesAll(t *testing.T) {
+	fc := fake.NewClientBuilder().WithScheme(testScheme()).Build()
+	cfg := BootstrapConfig{
+		Image:       "quay.io/test/sandbox:latest",
+		Namespace:   "openshift-lightspeed",
+		SandboxMode: "sandbox-claim",
+	}
+
+	if err := EnsureBootstrapResources(context.Background(), fc, cfg); err != nil {
+		t.Fatalf("EnsureBootstrapResources: %v", err)
+	}
+
+	var sa corev1.ServiceAccount
+	if err := fc.Get(context.Background(), types.NamespacedName{
+		Name: templateName, Namespace: cfg.Namespace,
+	}, &sa); err != nil {
+		t.Errorf("ServiceAccount not created: %v", err)
+	}
+
+	tmpl := &unstructured.Unstructured{}
+	tmpl.SetGroupVersionKind(schema.GroupVersionKind{
+		Group: "extensions.agents.x-k8s.io", Version: "v1alpha1", Kind: "SandboxTemplate",
+	})
+	if err := fc.Get(context.Background(), types.NamespacedName{
+		Name: templateName, Namespace: cfg.Namespace,
+	}, tmpl); err != nil {
+		t.Errorf("SandboxTemplate not created in sandbox-claim mode: %v", err)
+	}
+}
+
+func TestEnsureBootstrapResources_DefaultMode_BarePod(t *testing.T) {
+	fc := fake.NewClientBuilder().WithScheme(testScheme()).Build()
+	cfg := BootstrapConfig{
+		Image:     "quay.io/test/sandbox:latest",
+		Namespace: "openshift-lightspeed",
+	}
+
+	if err := EnsureBootstrapResources(context.Background(), fc, cfg); err != nil {
+		t.Fatalf("EnsureBootstrapResources: %v", err)
+	}
+
+	tmpl := &unstructured.Unstructured{}
+	tmpl.SetGroupVersionKind(schema.GroupVersionKind{
+		Group: "extensions.agents.x-k8s.io", Version: "v1alpha1", Kind: "SandboxTemplate",
+	})
+	err := fc.Get(context.Background(), types.NamespacedName{
+		Name: templateName, Namespace: cfg.Namespace,
+	}, tmpl)
+	if err == nil {
+		t.Error("SandboxTemplate should not be created in default (bare-pod) mode")
 	}
 }

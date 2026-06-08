@@ -20,32 +20,35 @@ var sandboxTemplateGVK = schema.GroupVersionKind{
 	Group: "extensions.agents.x-k8s.io", Version: "v1alpha1", Kind: "SandboxTemplate",
 }
 
-type BaseSandboxConfig struct {
-	Image     string
-	Namespace string
+type BootstrapConfig struct {
+	Image       string
+	Namespace   string
+	SandboxMode string
 }
 
-func EnsureBaseSandboxTemplate(ctx context.Context, c client.Client, cfg BaseSandboxConfig) error {
+func EnsureBootstrapResources(ctx context.Context, c client.Client, cfg BootstrapConfig) error {
 	log := logf.FromContext(ctx).WithName("sandbox-bootstrap")
 
 	if cfg.Image == "" {
-		log.Info("No agentic sandbox image configured — skipping base SandboxTemplate creation")
+		log.Info("No agentic sandbox image configured — skipping bootstrap")
 		return nil
 	}
 
-	log.Info("Ensuring base SandboxTemplate", "image", cfg.Image, "namespace", cfg.Namespace)
+	log.Info("Ensuring bootstrap resources", "image", cfg.Image, "namespace", cfg.Namespace, "mode", cfg.SandboxMode)
 
-	if err := ensureServiceAccount(ctx, c, cfg); err != nil {
+	if err := ensureServiceAccount(ctx, c, cfg.Namespace); err != nil {
 		return fmt.Errorf("ensure ServiceAccount: %w", err)
 	}
 	log.V(1).Info("ServiceAccount ready")
 
-	if err := ensureSandboxTemplate(ctx, c, cfg); err != nil {
-		return fmt.Errorf("ensure SandboxTemplate: %w", err)
+	if cfg.SandboxMode == "sandbox-claim" {
+		if err := ensureSandboxTemplate(ctx, c, cfg.Image, cfg.Namespace); err != nil {
+			return fmt.Errorf("ensure SandboxTemplate: %w", err)
+		}
+		log.V(1).Info("SandboxTemplate ready")
 	}
-	log.V(1).Info("SandboxTemplate ready")
 
-	log.Info("Base SandboxTemplate bootstrap complete")
+	log.Info("Bootstrap complete", "mode", cfg.SandboxMode)
 	return nil
 }
 
@@ -57,11 +60,11 @@ func labels() map[string]string {
 	}
 }
 
-func ensureServiceAccount(ctx context.Context, c client.Client, cfg BaseSandboxConfig) error {
+func ensureServiceAccount(ctx context.Context, c client.Client, namespace string) error {
 	sa := &corev1.ServiceAccount{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      templateName,
-			Namespace: cfg.Namespace,
+			Namespace: namespace,
 			Labels:    labels(),
 		},
 		AutomountServiceAccountToken: ptr.To(false),
@@ -72,14 +75,14 @@ func ensureServiceAccount(ctx context.Context, c client.Client, cfg BaseSandboxC
 	return nil
 }
 
-func ensureSandboxTemplate(ctx context.Context, c client.Client, cfg BaseSandboxConfig) error {
+func ensureSandboxTemplate(ctx context.Context, c client.Client, image, namespace string) error {
 	tmpl := &unstructured.Unstructured{
 		Object: map[string]any{
 			"apiVersion": sandboxTemplateGVK.Group + "/" + sandboxTemplateGVK.Version,
 			"kind":       sandboxTemplateGVK.Kind,
 			"metadata": map[string]any{
 				"name":      templateName,
-				"namespace": cfg.Namespace,
+				"namespace": namespace,
 				"labels":    labelsAny(),
 			},
 			"spec": map[string]any{
@@ -96,7 +99,7 @@ func ensureSandboxTemplate(ctx context.Context, c client.Client, cfg BaseSandbox
 						"containers": []any{
 							map[string]any{
 								"name":  "agent",
-								"image": cfg.Image,
+								"image": image,
 								"ports": []any{
 									map[string]any{
 										"name":          "http",
