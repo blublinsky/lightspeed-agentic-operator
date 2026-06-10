@@ -114,7 +114,7 @@ func hasSandboxClaims(proposal *agenticv1alpha1.Proposal) bool {
 
 func isTerminal(phase agenticv1alpha1.ProposalPhase) bool {
 	switch phase {
-	case agenticv1alpha1.ProposalPhaseCompleted, agenticv1alpha1.ProposalPhaseDenied, agenticv1alpha1.ProposalPhaseEscalated:
+	case agenticv1alpha1.ProposalPhaseCompleted, agenticv1alpha1.ProposalPhaseDenied, agenticv1alpha1.ProposalPhaseEscalated, agenticv1alpha1.ProposalPhaseEmergencyStopped:
 		return true
 	}
 	return false

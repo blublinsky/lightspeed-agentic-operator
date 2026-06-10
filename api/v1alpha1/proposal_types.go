@@ -28,16 +28,17 @@ import (
 type ProposalPhase string
 
 const (
-	ProposalPhasePending   ProposalPhase = "Pending"
-	ProposalPhaseAnalyzing ProposalPhase = "Analyzing"
-	ProposalPhaseProposed  ProposalPhase = "Proposed"
-	ProposalPhaseExecuting ProposalPhase = "Executing"
-	ProposalPhaseVerifying ProposalPhase = "Verifying"
-	ProposalPhaseCompleted ProposalPhase = "Completed"
-	ProposalPhaseFailed    ProposalPhase = "Failed"
-	ProposalPhaseDenied     ProposalPhase = "Denied"
-	ProposalPhaseEscalating ProposalPhase = "Escalating"
-	ProposalPhaseEscalated  ProposalPhase = "Escalated"
+	ProposalPhasePending          ProposalPhase = "Pending"
+	ProposalPhaseAnalyzing        ProposalPhase = "Analyzing"
+	ProposalPhaseProposed         ProposalPhase = "Proposed"
+	ProposalPhaseExecuting        ProposalPhase = "Executing"
+	ProposalPhaseVerifying        ProposalPhase = "Verifying"
+	ProposalPhaseCompleted        ProposalPhase = "Completed"
+	ProposalPhaseFailed           ProposalPhase = "Failed"
+	ProposalPhaseDenied           ProposalPhase = "Denied"
+	ProposalPhaseEscalating       ProposalPhase = "Escalating"
+	ProposalPhaseEscalated        ProposalPhase = "Escalated"
+	ProposalPhaseEmergencyStopped ProposalPhase = "EmergencyStopped"
 )
 
 // Condition reasons used by DerivePhase for state transitions.
@@ -59,6 +60,10 @@ func DerivePhase(conditions []metav1.Condition) ProposalPhase {
 			}
 		}
 		return nil
+	}
+
+	if c := get(ProposalConditionEmergencyStopped); c != nil && c.Status == metav1.ConditionTrue {
+		return ProposalPhaseEmergencyStopped
 	}
 
 	escalated := get(ProposalConditionEscalated)
@@ -238,7 +243,8 @@ const (
 	// ProposalConditionEscalated indicates escalation state. Status=Unknown
 	// while escalation is pending approval or in progress, Status=True when
 	// escalation completes (terminal), Status=False on escalation failure.
-	ProposalConditionEscalated string = "Escalated"
+	ProposalConditionEscalated        string = "Escalated"
+	ProposalConditionEmergencyStopped string = "EmergencyStopped"
 )
 
 // ProposalStep defines per-step configuration on a Proposal. The agent
@@ -387,7 +393,7 @@ type ProposalStatus struct {
 	// +patchMergeKey=type
 	// +optional
 	// +kubebuilder:validation:MinItems=1
-	// +kubebuilder:validation:MaxItems=8
+	// +kubebuilder:validation:MaxItems=9
 	Conditions []metav1.Condition `json:"conditions,omitempty" patchStrategy:"merge" patchMergeKey:"type" protobuf:"bytes,1,rep,name=conditions"`
 
 	// steps contains the per-step observed state (analysis, execution,

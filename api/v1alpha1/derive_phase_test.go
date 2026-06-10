@@ -178,6 +178,45 @@ func TestDerivePhase(t *testing.T) {
 			},
 			want: ProposalPhaseDenied,
 		},
+		{
+			name: "emergency stopped",
+			conditions: []metav1.Condition{
+				cond(ProposalConditionEmergencyStopped, metav1.ConditionTrue, "SystemSuspended"),
+			},
+			want: ProposalPhaseEmergencyStopped,
+		},
+		{
+			name: "emergency stopped takes priority over analyzed",
+			conditions: []metav1.Condition{
+				cond(ProposalConditionAnalyzed, metav1.ConditionTrue, "Complete"),
+				cond(ProposalConditionEmergencyStopped, metav1.ConditionTrue, "SystemSuspended"),
+			},
+			want: ProposalPhaseEmergencyStopped,
+		},
+		{
+			name: "emergency stopped takes priority over escalated",
+			conditions: []metav1.Condition{
+				cond(ProposalConditionEscalated, metav1.ConditionTrue, "MaxAttemptsExhausted"),
+				cond(ProposalConditionEmergencyStopped, metav1.ConditionTrue, "SystemSuspended"),
+			},
+			want: ProposalPhaseEmergencyStopped,
+		},
+		{
+			name: "emergency stopped takes priority over denied",
+			conditions: []metav1.Condition{
+				cond(ProposalConditionDenied, metav1.ConditionTrue, "UserDenied"),
+				cond(ProposalConditionEmergencyStopped, metav1.ConditionTrue, "SystemSuspended"),
+			},
+			want: ProposalPhaseEmergencyStopped,
+		},
+		{
+			name: "emergency stopped false does not affect phase",
+			conditions: []metav1.Condition{
+				cond(ProposalConditionAnalyzed, metav1.ConditionTrue, "Complete"),
+				cond(ProposalConditionEmergencyStopped, metav1.ConditionFalse, ""),
+			},
+			want: ProposalPhaseProposed,
+		},
 	}
 
 	for _, tt := range tests {
