@@ -65,12 +65,16 @@ GOLANGCI_LINT_KAL ?= $(LOCALBIN)/golangci-lint-kube-api-linter
 fmt: ## Run go fmt against code.
 	go fmt ./...
 
+.PHONY: fmt-check
+fmt-check: ## Verify go fmt produces no changes.
+	@test -z "$$(gofmt -l .)" || { echo "Unformatted files:"; gofmt -l .; exit 1; }
+
 .PHONY: vet
 vet: ## Run go vet against code.
 	go vet ./...
 
 .PHONY: test
-test: fmt vet ## Run unit tests (main + api + cli modules).
+test: fmt-check vet ## Run unit tests (main + api + cli modules).
 	# Root module: controller, cli, etc. (exclude test/e2e — needs -tags=e2e and a running mock; see test-e2e).
 	go test $$(go list ./... | grep -vF 'github.com/openshift/lightspeed-agentic-operator/test/e2e') -count=1
 	# API module is separate go.mod; GOWORK=off avoids picking up a repo root go.work.

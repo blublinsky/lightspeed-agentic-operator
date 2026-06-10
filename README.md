@@ -48,7 +48,7 @@ Do not edit **`config/crd/bases/`** or generated **`config/rbac/role.yaml`** by 
 
 ```bash
 make manifests # controller-gen → config/crd/bases + config/rbac/role.yaml
-make test      # fmt + vet + go test (root + api module)
+make test      # fmt-check + vet + go test (root + api module)
 make install   # kubectl apply CRDs from config/crd only
 make run       # install + install-agent-sandbox + vet + go run ./cmd/main.go
 make uninstall # kubectl delete CRDs from config/crd (optional: ignore-not-found=true)
@@ -61,7 +61,7 @@ make api-lint       # Kube API linter on api/ (golangci-lint custom + plugin; se
 
 ### Testing
 
-**`make test`** runs **`fmt`**, **`vet`**, root-module tests, and **`cd api && GOWORK=off go test ./... -count=1`** (the API tree is a separate module; **`GOWORK=off`** avoids a repo-root **`go.work`** hijacking module choice). The **`test/e2e`** package is excluded from this target — it requires **`-tags=e2e`** and a running mock agent.
+**`make test`** runs **`fmt-check`** (fails if any file needs reformatting — run **`make fmt`** to fix), **`vet`**, root-module tests, and **`cd api && GOWORK=off go test ./... -count=1`** (the API tree is a separate module; **`GOWORK=off`** avoids a repo-root **`go.work`** hijacking module choice). The **`test/e2e`** package is excluded from this target — it requires **`-tags=e2e`** and a running mock agent.
 
 **`make test-e2e`** runs **`go test -tags=e2e ./test/e2e/...`** against a live cluster with the operator running. Prerequisites: **`make run TEMPLATE_NAME=lightspeed-agent-mock`** (or deployed operator with **`--template-name=lightspeed-agent-mock`**) and mock agent SandboxTemplate applied (**`kubectl apply -k test/agent/sandboxtemplate`**). See `test/e2e/` package doc for details.
 
