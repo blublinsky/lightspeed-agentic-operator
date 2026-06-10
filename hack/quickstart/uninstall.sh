@@ -73,10 +73,4 @@ cat <<DONE
 
   Agentic OLS has been uninstalled.
 
-  Note: The Agent Sandbox controller was NOT removed (other workloads
-  may depend on it). To remove it manually:
-
-    oc delete -f https://github.com/kubernetes-sigs/agent-sandbox/releases/download/v0.4.5/extensions.yaml
-    oc delete -f https://github.com/kubernetes-sigs/agent-sandbox/releases/download/v0.4.5/manifest.yaml
-
 DONE

@@ -20,7 +20,7 @@ metadata:
 spec:
   llmProvider:
     name: openai
-  model: "gpt-4.1"
+  model: "gpt-5-mini"
   timeouts:
     analysisSeconds: 120
     executionSeconds: 120
