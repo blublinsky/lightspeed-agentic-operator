@@ -1,0 +1,25 @@
+# Namespace inventory proposal — analysis + execution.
+#
+# The analysis agent inspects workloads in the target namespace and
+# proposes remediation options with RBAC for the execution step.
+# Execution requires manual approval per the quickstart ApprovalPolicy.
+#
+# Prerequisites: LLM provider + default agent configured (see openai.yaml, etc.)
+apiVersion: agentic.openshift.io/v1alpha1
+kind: Proposal
+metadata:
+  name: namespace-inventory
+  namespace: openshift-lightspeed
+spec:
+  request: |
+    Investigate what is running in the openshift-lightspeed namespace.
+    List all pods, deployments, and services. Summarize each workload,
+    its current status, and flag any problems (CrashLoopBackOff,
+    ImagePullBackOff, Pending, restarts, etc.). Propose remediation
+    for any issues found.
+  targetNamespaces:
+    - openshift-lightspeed
+  analysis:
+    agent: default
+  execution:
+    agent: default
