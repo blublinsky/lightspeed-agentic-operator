@@ -189,15 +189,17 @@ cat <<DONE
   NEXT: Configure your LLM provider. Pick one:
 
   ── Vertex AI / Claude ─────────────────────────────────────
+  export GOOGLE_APPLICATION_CREDENTIALS=/path/to/your/service-account-key.json
   oc create secret generic llm-creds-vertex -n ${NAMESPACE} \\
-    --from-file=GOOGLE_APPLICATION_CREDENTIALS=/path/to/adc.json
+    --from-file=GOOGLE_APPLICATION_CREDENTIALS="\$GOOGLE_APPLICATION_CREDENTIALS"
   curl -sLO ${EXAMPLES_BASE}/vertex-anthropic.yaml
   # Edit vertex-anthropic.yaml — set your GCP project ID and region
   oc apply -f vertex-anthropic.yaml
 
   ── Vertex AI / Gemini ─────────────────────────────────────
+  export GOOGLE_APPLICATION_CREDENTIALS=/path/to/your/service-account-key.json
   oc create secret generic llm-creds-vertex -n ${NAMESPACE} \\
-    --from-file=GOOGLE_APPLICATION_CREDENTIALS=/path/to/adc.json
+    --from-file=GOOGLE_APPLICATION_CREDENTIALS="\$GOOGLE_APPLICATION_CREDENTIALS"
   curl -sLO ${EXAMPLES_BASE}/vertex-google.yaml
   # Edit vertex-google.yaml — set your GCP project ID and region
   oc apply -f vertex-google.yaml
