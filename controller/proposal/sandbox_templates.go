@@ -433,7 +433,6 @@ func gcOldTemplates(
 	return nil
 }
 
-
 // SandboxTemplateServiceAccount reads the service account name from a SandboxTemplate.
 func SandboxTemplateServiceAccount(ctx context.Context, c client.Client, templateName, namespace string) (string, error) {
 	tmpl := &unstructured.Unstructured{}

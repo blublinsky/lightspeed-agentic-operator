@@ -44,7 +44,7 @@ func (b *PodSpecBuilder) Build(
 		}},
 		SecurityContext: &corev1.SecurityContext{
 			AllowPrivilegeEscalation: ptr.To(false),
-			Capabilities:            &corev1.Capabilities{Drop: []corev1.Capability{"ALL"}},
+			Capabilities:             &corev1.Capabilities{Drop: []corev1.Capability{"ALL"}},
 		},
 	}
 

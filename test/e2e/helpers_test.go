@@ -54,7 +54,7 @@ func newClient(t *testing.T) client.Client {
 
 // --- Pointer helpers ---
 
-func ptrBool(v bool) *bool   { return &v }
+func ptrBool(v bool) *bool    { return &v }
 func ptrInt32(v int32) *int32 { return &v }
 
 // --- Cleanup ---
@@ -134,7 +134,7 @@ func createFixtures(t *testing.T, c client.Client) *e2eFixtures {
 					CredentialsSecret: agenticv1alpha1.SecretReference{Name: "e2e-llm-secret"},
 					ProjectID:         "e2e-project",
 					Region:            "us-central1",
-					ModelProvider:       agenticv1alpha1.GoogleCloudVertexModelProviderAnthropic,
+					ModelProvider:     agenticv1alpha1.GoogleCloudVertexModelProviderAnthropic,
 				},
 			},
 		},
@@ -206,7 +206,6 @@ func createProposal(t *testing.T, c client.Client, name string) *agenticv1alpha1
 		t.Fatalf("create Proposal: %v", err)
 	}
 	t.Cleanup(func() { cleanup(t, c, prop) })
-
 
 	return prop
 }

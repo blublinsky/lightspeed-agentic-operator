@@ -28,15 +28,15 @@ import (
 type ProposalPhase string
 
 const (
-	ProposalPhasePending   ProposalPhase = "Pending"
-	ProposalPhaseAnalyzing ProposalPhase = "Analyzing"
-	ProposalPhaseProposed  ProposalPhase = "Proposed"
-	ProposalPhaseExecuting ProposalPhase = "Executing"
-	ProposalPhaseVerifying ProposalPhase = "Verifying"
-	ProposalPhaseCompleted ProposalPhase = "Completed"
-	ProposalPhaseFailed    ProposalPhase = "Failed"
-	ProposalPhaseDenied     ProposalPhase = "Denied"
-	ProposalPhaseEscalating ProposalPhase = "Escalating"
+	ProposalPhasePending          ProposalPhase = "Pending"
+	ProposalPhaseAnalyzing        ProposalPhase = "Analyzing"
+	ProposalPhaseProposed         ProposalPhase = "Proposed"
+	ProposalPhaseExecuting        ProposalPhase = "Executing"
+	ProposalPhaseVerifying        ProposalPhase = "Verifying"
+	ProposalPhaseCompleted        ProposalPhase = "Completed"
+	ProposalPhaseFailed           ProposalPhase = "Failed"
+	ProposalPhaseDenied           ProposalPhase = "Denied"
+	ProposalPhaseEscalating       ProposalPhase = "Escalating"
 	ProposalPhaseEscalated        ProposalPhase = "Escalated"
 	ProposalPhaseEmergencyStopped ProposalPhase = "EmergencyStopped"
 )
