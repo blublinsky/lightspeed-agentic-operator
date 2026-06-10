@@ -34,6 +34,7 @@ Skip the confirmation prompt with `QUICKSTART_FORCE=1`.
 | `NAMESPACE` | `openshift-lightspeed` | Target namespace |
 | `OPERATOR_IMAGE` | Konflux `:main` | Operator container image |
 | `SANDBOX_IMAGE` | Konflux `:main` | Agent sandbox container image |
+| `CONSOLE_IMAGE` | Konflux `:main` | Console plugin container image |
 | `SANDBOX_MODE` | `bare-pod` | Sandbox mode (`bare-pod` or `sandbox-claim`) |
 
 Example with overrides:

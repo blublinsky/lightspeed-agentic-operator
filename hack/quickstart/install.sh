@@ -17,6 +17,7 @@ set -euo pipefail
 NAMESPACE="${NAMESPACE:-openshift-lightspeed}"
 OPERATOR_IMAGE="${OPERATOR_IMAGE:-quay.io/redhat-user-workloads/crt-nshift-lightspeed-tenant/lightspeed-agentic-operator:main}"
 SANDBOX_IMAGE="${SANDBOX_IMAGE:-quay.io/redhat-user-workloads/crt-nshift-lightspeed-tenant/lightspeed-agentic-sandbox:main}"
+CONSOLE_IMAGE="${CONSOLE_IMAGE:-quay.io/redhat-user-workloads/crt-nshift-lightspeed-tenant/lightspeed-agentic-console:main}"
 SANDBOX_MODE="${SANDBOX_MODE:-bare-pod}"
 
 GITHUB_RAW="https://raw.githubusercontent.com/openshift/lightspeed-agentic-operator/main"
@@ -118,6 +119,7 @@ spec:
         - "--namespace=${NAMESPACE}"
         - "--sandbox-mode=${SANDBOX_MODE}"
         - "--agentic-sandbox-image=${SANDBOX_IMAGE}"
+        - "--agentic-console-image=${CONSOLE_IMAGE}"
         ports:
         - name: metrics
           containerPort: 8080
@@ -205,6 +207,7 @@ cat <<DONE
   Sandbox mode:   ${SANDBOX_MODE}
   Operator image: ${OPERATOR_IMAGE}
   Sandbox image:  ${SANDBOX_IMAGE}
+  Console image:  ${CONSOLE_IMAGE}
 ════════════════════════════════════════════════════════════════
 
   NEXT: Configure your LLM provider. Pick one:
@@ -242,7 +245,7 @@ cat <<DONE
   # Check the analysis result:
   oc get analysisresult -n ${NAMESPACE} -o json
 
-  # Approve execution (option 0 = first option):
+  # Approve execution (option 0 = first option) via oc CLI or in console UI:
   oc patch proposalapproval namespace-inventory -n ${NAMESPACE} \\
     --type=json \\
     -p '[{"op":"add","path":"/spec/stages/-","value":{"type":"Execution","execution":{"option":0}}}]'
