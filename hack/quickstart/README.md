@@ -40,8 +40,8 @@ Skip the confirmation prompt with `QUICKSTART_FORCE=1`.
 Example with overrides:
 
 ```bash
-NAMESPACE=my-ns SANDBOX_MODE=sandbox-claim \
-  curl -sL .../install.sh | bash
+export NAMESPACE=my-ns SANDBOX_MODE=sandbox-claim
+curl -sL .../install.sh | bash
 ```
 
 ## LLM Provider Examples
