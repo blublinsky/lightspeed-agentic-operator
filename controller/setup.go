@@ -16,6 +16,7 @@ type Options struct {
 	AgenticConsoleImage string
 	AgenticSandboxImage string
 	SandboxMode         string
+	ImagePullPolicy     string
 }
 
 func Setup(mgr ctrl.Manager, opts Options) error {
@@ -26,7 +27,10 @@ func Setup(mgr ctrl.Manager, opts Options) error {
 	case "sandbox-claim":
 		sandboxProvider = proposal.NewSandboxManager(mgr.GetClient(), opts.Namespace, "lightspeed-agent")
 	default:
-		builder := &proposal.PodSpecBuilder{Image: opts.AgenticSandboxImage}
+		builder := &proposal.PodSpecBuilder{
+			Image:           opts.AgenticSandboxImage,
+			ImagePullPolicy: opts.ImagePullPolicy,
+		}
 		sandboxProvider = proposal.NewBarePodManager(mgr.GetClient(), builder, opts.Namespace)
 	}
 
