@@ -460,6 +460,44 @@ func (r *ProposalReconciler) handleFailed(
 	return ctrl.Result{}, nil
 }
 
+func (r *ProposalReconciler) handleSuspension(
+	ctx context.Context,
+	log logr.Logger,
+	proposal *agenticv1alpha1.Proposal,
+) (ctrl.Result, error) {
+	phase := agenticv1alpha1.DerivePhase(proposal.Status.Conditions)
+	if isTerminal(phase) {
+		return ctrl.Result{}, nil
+	}
+
+	log.Info("terminating proposal due to system suspension", "phase", phase)
+
+	if hasSandboxClaims(proposal) {
+		if err := r.Agent.ReleaseSandboxes(ctx, proposal); err != nil {
+			log.Error(err, "best-effort sandbox release during suspension")
+		}
+	}
+
+	if proposal.Annotations[rbacNamespacesAnnotation] != "" {
+		if err := cleanupExecutionRBAC(ctx, r.Client, proposal, r.Namespace); err != nil {
+			log.Error(err, "best-effort RBAC cleanup during suspension")
+		}
+	}
+
+	base := proposal.DeepCopy()
+	meta.SetStatusCondition(&proposal.Status.Conditions, metav1.Condition{
+		Type:               agenticv1alpha1.ProposalConditionEmergencyStopped,
+		Status:             metav1.ConditionTrue,
+		Reason:             reasonSystemSuspended,
+		Message:            "Terminated by system kill switch (AgenticOLSConfig.spec.suspended=true)",
+		ObservedGeneration: proposal.Generation,
+	})
+	if err := r.statusPatch(ctx, proposal, base); err != nil {
+		return ctrl.Result{}, fmt.Errorf("patch EmergencyStopped condition: %w", err)
+	}
+	return ctrl.Result{}, nil
+}
+
 // handleEscalation runs the escalation step: checks approval, calls the
 // agent with an escalation prompt, and stores the result. Uses the analysis
 // step's agent by default (or an approval-time override).

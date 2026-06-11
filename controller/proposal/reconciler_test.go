@@ -319,3 +319,75 @@ func TestReconcile_Denied_Terminal(t *testing.T) {
 		t.Fatalf("expected Denied, got %s", agenticv1alpha1.DerivePhase(p.Status.Conditions))
 	}
 }
+
+func TestHandleSuspension(t *testing.T) {
+	tests := []struct {
+		name          string
+		proposal      *agenticv1alpha1.Proposal
+		wantPhase     agenticv1alpha1.ProposalPhase
+		wantCondition bool
+	}{
+		{
+			name: "non-terminal proposal gets EmergencyStopped",
+			proposal: func() *agenticv1alpha1.Proposal {
+				p := testProposal()
+				return p
+			}(),
+			wantPhase:     agenticv1alpha1.ProposalPhaseEmergencyStopped,
+			wantCondition: true,
+		},
+		{
+			name: "already-completed proposal is unchanged",
+			proposal: func() *agenticv1alpha1.Proposal {
+				p := testProposal()
+				p.Status.Conditions = []metav1.Condition{{
+					Type:   agenticv1alpha1.ProposalConditionVerified,
+					Status: metav1.ConditionTrue,
+					Reason: "Complete",
+				}}
+				return p
+			}(),
+			wantPhase:     agenticv1alpha1.ProposalPhaseCompleted,
+			wantCondition: false,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			objs := append(defaultObjects(), tt.proposal)
+			fc := fake.NewClientBuilder().
+				WithScheme(testScheme()).
+				WithObjects(objs...).
+				WithStatusSubresource(&agenticv1alpha1.Proposal{}).
+				Build()
+			r := &ProposalReconciler{
+				Client:    fc,
+				Log:       logr.Discard(),
+				Agent:     newTestAgentCaller(),
+				Namespace: "default",
+			}
+			_, err := r.handleSuspension(context.Background(), logr.Discard(), tt.proposal)
+			if err != nil {
+				t.Fatalf("handleSuspension() error: %v", err)
+			}
+			got, _ := getProposal(r, tt.proposal.Name)
+			phase := agenticv1alpha1.DerivePhase(got.Status.Conditions)
+			if phase != tt.wantPhase {
+				t.Errorf("phase = %s, want %s", phase, tt.wantPhase)
+			}
+			if tt.wantCondition {
+				found := false
+				for _, c := range got.Status.Conditions {
+					if c.Type == agenticv1alpha1.ProposalConditionEmergencyStopped && c.Status == metav1.ConditionTrue {
+						if c.Reason != reasonSystemSuspended {
+							t.Errorf("reason = %s, want %s", c.Reason, reasonSystemSuspended)
+						}
+						found = true
+					}
+				}
+				if !found {
+					t.Error("EmergencyStopped condition not found")
+				}
+			}
+		})
+	}
+}
