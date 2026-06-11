@@ -17,17 +17,7 @@ if [ "${QUICKSTART_FORCE:-}" != "1" ]; then
   echo "This will delete ALL Agentic OLS resources in namespace ${NAMESPACE}"
   echo "and remove the operator CRDs cluster-wide."
   echo ""
-  if [ -t 0 ]; then
-    read -rp "Continue? [y/N] " confirm
-  elif [ -r /dev/tty ]; then
-    if ! read -rp "Continue? [y/N] " confirm </dev/tty; then
-      echo "Non-interactive shell detected. Set QUICKSTART_FORCE=1 to proceed."
-      exit 1
-    fi
-  else
-    echo "Non-interactive shell detected. Set QUICKSTART_FORCE=1 to proceed."
-    exit 1
-  fi
+  read -rp "Continue? [y/N] " confirm
   case "${confirm}" in
     [yY][eE][sS]|[yY]) ;;
     *) echo "Aborted."; exit 0 ;;
@@ -66,16 +56,9 @@ oc delete sa lightspeed-agentic-operator -n "${NAMESPACE}" --ignore-not-found 2>
 oc delete clusterrolebinding lightspeed-agentic-operator --ignore-not-found 2>/dev/null || true
 info "Operator removed"
 
-# --- Step 4: Delete namespace -------------------------------------------------
+# --- Step 4: Delete CRDs -----------------------------------------------------
 
-step "4/5" "Deleting namespace ${NAMESPACE}..."
-
-oc delete namespace "${NAMESPACE}" --ignore-not-found 2>/dev/null || true
-info "Namespace deleted"
-
-# --- Step 5: Delete CRDs -----------------------------------------------------
-
-step "5/5" "Deleting Agentic Operator CRDs..."
+step "4/5" "Deleting Agentic Operator CRDs..."
 
 for crd in \
   agents.agentic.openshift.io \
@@ -87,9 +70,16 @@ for crd in \
   proposalapprovals.agentic.openshift.io \
   proposals.agentic.openshift.io \
   verificationresults.agentic.openshift.io; do
-  oc delete crd "${crd}" --ignore-not-found 2>/dev/null || true
+  oc delete crd "${crd}" --ignore-not-found --timeout=30s 2>/dev/null || true
 done
 info "CRDs deleted"
+
+# --- Step 5: Delete namespace -------------------------------------------------
+
+step "5/5" "Deleting namespace ${NAMESPACE}..."
+
+oc delete namespace "${NAMESPACE}" --ignore-not-found --timeout=60s 2>/dev/null || true
+info "Namespace deleted"
 
 cat <<DONE
 
