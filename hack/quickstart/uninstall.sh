@@ -17,7 +17,7 @@ if [ "${QUICKSTART_FORCE:-}" != "1" ]; then
   echo "This will delete ALL Agentic OLS resources in namespace ${NAMESPACE}"
   echo "and remove the operator CRDs cluster-wide."
   echo ""
-  read -rp "Continue? [y/N] " confirm
+  read -rp "Continue? [y/N] " confirm </dev/tty
   case "${confirm}" in
     [yY][eE][sS]|[yY]) ;;
     *) echo "Aborted."; exit 0 ;;
