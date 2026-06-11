@@ -14,7 +14,8 @@ import (
 )
 
 type PodSpecBuilder struct {
-	Image string
+	Image           string
+	ImagePullPolicy string
 }
 
 func (b *PodSpecBuilder) Build(
@@ -35,8 +36,9 @@ func (b *PodSpecBuilder) Build(
 	}
 
 	container := corev1.Container{
-		Name:  "agent",
-		Image: b.Image,
+		Name:            "agent",
+		Image:           b.Image,
+		ImagePullPolicy: corev1.PullPolicy(b.ImagePullPolicy),
 		Ports: []corev1.ContainerPort{{
 			Name:          "http",
 			ContainerPort: 8080,

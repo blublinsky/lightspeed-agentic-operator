@@ -39,6 +39,7 @@ func main() {
 		agenticConsoleImage string
 		agenticSandboxImage string
 		sandboxMode         string
+		imagePullPolicy     string
 	)
 
 	flag.StringVar(&metricsAddr, "metrics-bind-address", ":8080", "The address the metric endpoint binds to.")
@@ -47,6 +48,7 @@ func main() {
 	flag.StringVar(&agenticConsoleImage, "agentic-console-image", "", "The image of the agentic console plugin container.")
 	flag.StringVar(&agenticSandboxImage, "agentic-sandbox-image", "", "The image of the agentic sandbox container.")
 	flag.StringVar(&sandboxMode, "sandbox-mode", "bare-pod", "Sandbox mode: bare-pod (default) or sandbox-claim.")
+	flag.StringVar(&imagePullPolicy, "image-pull-policy", "", "Image pull policy for sandbox pods (Always, IfNotPresent, Never). Empty uses Kubernetes default.")
 	flag.Parse()
 
 	ctrl.SetLogger(zap.New(zap.UseDevMode(true)))
@@ -82,6 +84,7 @@ func main() {
 		AgenticConsoleImage: agenticConsoleImage,
 		AgenticSandboxImage: agenticSandboxImage,
 		SandboxMode:         sandboxMode,
+		ImagePullPolicy:     imagePullPolicy,
 	}); err != nil {
 		log.Error(err, "unable to set up agentic controllers")
 		os.Exit(1)
