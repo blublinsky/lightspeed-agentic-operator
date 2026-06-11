@@ -39,8 +39,8 @@ Skip the confirmation prompt with `QUICKSTART_FORCE=1`.
 Example with overrides:
 
 ```bash
-export NAMESPACE=my-ns SANDBOX_MODE=sandbox-claim
-bash <(curl -sL https://raw.githubusercontent.com/openshift/lightspeed-agentic-operator/main/hack/quickstart/install.sh)
+NAMESPACE=my-ns SANDBOX_MODE=sandbox-claim \
+  bash <(curl -sL https://raw.githubusercontent.com/openshift/lightspeed-agentic-operator/main/hack/quickstart/install.sh)
 ```
 
 ## LLM Provider Examples
