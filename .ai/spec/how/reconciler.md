@@ -73,7 +73,7 @@ Audience: AI agents. Behavioral rules and phase semantics live in **what/** spec
 1. **Watch / enqueue:** controller-runtime delivers `ctrl.Request` for a `Proposal` namespaced name. `SetupWithManager` also `Owns` child CRs (`ProposalApproval`, `AnalysisResult`, `ExecutionResult`, `VerificationResult`, `EscalationResult`) and **Watches** cluster `ApprovalPolicy` and `AgenticOLSConfig` to enqueue all non-terminal proposals when either changes.
 2. **`Reconcile` load:** `Get` `Proposal`; ignore not-found.
 3. **Deletion path:** If `DeletionTimestamp` set and finalizer `agentic.openshift.io/execution-rbac-cleanup` present: `Agent.ReleaseSandboxes`, `cleanupExecutionRBAC`, remove finalizer, return.
-4. **[PLANNED: OLS-3018] Suspension check:** Fetch `AgenticOLSConfig` singleton. If `spec.suspended == true` and proposal is non-terminal: release sandboxes, clean up RBAC, set `EmergencyStopped=True` condition, status patch, return. If CR not found, treat as not suspended. See **what/system-config.md**.
+4. **Suspension check:** Fetch `AgenticOLSConfig` singleton via `isSuspended()`. If `spec.suspended == true` and proposal is non-terminal: `handleSuspension` releases sandboxes (best-effort), cleans up RBAC (best-effort), sets `EmergencyStopped=True` condition, status patch, return. If CR not found, treat as not suspended. See **what/system-config.md**.
 5. **Phase:** `agenticv1alpha1.DerivePhase(proposal.Status.Conditions)` — see **what/** for semantics. Now includes `EmergencyStopped` as highest-precedence terminal phase.
 6. **Finalizer add:** If not terminal and finalizer missing, add RBAC cleanup finalizer (re-fetch proposal after patch).
 7. **Terminal / failed shortcuts:** Completed/Denied/Escalated/EmergencyStopped → optional sandbox release via `Agent.ReleaseSandboxes`. `ProposalPhaseFailed` → `handleFailed` (RBAC cleanup if annotation set).
@@ -202,7 +202,7 @@ ProposalReconciler.Reconcile
 - **`cmd/main.go` scheme:** Registers core + `agenticv1alpha1` + `consolev1` + `openshiftv1`. Watching or applying arbitrary CRDs from tests may need extended schemes (see `reconciler_test.go`).
 - **Max concurrent reconciles:** `SetupWithManager` reads cluster `ApprovalPolicy` via API reader for `MaxConcurrentProposals`, else `DefaultMaxConcurrentProposals` from API package.
 - **Policy watch:** Enqueues **all** non-terminal proposals on any `ApprovalPolicy` event — can be chatty.
-- **[PLANNED: OLS-3018] AgenticOLSConfig watch:** Same pattern as policy watch — enqueues all non-terminal proposals on any `AgenticOLSConfig` change. When `suspended` flips to `true`, all re-queued proposals hit the suspension guard and get terminated.
+- **AgenticOLSConfig watch:** Same pattern as policy watch — enqueues all non-terminal proposals on any `AgenticOLSConfig` change. When `suspended` flips to `true`, all re-queued proposals hit the suspension guard and get terminated.
 - **Workflow resolution errors:** Patched onto `ProposalConditionAnalyzed` false — see API for exact condition ordering vs `DerivePhase`.
 - **`selectedOption` vs trim:** Verification uses latest analysis result’s **first** option (`Options[0]`) when resolving; execution path uses `trimNonSelectedOptions` which respects `ProposalApproval` execution option index when multiple options exist.
 - **`maxAttempts`:** Combines `ApprovalPolicy.Spec.MaxAttempts` ceiling with per-approval execution override (`helpers.go`); retry semantics interact with verification failure branch in `handleVerification` (see **what/proposal-lifecycle.md**).

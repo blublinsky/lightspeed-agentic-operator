@@ -36,6 +36,7 @@ rules:
 - apiGroups:
   - agentic.openshift.io
   resources:
+  - agenticolsconfigs
   - agents
   - approvalpolicies
   - llmproviders

@@ -49,7 +49,19 @@ const (
 	reasonRevisionComplete  = "RevisionComplete"
 	reasonRetryingExecution = agenticv1alpha1.ReasonRetryingExecution
 	reasonRetriesExhausted  = agenticv1alpha1.ReasonRetriesExhausted
+	reasonSystemSuspended   = "SystemSuspended"
 )
+
+func isSuspended(ctx context.Context, c client.Client) (bool, error) {
+	var config agenticv1alpha1.AgenticOLSConfig
+	if err := c.Get(ctx, client.ObjectKey{Name: "cluster"}, &config); err != nil {
+		if client.IgnoreNotFound(err) == nil {
+			return false, nil
+		}
+		return false, err
+	}
+	return config.Spec.Suspended, nil
+}
 
 // failStep marks a step as failed and creates a failure result CR.
 // The caller must have set the step condition to ConditionUnknown before

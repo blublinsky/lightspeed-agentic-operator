@@ -27,6 +27,7 @@ IMAGE_PULL_POLICY="${IMAGE_PULL_POLICY:-}"
 GITHUB_RAW="https://raw.githubusercontent.com/openshift/lightspeed-agentic-operator/main"
 
 CRD_FILES=(
+  agentic.openshift.io_agenticolsconfigs.yaml
   agentic.openshift.io_agents.yaml
   agentic.openshift.io_analysisresults.yaml
   agentic.openshift.io_approvalpolicies.yaml
