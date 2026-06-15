@@ -19,6 +19,7 @@ func TestIsTerminalPhase(t *testing.T) {
 		{agenticv1alpha1.ProposalPhaseFailed, true},
 		{agenticv1alpha1.ProposalPhaseDenied, true},
 		{agenticv1alpha1.ProposalPhaseEscalated, true},
+		{agenticv1alpha1.ProposalPhaseEmergencyStopped, true},
 		{agenticv1alpha1.ProposalPhasePending, false},
 		{agenticv1alpha1.ProposalPhaseAnalyzing, false},
 		{agenticv1alpha1.ProposalPhaseExecuting, false},
@@ -45,6 +46,9 @@ func TestPhaseColor(t *testing.T) {
 	}
 	if c := PhaseColor(agenticv1alpha1.ProposalPhaseEscalated); c != ColorMagenta {
 		t.Errorf("expected magenta for Escalated, got %q", c)
+	}
+	if c := PhaseColor(agenticv1alpha1.ProposalPhaseEmergencyStopped); c != ColorMagenta {
+		t.Errorf("expected magenta for EmergencyStopped, got %q", c)
 	}
 }
 

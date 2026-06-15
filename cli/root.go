@@ -2,6 +2,7 @@ package cli
 
 import (
 	"github.com/openshift/lightspeed-agentic-operator/cli/proposal"
+	"github.com/openshift/lightspeed-agentic-operator/cli/system"
 	"github.com/spf13/cobra"
 	"k8s.io/cli-runtime/pkg/genericclioptions"
 )
@@ -15,6 +16,9 @@ func NewRootCmd(streams genericclioptions.IOStreams) *cobra.Command {
 	}
 
 	cmd.AddCommand(proposal.NewProposalCmd(streams))
+	cmd.AddCommand(system.NewStatusCmd(streams))
+	cmd.AddCommand(system.NewSuspendCmd(streams))
+	cmd.AddCommand(system.NewResumeCmd(streams))
 	cmd.AddCommand(NewVersionCmd(streams))
 
 	return cmd

@@ -79,6 +79,10 @@ func setPhaseConditions(s *agenticv1alpha1.ProposalStatus, phase agenticv1alpha1
 		meta.SetStatusCondition(&s.Conditions, metav1.Condition{
 			Type: agenticv1alpha1.ProposalConditionEscalated, Status: metav1.ConditionTrue, Reason: "MaxRetriesExhausted",
 		})
+	case agenticv1alpha1.ProposalPhaseEmergencyStopped:
+		meta.SetStatusCondition(&s.Conditions, metav1.Condition{
+			Type: agenticv1alpha1.ProposalConditionEmergencyStopped, Status: metav1.ConditionTrue, Reason: "SystemSuspended",
+		})
 	case agenticv1alpha1.ProposalPhasePending:
 		// No conditions — fresh proposal
 	}

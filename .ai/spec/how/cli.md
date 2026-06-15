@@ -15,8 +15,23 @@ Audience: AI agents. Command behavior and user-facing rules belong in **what/** 
 
 | File | Types | Key functions |
 |------|-------|----------------|
-| `root.go` | — | `NewRootCmd(streams)` — registers `proposal` subtree and `version` |
+| `root.go` | — | `NewRootCmd(streams)` — registers `proposal` subtree, `system` commands (`status`, `suspend`, `resume`), and `version` |
 | `version.go` | Package var `Version` (default `dev`) | `NewVersionCmd(streams)` |
+
+---
+
+## Module map: `cli/system/`
+
+| File | Types | Key functions |
+|------|-------|----------------|
+| `helpers.go` | — (`scheme`, `configName` constant) | `newClient`, `getConfig` |
+| `status.go` | `StatusOptions` | `NewStatusCmd`, `Complete`, `Run` |
+| `suspend.go` | `SuspendOptions` | `NewSuspendCmd`, `Complete`, `Run` |
+| `resume.go` | `ResumeOptions` | `NewResumeCmd`, `Complete`, `Run` |
+
+- **`status`:** Gets `AgenticOLSConfig` named `cluster`; prints `"Agentic System: SUSPENDED"` or `"Active"`. `NotFound` = Active.
+- **`suspend`:** Prompts confirmation (skip with `--yes`); patches `spec.suspended=true` or creates the CR if absent. Idempotent (reports "already suspended" if already true).
+- **`resume`:** Patches `spec.suspended=false`. Reports "not suspended" if already false or CR absent.
 
 ---
 
@@ -52,6 +67,9 @@ oc-agentic
 │   ├── watch NAME
 │   ├── logs NAME
 │   └── delete NAME
+├── status
+├── suspend
+├── resume
 └── version
 ```
 
@@ -73,7 +91,7 @@ There is **no** unstructured client for proposal CRUD in the main commands; only
 - Every command embeds or holds `*genericclioptions.ConfigFlags` from `genericclioptions.NewConfigFlags(true)`.
 - **`AddFlags`** on each cobra command wires kubeconfig/context/namespace flags consistent with `kubectl` / `oc`.
 - **`IOStreams`** passed from root for all printing and JSON/YAML encoders.
-- **Namespace resolution:** `ResolveNamespace` prefers `*ConfigFlags.Namespace`; else kubeconfig current context namespace; else `"default"`.
+- **Namespace resolution:** `ResolveNamespace` prefers `*ConfigFlags.Namespace`; else kubeconfig current context namespace (unless `"default"`); else `"openshift-lightspeed"` (the `DefaultNamespace` constant).
 
 ---
 
@@ -93,7 +111,7 @@ There is **no** unstructured client for proposal CRUD in the main commands; only
 ## Output formatting
 
 - **Tables:** `text/tabwriter` via `PrintTable`.
-- **Phases:** ANSI colors in `PhaseColor` / `ColoredPhase` (green complete, red failed/denied, yellow in-progress, magenta escalated).
+- **Phases:** ANSI colors in `PhaseColor` / `ColoredPhase` (green complete, red failed/denied, yellow in-progress, magenta escalated/emergency-stopped).
 - **Structured:** `-o json` uses `encoding/json` encoder with indent; `-o yaml` uses `sigs.k8s.io/yaml` `Marshal`.
 - **Validation:** `ValidateOutputFormat` — list allows `wide` in addition to json/yaml; get/create allow json/yaml only.
 
@@ -142,5 +160,5 @@ User invokes oc-agentic proposal <cmd> [flags]
 
 ## Implementation notes
 
-- **`validProposalPhases` in `helpers.go`** is missing `Proposed` and `Escalating` relative to `ProposalPhase` in `api/v1alpha1/proposal_types.go`. `list --phase` validation (`IsValidPhase`) can reject phase strings that `DerivePhase` still produces; align the slice with API constants when fixing UX.
-- **`watch` terminal set:** `IsTerminalPhase` matches four phases (includes `Escalated`); matches common completion paths; verify against **what/** if `Analyzing` as terminal edge cases matter.
+- **`validProposalPhases` in `helpers.go`** includes all terminal phases including `EmergencyStopped`. Still missing `Proposed` and `Escalating` relative to `ProposalPhase` in `api/v1alpha1/proposal_types.go`. `list --phase` validation (`IsValidPhase`) can reject phase strings that `DerivePhase` still produces; align the slice with API constants when fixing UX.
+- **`watch` terminal set:** `IsTerminalPhase` matches five phases (includes `Escalated` and `EmergencyStopped`); matches common completion paths; verify against **what/** if `Analyzing` as terminal edge cases matter.

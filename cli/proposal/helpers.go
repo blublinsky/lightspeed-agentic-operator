@@ -46,6 +46,7 @@ var validProposalPhases = []string{
 	string(agenticv1alpha1.ProposalPhaseFailed),
 	string(agenticv1alpha1.ProposalPhaseDenied),
 	string(agenticv1alpha1.ProposalPhaseEscalated),
+	string(agenticv1alpha1.ProposalPhaseEmergencyStopped),
 }
 
 var validSandboxSteps = []string{
@@ -77,6 +78,8 @@ func NewClientFromConfig(cfg *rest.Config) (client.Client, error) {
 	return c, nil
 }
 
+const DefaultNamespace = "openshift-lightspeed"
+
 func ResolveNamespace(f *genericclioptions.ConfigFlags) (string, error) {
 	if f.Namespace != nil && *f.Namespace != "" {
 		return *f.Namespace, nil
@@ -85,10 +88,10 @@ func ResolveNamespace(f *genericclioptions.ConfigFlags) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("failed to load kubeconfig: %w", err)
 	}
-	if ctx, ok := rawConfig.Contexts[rawConfig.CurrentContext]; ok && ctx.Namespace != "" {
+	if ctx, ok := rawConfig.Contexts[rawConfig.CurrentContext]; ok && ctx.Namespace != "" && ctx.Namespace != "default" {
 		return ctx.Namespace, nil
 	}
-	return "default", nil
+	return DefaultNamespace, nil
 }
 
 func IsTerminalPhase(phase agenticv1alpha1.ProposalPhase) bool {
@@ -96,7 +99,8 @@ func IsTerminalPhase(phase agenticv1alpha1.ProposalPhase) bool {
 	case agenticv1alpha1.ProposalPhaseCompleted,
 		agenticv1alpha1.ProposalPhaseFailed,
 		agenticv1alpha1.ProposalPhaseEscalated,
-		agenticv1alpha1.ProposalPhaseDenied:
+		agenticv1alpha1.ProposalPhaseDenied,
+		agenticv1alpha1.ProposalPhaseEmergencyStopped:
 		return true
 	}
 	return false
@@ -114,6 +118,8 @@ func PhaseColor(phase agenticv1alpha1.ProposalPhase) string {
 		agenticv1alpha1.ProposalPhaseVerifying:
 		return ColorYellow
 	case agenticv1alpha1.ProposalPhaseEscalated:
+		return ColorMagenta
+	case agenticv1alpha1.ProposalPhaseEmergencyStopped:
 		return ColorMagenta
 	default:
 		return ColorReset
