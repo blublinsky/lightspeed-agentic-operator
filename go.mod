@@ -3,7 +3,7 @@ module github.com/openshift/lightspeed-agentic-operator
 go 1.25.7
 
 require (
-	github.com/openshift/api v0.0.0-20260616201213-3fe0a993efb6
+	github.com/openshift/api v0.0.0-20260617110257-3efe071cecdf
 	github.com/spf13/cobra v1.10.2
 	k8s.io/api v0.35.3
 	k8s.io/apiextensions-apiserver v0.35.3
