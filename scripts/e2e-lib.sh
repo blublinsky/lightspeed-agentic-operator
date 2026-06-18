@@ -104,20 +104,18 @@ cleanup_operator() {
     fi
 }
 
-default_model_for_provider() {
+resolve_model() {
     local provider="$1"
+    if [[ -n "${E2E_MODEL:-}" ]]; then
+        echo "$E2E_MODEL"
+        return
+    fi
     case "$provider" in
         claude) echo "claude-sonnet-4-6" ;;
         gemini) echo "gemini-2.5-flash" ;;
         openai) echo "gpt-4.1-mini" ;;
         *) log_error "Unknown provider: $provider"; return 1 ;;
     esac
-}
-
-resolve_model() {
-    local provider="$1"
-    local override_var="${provider^^}_MODEL"
-    echo "${!override_var:-$(default_model_for_provider "$provider")}"
 }
 
 create_provider_fixtures() {
