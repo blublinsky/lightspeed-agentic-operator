@@ -38,6 +38,7 @@ import (
 const (
 	requeueDelay = 5 * time.Second
 
+	reasonDraining                   = "Draining"
 	reasonAdminActivated             = "AdminActivated"
 	reasonAdminDeactivated           = "AdminDeactivated"
 	eventReasonSuspensionActivated   = "SuspensionActivated"
@@ -90,7 +91,7 @@ func (r *Reconciler) handleDeactivation(ctx context.Context, config *agenticv1al
 func (r *Reconciler) handleActivation(ctx context.Context, config *agenticv1alpha1.AgenticOLSConfig) (ctrl.Result, error) {
 	log := logf.FromContext(ctx)
 	existing := meta.FindStatusCondition(config.Status.Conditions, agenticv1alpha1.AgenticOLSConfigConditionSuspended)
-	if existing != nil && existing.Status == metav1.ConditionTrue {
+	if existing != nil && existing.Status == metav1.ConditionTrue && existing.Reason == reasonAdminActivated {
 		return ctrl.Result{}, nil
 	}
 
@@ -113,6 +114,16 @@ func (r *Reconciler) handleActivation(ctx context.Context, config *agenticv1alph
 
 	if nonTerminal > 0 {
 		log.V(1).Info("waiting for proposals to terminate", "nonTerminal", nonTerminal)
+		base := config.DeepCopy()
+		meta.SetStatusCondition(&config.Status.Conditions, metav1.Condition{
+			Type:    agenticv1alpha1.AgenticOLSConfigConditionSuspended,
+			Status:  metav1.ConditionTrue,
+			Reason:  reasonDraining,
+			Message: fmt.Sprintf("Waiting for %d proposals to terminate", nonTerminal),
+		})
+		if err := r.Status().Patch(ctx, config, client.MergeFrom(base)); err != nil {
+			return ctrl.Result{}, fmt.Errorf("patch Suspended=True/Draining: %w", err)
+		}
 		return ctrl.Result{RequeueAfter: requeueDelay}, nil
 	}
 

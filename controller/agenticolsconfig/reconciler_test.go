@@ -159,8 +159,19 @@ func TestReconcile_ActivationPendingProposals(t *testing.T) {
 	}
 
 	got := getConfig(t, fc)
-	if len(got.Status.Conditions) != 0 {
-		t.Fatalf("expected no status conditions yet, got %v", got.Status.Conditions)
+	cond := findCondition(got.Status.Conditions, agenticv1alpha1.AgenticOLSConfigConditionSuspended)
+	if cond == nil {
+		t.Fatal("Suspended condition not set during draining")
+	}
+	if cond.Status != metav1.ConditionTrue {
+		t.Fatalf("condition status = %q, want True", cond.Status)
+	}
+	if cond.Reason != reasonDraining {
+		t.Fatalf("condition reason = %q, want %q", cond.Reason, reasonDraining)
+	}
+	wantMsg := "Waiting for 1 proposals to terminate"
+	if cond.Message != wantMsg {
+		t.Fatalf("condition message = %q, want %q", cond.Message, wantMsg)
 	}
 }
 

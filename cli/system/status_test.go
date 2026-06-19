@@ -99,6 +99,33 @@ func TestStatus_ActiveWithDeactivationCondition(t *testing.T) {
 	}
 }
 
+// TestStatus_SuspendedDraining covers the draining state where
+// spec.suspended=true and the condition is Suspended=True/Draining.
+func TestStatus_SuspendedDraining(t *testing.T) {
+	streams, out, _ := fakeStreams()
+	cfg := testConfig(true)
+	cfg.Status.Conditions = []metav1.Condition{{
+		Type:    agenticv1alpha1.AgenticOLSConfigConditionSuspended,
+		Status:  metav1.ConditionTrue,
+		Reason:  "Draining",
+		Message: "Waiting for 3 proposals to terminate",
+	}}
+
+	fc := fake.NewClientBuilder().WithScheme(testScheme()).
+		WithObjects(cfg).Build()
+
+	o := &StatusOptions{client: fc, IOStreams: streams, now: time.Now}
+	if err := o.Run(context.Background()); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+
+	got := strings.TrimSpace(out.String())
+	want := "Agentic System: SUSPENDED (draining, Waiting for 3 proposals to terminate)"
+	if got != want {
+		t.Errorf("output = %q, want %q", got, want)
+	}
+}
+
 // TestStatus_SuspendedWithStaleCondition covers re-suspension before the
 // reconciler runs: spec.suspended=true but the condition still says
 // Suspended=False from the previous deactivation. The CLI must fall back
