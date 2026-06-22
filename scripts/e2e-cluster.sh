@@ -70,8 +70,6 @@ run_provider() {
 
     log_info "--- Running e2e for provider=$provider model=$model ---"
 
-    create_provider_fixtures "$provider"
-
     local test_rc=0
 
     if [[ -n "${ARTIFACT_DIR:-}" ]]; then
@@ -96,16 +94,12 @@ run_provider() {
     fi
 
     collect_artifacts "$provider"
-    cleanup_provider_fixtures "$provider"
 
     return "$test_rc"
 }
 
 _cleanup_on_exit() {
     log_info "Running cleanup..."
-    for provider in $PROVIDERS; do
-        cleanup_provider_fixtures "$provider" 2>/dev/null || true
-    done
     cleanup_operator
 }
 trap _cleanup_on_exit EXIT
