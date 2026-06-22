@@ -36,7 +36,7 @@ func proposalOwnerRef(proposal *agenticv1alpha1.Proposal) metav1.OwnerReference 
 
 func resultLabels(proposalName, step string) map[string]string {
 	return map[string]string{
-		LabelProposal: proposalName,
+		LabelProposal: truncateK8sName(proposalName),
 		LabelStep:     step,
 	}
 }

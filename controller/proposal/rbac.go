@@ -228,7 +228,7 @@ func clusterRoleName(proposalName string) string {
 
 func rbacLabels(proposalName, component string) map[string]string {
 	return map[string]string{
-		LabelProposal:  proposalName,
+		LabelProposal:  truncateK8sName(proposalName),
 		LabelComponent: component,
 	}
 }

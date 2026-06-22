@@ -80,7 +80,7 @@ func (m *SandboxManager) buildClaim(claimName, proposalName, step, templateName 
 				"name":      claimName,
 				"namespace": m.Namespace,
 				"labels": map[string]any{
-					LabelProposal: proposalName,
+					LabelProposal: truncateK8sName(proposalName),
 					LabelStep:     step,
 				},
 			},

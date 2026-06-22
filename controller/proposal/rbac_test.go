@@ -778,3 +778,14 @@ func TestRBACLabels(t *testing.T) {
 		t.Fatalf("expected 2 labels, got %d", len(labels))
 	}
 }
+
+func TestRBACLabels_TruncatesLongProposalName(t *testing.T) {
+	longName := strings.Repeat("a", 80)
+	labels := rbacLabels(longName, "execution-rbac")
+	if len(labels[LabelProposal]) > 63 {
+		t.Fatalf("proposal label length %d exceeds 63", len(labels[LabelProposal]))
+	}
+	if labels[LabelProposal] != strings.Repeat("a", 63) {
+		t.Errorf("proposal label = %q, want %q", labels[LabelProposal], strings.Repeat("a", 63))
+	}
+}

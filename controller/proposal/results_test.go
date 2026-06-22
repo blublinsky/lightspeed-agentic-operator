@@ -2,6 +2,7 @@ package proposal
 
 import (
 	"context"
+	"strings"
 	"testing"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -10,6 +11,20 @@ import (
 
 	agenticv1alpha1 "github.com/openshift/lightspeed-agentic-operator/api/v1alpha1"
 )
+
+func TestResultLabels_TruncatesLongProposalName(t *testing.T) {
+	longName := strings.Repeat("a", 80)
+	labels := resultLabels(longName, "analysis")
+	if len(labels[LabelProposal]) > 63 {
+		t.Fatalf("proposal label length %d exceeds 63", len(labels[LabelProposal]))
+	}
+	if labels[LabelProposal] != strings.Repeat("a", 63) {
+		t.Errorf("proposal label = %q, want %q", labels[LabelProposal], strings.Repeat("a", 63))
+	}
+	if labels[LabelStep] != "analysis" {
+		t.Errorf("step label = %q, want analysis", labels[LabelStep])
+	}
+}
 
 func TestCreateIdempotent_StatusFieldsWritten(t *testing.T) {
 	scheme := testScheme()

@@ -107,6 +107,20 @@ func TestBuildClaim_Labels(t *testing.T) {
 	}
 }
 
+func TestBuildClaim_TruncatesLongProposalName(t *testing.T) {
+	longName := strings.Repeat("a", 80)
+	m := NewSandboxManager(nil, "ns", "")
+	claim := m.buildClaim("c", longName, "execution", "tpl")
+
+	labels := claim.GetLabels()
+	if len(labels[LabelProposal]) > 63 {
+		t.Fatalf("proposal label length %d exceeds 63", len(labels[LabelProposal]))
+	}
+	if labels[LabelProposal] != strings.Repeat("a", 63) {
+		t.Errorf("proposal label = %q, want %q", labels[LabelProposal], strings.Repeat("a", 63))
+	}
+}
+
 func TestBuildClaim_TemplateRef(t *testing.T) {
 	m := NewSandboxManager(nil, "ns", "")
 	claim := m.buildClaim("c", "p", "analysis", "my-template")

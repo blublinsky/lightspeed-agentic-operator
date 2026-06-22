@@ -72,7 +72,7 @@ func (m *BarePodManager) Claim(ctx context.Context, proposalName, step, _ string
 			Name:      podName,
 			Namespace: m.Namespace,
 			Labels: map[string]string{
-				LabelProposal: proposalName,
+				LabelProposal: truncateK8sName(proposalName),
 				LabelStep:     step,
 			},
 		},
