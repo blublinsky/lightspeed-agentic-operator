@@ -18,6 +18,7 @@ type Options struct {
 	AgenticSandboxImage string
 	SandboxMode         string
 	ImagePullPolicy     string
+	Audit               proposal.AuditLogger
 }
 
 func Setup(mgr ctrl.Manager, opts Options) error {
@@ -40,12 +41,14 @@ func Setup(mgr ctrl.Manager, opts Options) error {
 		mgr.GetClient(),
 		proposal.NewAgentHTTPClient,
 		opts.Namespace,
+		opts.Audit,
 	)
 
 	if err := (&proposal.ProposalReconciler{
 		Client:    mgr.GetClient(),
 		Agent:     agentCaller,
 		Namespace: opts.Namespace,
+		Audit:     opts.Audit,
 	}).SetupWithManager(mgr); err != nil {
 		return err
 	}

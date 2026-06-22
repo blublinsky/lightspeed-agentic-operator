@@ -17,11 +17,11 @@ Implementation spec for compliance audit logging in the agentic operator. Parent
 | `audit.verification.completed` | VerificationResult CR created, checks passed | VerificationResult serialization |
 | `audit.verification.retry` | Verification failed, retrying execution+verification | VerificationResult serialization, retry count |
 | `audit.escalation.completed` | EscalationResult CR created | EscalationResult serialization |
-| `audit.proposal.terminal` | Proposal reaches terminal phase (Completed, Failed, Denied, Escalated) | Final phase, terminal reason |
+| `audit.proposal.terminal` | Proposal reaches terminal phase (Completed, Failed, Denied, Escalated, EmergencyStopped) | Final phase, terminal reason |
 
-2. CR serialization MUST include `.spec` plus `metadata.name`, `metadata.namespace`, `metadata.creationTimestamp`, and `metadata.uid`. Not the full Kubernetes metadata.
+2. CR serialization MUST include `.spec` plus `metadata.name`, `metadata.namespace`, `metadata.creationTimestamp`, and `metadata.uid`. Not the full Kubernetes metadata. Result CRs (AnalysisResult, ExecutionResult, VerificationResult, EscalationResult) MUST also include `.status` since the useful data (RemediationOptions, ActionsTaken, Checks, etc.) lives in status.
 
-3. Audit events MUST be emitted from the reconciliation loop where the operator already has the Proposal object in scope. The `trace_id` is read from the Proposal's `metadata.uid`.
+3. All reconcile-emitted audit events MUST be emitted from the reconciliation loop where the operator already has the Proposal object in scope. The `trace_id` is read from the Proposal's `metadata.uid`. (`audit.approval.received` is webhook-emitted as defined below.) Terminal phase handling (§1 terminal event + §4 lifecycle span cleanup) MUST run before the suspension guard so that EmergencyStopped proposals receive audit cleanup even while the system is suspended.
 
 ### OTEL Spans
 
@@ -29,7 +29,7 @@ Implementation spec for compliance audit logging in the agentic operator. Parent
 
 5. On operator restart, the operator MUST read the Proposal's `metadata.uid` from the CR and resume the trace by constructing a SpanContext with the same trace ID.
 
-6. Child spans MUST be created for each phase: `proposal.analyze`, `proposal.human_approval`, `proposal.execute`, `proposal.verify`, `proposal.escalate`.
+6. Child spans MUST be created for each phase: `proposal.analyze`, `proposal.human_approval`, `proposal.execute`, `proposal.verify`, `proposal.escalate`, `proposal.terminal`.
 
 7. `proposal.human_approval` starts when the operator begins waiting for approval and ends when the ProposalApproval PATCH is observed. Duration = human decision time.
 
@@ -60,11 +60,11 @@ Implementation spec for compliance audit logging in the agentic operator. Parent
 
 ### Configuration
 
-16. The operator reads audit config from the `AgenticOLSConfig` CR at `spec.audit`. If `spec.audit` is absent, the default is `enabled: true` with no OTEL export.
+16. The operator reads audit config from the `AgenticOLSConfig` CR at `spec.audit`. Logging and tracing are independent controls.
 
-17. When `spec.audit.enabled` is `true` (or absent — default), all audit events emit. When explicitly `false`, no audit events emit.
+17. `spec.audit.logging` controls structured JSON audit events to stdout. Defaults to `true` — when the CR is absent or the field is not set, audit logging is enabled. Set to `false` to disable structured audit log output.
 
-18. When `spec.audit.otel.endpoint` is set, the operator configures an OTLP exporter pointed at that endpoint. When empty or absent, a no-op exporter is used.
+18. `spec.audit.otel.endpoint` controls OTEL trace export. When set, the operator configures an OTLP exporter pointed at that endpoint. When empty or absent, a no-op exporter is used. Independent of the `logging` flag — tracing works regardless of whether logging is on or off.
 
 19. The operator MUST pass the OTEL endpoint to the sandbox via environment variable or config mount so the sandbox can configure its own exporter.
 

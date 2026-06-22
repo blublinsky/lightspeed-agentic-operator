@@ -300,6 +300,17 @@ cat <<DONE
   # Watch execution progress:
   oc get proposals -n ${NAMESPACE} -w
 
+  ── Enable audit logging / OTEL tracing ────────────────────
+  # Deploy Jaeger first (if you don't have a collector):
+  bash <(curl -sL ${GITHUB_RAW}/hack/deploy-jaeger.sh)
+
+  # Then enable audit logging + OTEL:
+  OTEL_ENDPOINT=jaeger-otlp-grpc.observability.svc:4317 \\
+    bash <(curl -sL ${GITHUB_RAW}/hack/quickstart/setup-audit.sh)
+
+  # Audit logging only (no OTEL):
+  bash <(curl -sL ${GITHUB_RAW}/hack/quickstart/setup-audit.sh)
+
   ── To uninstall ───────────────────────────────────────────
   bash <(curl -sL ${GITHUB_RAW}/hack/quickstart/uninstall.sh)
 

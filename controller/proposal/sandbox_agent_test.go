@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"net/http"
 	"strings"
 	"testing"
 	"time"
@@ -49,7 +50,7 @@ type mockHTTPClient struct {
 	lastCtx    *agentContext
 }
 
-func (m *mockHTTPClient) Run(_ context.Context, systemPrompt, query string, _ json.RawMessage, agentCtx *agentContext) (*agentRunResponse, error) {
+func (m *mockHTTPClient) Run(_ context.Context, systemPrompt, query string, _ json.RawMessage, agentCtx *agentContext, _ http.Header) (*agentRunResponse, error) {
 	m.lastQuery = query
 	m.lastPrompt = systemPrompt
 	m.lastCtx = agentCtx

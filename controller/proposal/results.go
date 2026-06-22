@@ -79,7 +79,7 @@ func (r *ProposalReconciler) createAnalysisResult(
 	startTime *metav1.Time,
 	completionTime *metav1.Time,
 	failureReason string,
-) (string, error) {
+) (string, *agenticv1alpha1.AnalysisResult, error) {
 	crName := resultCRName(proposal.Name, "analysis", len(proposal.Status.Steps.Analysis.Results)+1)
 
 	outcome := agenticv1alpha1.ActionOutcomeFailed
@@ -113,7 +113,13 @@ func (r *ProposalReconciler) createAnalysisResult(
 		cr.Status.Options = result.Options
 	}
 
-	return crName, createIdempotent(ctx, r.Client, cr, "AnalysisResult")
+	snapshot := cr.DeepCopy()
+	if err := createIdempotent(ctx, r.Client, cr, "AnalysisResult"); err != nil {
+		return crName, nil, err
+	}
+	snapshot.UID = cr.UID
+	snapshot.CreationTimestamp = cr.CreationTimestamp
+	return crName, snapshot, nil
 }
 
 func (r *ProposalReconciler) createExecutionResult(
@@ -124,7 +130,7 @@ func (r *ProposalReconciler) createExecutionResult(
 	startTime *metav1.Time,
 	completionTime *metav1.Time,
 	failureReason string,
-) (string, error) {
+) (string, *agenticv1alpha1.ExecutionResult, error) {
 	crName := resultCRName(proposal.Name, "execution", len(proposal.Status.Steps.Execution.Results)+1)
 
 	outcome := agenticv1alpha1.ActionOutcomeFailed
@@ -160,7 +166,13 @@ func (r *ProposalReconciler) createExecutionResult(
 		cr.Status.Verification = result.Verification
 	}
 
-	return crName, createIdempotent(ctx, r.Client, cr, "ExecutionResult")
+	snapshot := cr.DeepCopy()
+	if err := createIdempotent(ctx, r.Client, cr, "ExecutionResult"); err != nil {
+		return crName, nil, err
+	}
+	snapshot.UID = cr.UID
+	snapshot.CreationTimestamp = cr.CreationTimestamp
+	return crName, snapshot, nil
 }
 
 func (r *ProposalReconciler) createVerificationResult(
@@ -171,7 +183,7 @@ func (r *ProposalReconciler) createVerificationResult(
 	startTime *metav1.Time,
 	completionTime *metav1.Time,
 	failureReason string,
-) (string, error) {
+) (string, *agenticv1alpha1.VerificationResult, error) {
 	crName := resultCRName(proposal.Name, "verification", len(proposal.Status.Steps.Verification.Results)+1)
 
 	outcome := agenticv1alpha1.ActionOutcomeFailed
@@ -207,7 +219,13 @@ func (r *ProposalReconciler) createVerificationResult(
 		cr.Status.Summary = result.Summary
 	}
 
-	return crName, createIdempotent(ctx, r.Client, cr, "VerificationResult")
+	snapshot := cr.DeepCopy()
+	if err := createIdempotent(ctx, r.Client, cr, "VerificationResult"); err != nil {
+		return crName, nil, err
+	}
+	snapshot.UID = cr.UID
+	snapshot.CreationTimestamp = cr.CreationTimestamp
+	return crName, snapshot, nil
 }
 
 func (r *ProposalReconciler) createEscalationResult(
@@ -218,7 +236,7 @@ func (r *ProposalReconciler) createEscalationResult(
 	startTime *metav1.Time,
 	completionTime *metav1.Time,
 	failureReason string,
-) (string, error) {
+) (string, *agenticv1alpha1.EscalationResult, error) {
 	crName := resultCRName(proposal.Name, "escalation", len(proposal.Status.Steps.Escalation.Results)+1)
 
 	outcome := agenticv1alpha1.ActionOutcomeFailed
@@ -253,7 +271,13 @@ func (r *ProposalReconciler) createEscalationResult(
 		cr.Status.Content = result.Content
 	}
 
-	return crName, createIdempotent(ctx, r.Client, cr, "EscalationResult")
+	snapshot := cr.DeepCopy()
+	if err := createIdempotent(ctx, r.Client, cr, "EscalationResult"); err != nil {
+		return crName, nil, err
+	}
+	snapshot.UID = cr.UID
+	snapshot.CreationTimestamp = cr.CreationTimestamp
+	return crName, snapshot, nil
 }
 
 type statusHolder interface {
@@ -323,6 +347,8 @@ func createIdempotent(ctx context.Context, c client.Client, obj client.Object, k
 			if patchErr := c.Status().Patch(ctx, patched, client.MergeFrom(existing)); patchErr != nil {
 				return fmt.Errorf("%s %s %s status: %w", ErrUpdateExistingResultStatus, kind, obj.GetName(), patchErr)
 			}
+			obj.SetUID(existing.GetUID())
+			obj.SetCreationTimestamp(existing.GetCreationTimestamp())
 			return nil
 		}
 		return fmt.Errorf("%s %s %s: %w", ErrCreateResultCR, kind, obj.GetName(), err)

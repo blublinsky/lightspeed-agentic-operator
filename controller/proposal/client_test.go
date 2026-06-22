@@ -36,7 +36,7 @@ func TestAgentHTTPClient_RunSuccess(t *testing.T) {
 	defer server.Close()
 
 	client := NewAgentHTTPClient(server.URL)
-	resp, err := client.Run(context.Background(), "You are an SRE agent", "check health", nil, nil)
+	resp, err := client.Run(context.Background(), "You are an SRE agent", "check health", nil, nil, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -53,7 +53,7 @@ func TestAgentHTTPClient_RunHTTPError(t *testing.T) {
 	defer server.Close()
 
 	client := NewAgentHTTPClient(server.URL)
-	_, err := client.Run(context.Background(), "", "test", nil, nil)
+	_, err := client.Run(context.Background(), "", "test", nil, nil, nil)
 	if err == nil {
 		t.Fatal("expected error for HTTP 500")
 	}
@@ -61,7 +61,7 @@ func TestAgentHTTPClient_RunHTTPError(t *testing.T) {
 
 func TestAgentHTTPClient_RunConnectionError(t *testing.T) {
 	client := NewAgentHTTPClient("http://127.0.0.1:1")
-	_, err := client.Run(context.Background(), "", "test", nil, nil)
+	_, err := client.Run(context.Background(), "", "test", nil, nil, nil)
 	if err == nil {
 		t.Fatal("expected error for connection failure")
 	}
@@ -114,7 +114,7 @@ func TestAgentHTTPClient_RunWithExecutionResult(t *testing.T) {
 			},
 		},
 	}
-	_, err := client.Run(context.Background(), "", "test", nil, agentCtx)
+	_, err := client.Run(context.Background(), "", "test", nil, agentCtx, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -139,7 +139,7 @@ func TestAgentHTTPClient_RunWithoutExecutionResult(t *testing.T) {
 	agentCtx := &agentContext{
 		TargetNamespaces: []string{"production"},
 	}
-	_, err := client.Run(context.Background(), "", "test", nil, agentCtx)
+	_, err := client.Run(context.Background(), "", "test", nil, agentCtx, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -174,7 +174,7 @@ func TestAgentHTTPClient_RunWithContext(t *testing.T) {
 		TargetNamespaces: []string{"production"},
 		PreviousAttempts: []agentPreviousAttempt{{Attempt: 1, FailureReason: "timeout"}},
 	}
-	_, err := client.Run(context.Background(), "", "test", nil, agentCtx)
+	_, err := client.Run(context.Background(), "", "test", nil, agentCtx, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}

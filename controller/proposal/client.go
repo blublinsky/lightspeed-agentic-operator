@@ -70,7 +70,7 @@ type agentRunResponse struct {
 
 // AgentHTTPClientInterface abstracts HTTP calls to the agent service for testability.
 type AgentHTTPClientInterface interface {
-	Run(ctx context.Context, systemPrompt, query string, outputSchema json.RawMessage, agentCtx *agentContext) (*agentRunResponse, error)
+	Run(ctx context.Context, systemPrompt, query string, outputSchema json.RawMessage, agentCtx *agentContext, extraHeaders http.Header) (*agentRunResponse, error)
 }
 
 // AgentHTTPClient communicates with the agentic-sandbox REST API.
@@ -91,7 +91,7 @@ func NewAgentHTTPClient(endpoint string) AgentHTTPClientInterface {
 	}
 }
 
-func (c *AgentHTTPClient) Run(ctx context.Context, systemPrompt, query string, outputSchema json.RawMessage, agentCtx *agentContext) (*agentRunResponse, error) {
+func (c *AgentHTTPClient) Run(ctx context.Context, systemPrompt, query string, outputSchema json.RawMessage, agentCtx *agentContext, extraHeaders http.Header) (*agentRunResponse, error) {
 	req := agentRunRequest{
 		Query:        query,
 		SystemPrompt: systemPrompt,
@@ -109,6 +109,13 @@ func (c *AgentHTTPClient) Run(ctx context.Context, systemPrompt, query string, o
 		return nil, fmt.Errorf("%s: %w", ErrCreateHTTPRequest, err)
 	}
 	httpReq.Header.Set("Content-Type", "application/json")
+
+	// Apply extra headers (e.g., W3C traceparent for OTEL propagation)
+	for k, vals := range extraHeaders {
+		for _, v := range vals {
+			httpReq.Header.Set(k, v)
+		}
+	}
 
 	resp, err := c.httpClient.Do(httpReq)
 	if err != nil {

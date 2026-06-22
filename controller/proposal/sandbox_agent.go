@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"net/http"
 	"strings"
 	"time"
 
@@ -54,6 +55,7 @@ type SandboxAgentCaller struct {
 	ClientFactory func(endpoint string) AgentHTTPClientInterface
 	Namespace     string
 	Timeout       time.Duration
+	Audit         AuditLogger
 }
 
 func NewSandboxAgentCaller(
@@ -61,6 +63,7 @@ func NewSandboxAgentCaller(
 	k8sClient client.Client,
 	clientFactory func(endpoint string) AgentHTTPClientInterface,
 	namespace string,
+	audit AuditLogger,
 ) *SandboxAgentCaller {
 	return &SandboxAgentCaller{
 		Sandbox:       sandbox,
@@ -68,6 +71,7 @@ func NewSandboxAgentCaller(
 		ClientFactory: clientFactory,
 		Namespace:     namespace,
 		Timeout:       defaultSandboxTimeout,
+		Audit:         audit,
 	}
 }
 
@@ -205,8 +209,14 @@ func (s *SandboxAgentCaller) callWithSandbox(
 
 	schema := outputSchemaForStep(stepName, proposal)
 
+	// Inject W3C traceparent header for trace propagation
+	headers := http.Header{}
+	if s.Audit != nil {
+		s.Audit.InjectTraceContext(ctx, proposal, headers)
+	}
+
 	client := s.ClientFactory(agentURL)
-	resp, err := client.Run(ctx, "", query, schema, agentCtx)
+	resp, err := client.Run(ctx, "", query, schema, agentCtx, headers)
 	if err != nil {
 		return nil, err
 	}

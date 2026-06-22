@@ -28,6 +28,7 @@ type ProposalReconciler struct {
 	client.Client
 	Agent     AgentCaller
 	Namespace string
+	Audit     AuditLogger
 }
 
 // +kubebuilder:rbac:groups=agentic.openshift.io,resources=proposals,verbs=get;list;watch;create;update;patch;delete
@@ -57,6 +58,10 @@ func (r *ProposalReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 
 	// --- Deletion ---
 	if !proposal.DeletionTimestamp.IsZero() {
+		if r.Audit != nil {
+			r.Audit.EndApprovalWait(&proposal)
+			r.Audit.EndLifecycleSpan(&proposal)
+		}
 		if controllerutil.ContainsFinalizer(&proposal, rbacCleanupFinalizer) {
 			// Sandbox release is fatal — if it fails, retry with backoff. This prevents
 			// orphaned sandbox pods/claims. Trade-off: if sandbox API is permanently down,
@@ -76,7 +81,31 @@ func (r *ProposalReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 		return ctrl.Result{}, nil
 	}
 
-	// --- Suspension guard ---
+	phase := agenticv1alpha1.DerivePhase(proposal.Status.Conditions)
+
+	// --- Terminal phases (before suspension guard so audit cleanup always runs) ---
+	switch phase {
+	case agenticv1alpha1.ProposalPhaseCompleted,
+		agenticv1alpha1.ProposalPhaseDenied,
+		agenticv1alpha1.ProposalPhaseEscalated,
+		agenticv1alpha1.ProposalPhaseEmergencyStopped:
+		if hasSandboxClaims(&proposal) {
+			if err := r.Agent.ReleaseSandboxes(ctx, &proposal); err != nil {
+				log.Error(err, "sandbox cleanup failed at terminal phase")
+			}
+		}
+		if r.Audit != nil {
+			r.Audit.EndApprovalWait(&proposal)
+			r.Audit.EmitProposalTerminal(ctx, &proposal, string(phase), terminalReason(&proposal))
+			r.Audit.EndLifecycleSpan(&proposal)
+		}
+		return ctrl.Result{}, nil
+
+	case agenticv1alpha1.ProposalPhaseFailed:
+		return r.handleFailed(ctx, &proposal)
+	}
+
+	// --- Suspension guard (only non-terminal proposals reach here) ---
 	suspended, err := isSuspended(ctx, r.Client)
 	if err != nil {
 		return ctrl.Result{}, err
@@ -84,8 +113,6 @@ func (r *ProposalReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 	if suspended {
 		return r.handleSuspension(ctx, &proposal)
 	}
-
-	phase := agenticv1alpha1.DerivePhase(proposal.Status.Conditions)
 
 	// --- Finalizer ---
 	if !controllerutil.ContainsFinalizer(&proposal, rbacCleanupFinalizer) {
@@ -98,24 +125,21 @@ func (r *ProposalReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 			if err := r.Get(ctx, req.NamespacedName, &proposal); err != nil {
 				return ctrl.Result{}, client.IgnoreNotFound(err)
 			}
+			if r.Audit != nil {
+				r.Audit.EmitProposalReceived(ctx, &proposal)
+				r.Audit.EnsureLifecycleSpan(ctx, &proposal)
+			}
 		}
 	}
 
-	// --- Terminal phases ---
-	switch phase {
-	case agenticv1alpha1.ProposalPhaseCompleted,
-		agenticv1alpha1.ProposalPhaseDenied,
-		agenticv1alpha1.ProposalPhaseEscalated,
-		agenticv1alpha1.ProposalPhaseEmergencyStopped:
-		if hasSandboxClaims(&proposal) {
-			if err := r.Agent.ReleaseSandboxes(ctx, &proposal); err != nil {
-				log.Error(err, "sandbox cleanup failed at terminal phase")
-			}
+	// Recover lifecycle trace context for in-progress proposals after operator restart (§5).
+	// Uses RecoverLifecycleContext (not EnsureLifecycleSpan) to avoid exporting a duplicate span.
+	// Also restarts the approval wait span if the proposal is waiting for execution approval.
+	if r.Audit != nil && !isTerminal(phase) {
+		r.Audit.RecoverLifecycleContext(ctx, &proposal)
+		if phase == agenticv1alpha1.ProposalPhaseProposed {
+			r.Audit.StartApprovalWait(ctx, &proposal)
 		}
-		return ctrl.Result{}, nil
-
-	case agenticv1alpha1.ProposalPhaseFailed:
-		return r.handleFailed(ctx, &proposal)
 	}
 
 	// --- Ensure ProposalApproval exists ---
@@ -154,13 +178,13 @@ func (r *ProposalReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 	switch phase {
 	case agenticv1alpha1.ProposalPhasePending, agenticv1alpha1.ProposalPhaseAnalyzing:
 		if needsRevision(&proposal) {
-			return r.handleRevision(ctx, &proposal, resolved)
+			return r.handleRevision(ctx, &proposal, resolved, approval, policy)
 		}
 		return r.handleAnalysis(ctx, &proposal, resolved, approval, policy)
 
 	case agenticv1alpha1.ProposalPhaseProposed, agenticv1alpha1.ProposalPhaseExecuting:
 		if needsRevision(&proposal) {
-			return r.handleRevision(ctx, &proposal, resolved)
+			return r.handleRevision(ctx, &proposal, resolved, approval, policy)
 		}
 		return r.handleExecution(ctx, &proposal, resolved, approval, policy)
 
@@ -169,7 +193,7 @@ func (r *ProposalReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 
 	case agenticv1alpha1.ProposalPhaseEscalating:
 		if needsRevision(&proposal) {
-			return r.handleRevision(ctx, &proposal, resolved)
+			return r.handleRevision(ctx, &proposal, resolved, approval, policy)
 		}
 		return r.handleEscalation(ctx, &proposal, resolved, approval, policy)
 

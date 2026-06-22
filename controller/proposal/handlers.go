@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 
+	"go.opentelemetry.io/otel/trace"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
@@ -85,19 +86,31 @@ func (r *ProposalReconciler) handleAnalysis(
 		return ctrl.Result{}, fmt.Errorf("%s: %w", ErrUpdateToAnalyzing, err)
 	}
 
-	analysisResult, err := r.Agent.Analyze(ctx, proposal, resolved.Analysis, proposal.Spec.Request, defaultSandboxSA)
+	spanCtx := ctx
+	var span trace.Span
+	if r.Audit != nil {
+		spanCtx, span = r.Audit.StartAnalysisSpan(ctx, proposal)
+		if span != nil {
+			defer span.End()
+		}
+	}
+
+	analysisResult, err := r.Agent.Analyze(spanCtx, proposal, resolved.Analysis, proposal.Spec.Request, defaultSandboxSA)
 	if err != nil {
-		return r.failStep(ctx, proposal, agenticv1alpha1.ProposalConditionAnalyzed, err)
+		return r.failStep(spanCtx, proposal, agenticv1alpha1.ProposalConditionAnalyzed, err)
 	}
 	if !analysisResult.Success {
-		return r.failStep(ctx, proposal, agenticv1alpha1.ProposalConditionAnalyzed, fmt.Errorf("analysis agent reported failure"))
+		return r.failStep(spanCtx, proposal, agenticv1alpha1.ProposalConditionAnalyzed, fmt.Errorf("analysis agent reported failure"))
 	}
 	base = proposal.DeepCopy()
 	completedAt := metav1.Now()
 	startTime := conditionTime(proposal.Status.Conditions, agenticv1alpha1.ProposalConditionAnalyzed)
-	crName, crErr := r.createAnalysisResult(ctx, proposal, analysisResult, proposal.Status.Steps.Analysis.Sandbox, startTime, &completedAt, "")
+	crName, analysisCR, crErr := r.createAnalysisResult(spanCtx, proposal, analysisResult, proposal.Status.Steps.Analysis.Sandbox, startTime, &completedAt, "")
 	if crErr != nil {
-		return r.failStep(ctx, proposal, agenticv1alpha1.ProposalConditionAnalyzed, fmt.Errorf("%s: %w", ErrCreateAnalysisResult, crErr))
+		return r.failStep(spanCtx, proposal, agenticv1alpha1.ProposalConditionAnalyzed, fmt.Errorf("%s: %w", ErrCreateAnalysisResult, crErr))
+	}
+	if r.Audit != nil {
+		r.Audit.EmitAnalysisCompleted(spanCtx, proposal, analysisCR)
 	}
 	proposal.Status.Steps.Analysis.Results = append(proposal.Status.Steps.Analysis.Results, agenticv1alpha1.StepResultRef{Name: crName, Outcome: agenticv1alpha1.ActionOutcomeFromBool(analysisResult.Success)})
 	meta.SetStatusCondition(&proposal.Status.Conditions, metav1.Condition{
@@ -111,6 +124,10 @@ func (r *ProposalReconciler) handleAnalysis(
 		return ctrl.Result{}, fmt.Errorf("%s: %w", ErrUpdateAfterAnalysis, err)
 	}
 
+	if r.Audit != nil && !isStageApproved(approval, policy, agenticv1alpha1.SandboxStepExecution) {
+		r.Audit.StartApprovalWait(ctx, proposal)
+	}
+
 	log.Info("analysis complete", "options", len(analysisResult.Options))
 	return ctrl.Result{}, nil
 }
@@ -121,6 +138,8 @@ func (r *ProposalReconciler) handleRevision(
 	ctx context.Context,
 	proposal *agenticv1alpha1.Proposal,
 	resolved *resolvedWorkflow,
+	approval *agenticv1alpha1.ProposalApproval,
+	policy *agenticv1alpha1.ApprovalPolicy,
 ) (ctrl.Result, error) {
 	log := logf.FromContext(ctx)
 	generation := proposal.Generation
@@ -148,23 +167,35 @@ func (r *ProposalReconciler) handleRevision(
 		return ctrl.Result{}, fmt.Errorf("%s: %w", ErrUpdateToAnalyzingRevision, err)
 	}
 
+	spanCtx := ctx
+	var span trace.Span
+	if r.Audit != nil {
+		spanCtx, span = r.Audit.StartAnalysisSpan(ctx, proposal)
+		if span != nil {
+			defer span.End()
+		}
+	}
+
 	revisionSuffix := buildRevisionContext(proposal)
 	requestWithRevision := proposal.Spec.Request + "\n\n" + revisionSuffix
 
-	analysisResult, err := r.Agent.Analyze(ctx, proposal, resolved.Analysis, requestWithRevision, defaultSandboxSA)
+	analysisResult, err := r.Agent.Analyze(spanCtx, proposal, resolved.Analysis, requestWithRevision, defaultSandboxSA)
 	if err != nil {
-		return r.failStep(ctx, proposal, agenticv1alpha1.ProposalConditionAnalyzed, err)
+		return r.failStep(spanCtx, proposal, agenticv1alpha1.ProposalConditionAnalyzed, err)
 	}
 	if !analysisResult.Success {
-		return r.failStep(ctx, proposal, agenticv1alpha1.ProposalConditionAnalyzed, fmt.Errorf("analysis agent reported failure"))
+		return r.failStep(spanCtx, proposal, agenticv1alpha1.ProposalConditionAnalyzed, fmt.Errorf("analysis agent reported failure"))
 	}
 
 	base = proposal.DeepCopy()
 	completedAt := metav1.Now()
 	startTime := conditionTime(proposal.Status.Conditions, agenticv1alpha1.ProposalConditionAnalyzed)
-	crName, crErr := r.createAnalysisResult(ctx, proposal, analysisResult, proposal.Status.Steps.Analysis.Sandbox, startTime, &completedAt, "")
+	crName, analysisCR, crErr := r.createAnalysisResult(spanCtx, proposal, analysisResult, proposal.Status.Steps.Analysis.Sandbox, startTime, &completedAt, "")
 	if crErr != nil {
-		return r.failStep(ctx, proposal, agenticv1alpha1.ProposalConditionAnalyzed, fmt.Errorf("%s: %w", ErrCreateAnalysisResult, crErr))
+		return r.failStep(spanCtx, proposal, agenticv1alpha1.ProposalConditionAnalyzed, fmt.Errorf("%s: %w", ErrCreateAnalysisResult, crErr))
+	}
+	if r.Audit != nil {
+		r.Audit.EmitAnalysisCompleted(spanCtx, proposal, analysisCR)
 	}
 	proposal.Status.Steps.Analysis.Results = append(proposal.Status.Steps.Analysis.Results, agenticv1alpha1.StepResultRef{Name: crName, Outcome: agenticv1alpha1.ActionOutcomeFromBool(analysisResult.Success)})
 	meta.SetStatusCondition(&proposal.Status.Conditions, metav1.Condition{
@@ -176,6 +207,10 @@ func (r *ProposalReconciler) handleRevision(
 	})
 	if err := r.statusPatch(ctx, proposal, base); err != nil {
 		return ctrl.Result{}, fmt.Errorf("%s: %w", ErrUpdateAfterRevision, err)
+	}
+
+	if r.Audit != nil && !isStageApproved(approval, policy, agenticv1alpha1.SandboxStepExecution) {
+		r.Audit.StartApprovalWait(ctx, proposal)
 	}
 
 	log.Info("revision analysis complete", "generation", generation, "options", len(analysisResult.Options))
@@ -239,6 +274,11 @@ func (r *ProposalReconciler) handleExecution(
 		}
 	}
 
+	if r.Audit != nil {
+		r.Audit.EndApprovalWait(proposal)
+		r.Audit.EmitApprovalReceived(ctx, proposal, approval)
+	}
+
 	selectedOption, trimErr := r.trimNonSelectedOptions(ctx, proposal, approval, policy)
 	if trimErr != nil {
 		return r.failStep(ctx, proposal, agenticv1alpha1.ProposalConditionExecuted, trimErr)
@@ -270,20 +310,32 @@ func (r *ProposalReconciler) handleExecution(
 		return ctrl.Result{}, fmt.Errorf("%s: %w", ErrUpdateToExecuting, err)
 	}
 
-	execResult, err := r.Agent.Execute(ctx, proposal, *resolved.Execution, selectedOption, execSA)
+	spanCtx := ctx
+	var span trace.Span
+	if r.Audit != nil {
+		spanCtx, span = r.Audit.StartExecutionSpan(ctx, proposal)
+		if span != nil {
+			defer span.End()
+		}
+	}
+
+	execResult, err := r.Agent.Execute(spanCtx, proposal, *resolved.Execution, selectedOption, execSA)
 	if err != nil {
-		return r.failStep(ctx, proposal, agenticv1alpha1.ProposalConditionExecuted, err)
+		return r.failStep(spanCtx, proposal, agenticv1alpha1.ProposalConditionExecuted, err)
 	}
 	if !execResult.Success {
-		return r.failStep(ctx, proposal, agenticv1alpha1.ProposalConditionExecuted, fmt.Errorf("execution agent reported failure"))
+		return r.failStep(spanCtx, proposal, agenticv1alpha1.ProposalConditionExecuted, fmt.Errorf("execution agent reported failure"))
 	}
 
 	base = proposal.DeepCopy()
 	completedAt := metav1.Now()
 	startTime := conditionTime(proposal.Status.Conditions, agenticv1alpha1.ProposalConditionExecuted)
-	execCRName, execCRErr := r.createExecutionResult(ctx, proposal, execResult, proposal.Status.Steps.Execution.Sandbox, startTime, &completedAt, "")
+	execCRName, execCR, execCRErr := r.createExecutionResult(spanCtx, proposal, execResult, proposal.Status.Steps.Execution.Sandbox, startTime, &completedAt, "")
 	if execCRErr != nil {
-		return r.failStep(ctx, proposal, agenticv1alpha1.ProposalConditionExecuted, fmt.Errorf("%s: %w", ErrCreateExecutionResult, execCRErr))
+		return r.failStep(spanCtx, proposal, agenticv1alpha1.ProposalConditionExecuted, fmt.Errorf("%s: %w", ErrCreateExecutionResult, execCRErr))
+	}
+	if r.Audit != nil {
+		r.Audit.EmitExecutionCompleted(spanCtx, proposal, execCR)
 	}
 	proposal.Status.Steps.Execution.Results = append(proposal.Status.Steps.Execution.Results, agenticv1alpha1.StepResultRef{Name: execCRName, Outcome: agenticv1alpha1.ActionOutcomeFromBool(execResult.Success)})
 	meta.SetStatusCondition(&proposal.Status.Conditions, metav1.Condition{
@@ -387,17 +439,26 @@ func (r *ProposalReconciler) handleVerification(
 		}
 	}
 
-	verifyResult, err := r.Agent.Verify(ctx, proposal, *resolved.Verification, selectedOption, execOutput, defaultSandboxSA)
+	spanCtx := ctx
+	var span trace.Span
+	if r.Audit != nil {
+		spanCtx, span = r.Audit.StartVerificationSpan(ctx, proposal)
+		if span != nil {
+			defer span.End()
+		}
+	}
+
+	verifyResult, err := r.Agent.Verify(spanCtx, proposal, *resolved.Verification, selectedOption, execOutput, defaultSandboxSA)
 	if err != nil {
-		return r.failStep(ctx, proposal, agenticv1alpha1.ProposalConditionVerified, err)
+		return r.failStep(spanCtx, proposal, agenticv1alpha1.ProposalConditionVerified, err)
 	}
 
 	base = proposal.DeepCopy()
 	completedAt := metav1.Now()
 	startTime := conditionTime(proposal.Status.Conditions, agenticv1alpha1.ProposalConditionVerified)
-	verifyCRName, verifyCRErr := r.createVerificationResult(ctx, proposal, verifyResult, proposal.Status.Steps.Verification.Sandbox, startTime, &completedAt, "")
+	verifyCRName, verifyCR, verifyCRErr := r.createVerificationResult(spanCtx, proposal, verifyResult, proposal.Status.Steps.Verification.Sandbox, startTime, &completedAt, "")
 	if verifyCRErr != nil {
-		return r.failStep(ctx, proposal, agenticv1alpha1.ProposalConditionVerified, fmt.Errorf("%s: %w", ErrCreateVerificationResult, verifyCRErr))
+		return r.failStep(spanCtx, proposal, agenticv1alpha1.ProposalConditionVerified, fmt.Errorf("%s: %w", ErrCreateVerificationResult, verifyCRErr))
 	}
 	proposal.Status.Steps.Verification.Results = append(proposal.Status.Steps.Verification.Results, agenticv1alpha1.StepResultRef{Name: verifyCRName, Outcome: agenticv1alpha1.ActionOutcomeFromBool(verifyResult.Success)})
 
@@ -419,6 +480,9 @@ func (r *ProposalReconciler) handleVerification(
 		if int(retryCount) < maxRetries-1 {
 			next := retryCount + 1
 			log.Info("verification failed, retrying execution", "attempt", next+1, "maxAttempts", maxRetries, LogKeySummary, verifyResult.Summary)
+			if r.Audit != nil {
+				r.Audit.EmitVerificationRetry(spanCtx, proposal, verifyCR, int(next))
+			}
 			proposal.Status.Steps.Execution.RetryCount = &next
 			resetExecutionAndVerification(&proposal.Status.Steps)
 			meta.RemoveStatusCondition(&proposal.Status.Conditions, agenticv1alpha1.ProposalConditionExecuted)
@@ -429,31 +493,38 @@ func (r *ProposalReconciler) handleVerification(
 				Message:            fmt.Sprintf("Verification failed (attempt %d/%d): %s", next+1, maxRetries, verifyResult.Summary),
 				ObservedGeneration: proposal.Generation,
 			})
-			if err := r.statusPatch(ctx, proposal, base); err != nil {
+			if err := r.statusPatch(spanCtx, proposal, base); err != nil {
 				return ctrl.Result{}, fmt.Errorf("%s: %w", ErrUpdateForExecRetry, err)
 			}
 			return ctrl.Result{}, nil
 		}
 
 		log.Info("verification retries exhausted, escalating", "retryCount", retryCount, LogKeySummary, verifyResult.Summary)
+		if r.Audit != nil {
+			r.Audit.EmitVerificationCompleted(spanCtx, proposal, verifyCR)
+		}
 		meta.SetStatusCondition(&proposal.Status.Conditions, metav1.Condition{
 			Type:               agenticv1alpha1.ProposalConditionVerified,
 			Status:             metav1.ConditionFalse,
 			Reason:             reasonRetriesExhausted,
-			Message:            fmt.Sprintf("Verification failed after %d attempt(s): %s", retryCount, verifyResult.Summary),
+			Message:            fmt.Sprintf("Verification failed after %d attempt(s): %s", retryCount+1, verifyResult.Summary),
 			ObservedGeneration: proposal.Generation,
 		})
 		meta.SetStatusCondition(&proposal.Status.Conditions, metav1.Condition{
 			Type:               agenticv1alpha1.ProposalConditionEscalated,
 			Status:             metav1.ConditionUnknown,
 			Reason:             reasonRetriesExhausted,
-			Message:            fmt.Sprintf("Verification failed after %d attempt(s), escalating", retryCount),
+			Message:            fmt.Sprintf("Verification failed after %d attempt(s), escalating", retryCount+1),
 			ObservedGeneration: proposal.Generation,
 		})
 		if err := r.statusPatch(ctx, proposal, base); err != nil {
 			return ctrl.Result{}, fmt.Errorf("%s: %w", ErrUpdateRetriesExhausted, err)
 		}
 		return ctrl.Result{}, nil
+	}
+
+	if r.Audit != nil {
+		r.Audit.EmitVerificationCompleted(spanCtx, proposal, verifyCR)
 	}
 
 	meta.SetStatusCondition(&proposal.Status.Conditions, metav1.Condition{
@@ -463,7 +534,7 @@ func (r *ProposalReconciler) handleVerification(
 		Message:            verifyResult.Summary,
 		ObservedGeneration: proposal.Generation,
 	})
-	if err := r.statusPatch(ctx, proposal, base); err != nil {
+	if err := r.statusPatch(spanCtx, proposal, base); err != nil {
 		return ctrl.Result{}, fmt.Errorf("%s: %w", ErrUpdateToCompleted, err)
 	}
 
@@ -478,6 +549,12 @@ func (r *ProposalReconciler) handleFailed(
 ) (ctrl.Result, error) {
 	log := logf.FromContext(ctx)
 	log.Info("handling system failure (terminal)")
+
+	if r.Audit != nil {
+		r.Audit.EndApprovalWait(proposal)
+		r.Audit.EmitProposalTerminal(ctx, proposal, string(agenticv1alpha1.ProposalPhaseFailed), terminalReason(proposal))
+		r.Audit.EndLifecycleSpan(proposal)
+	}
 
 	if proposal.Annotations[rbacNamespacesAnnotation] != "" {
 		if err := cleanupExecutionRBAC(ctx, r.Client, proposal, r.Namespace); err != nil {
@@ -585,18 +662,30 @@ func (r *ProposalReconciler) handleEscalation(
 		return ctrl.Result{}, fmt.Errorf("%s: %w", ErrUpdateToEscalating, err)
 	}
 
+	spanCtx := ctx
+	var span trace.Span
+	if r.Audit != nil {
+		spanCtx, span = r.Audit.StartEscalationSpan(ctx, proposal)
+		if span != nil {
+			defer span.End()
+		}
+	}
+
 	escalationText := buildEscalationRequest(proposal)
-	escalationResult, err := r.Agent.Escalate(ctx, proposal, step, escalationText, defaultSandboxSA)
+	escalationResult, err := r.Agent.Escalate(spanCtx, proposal, step, escalationText, defaultSandboxSA)
 	if err != nil {
-		return r.failStep(ctx, proposal, agenticv1alpha1.ProposalConditionEscalated, err)
+		return r.failStep(spanCtx, proposal, agenticv1alpha1.ProposalConditionEscalated, err)
 	}
 
 	base = proposal.DeepCopy()
 	completedAt := metav1.Now()
 	startTime := conditionTime(proposal.Status.Conditions, agenticv1alpha1.ProposalConditionEscalated)
-	crName, crErr := r.createEscalationResult(ctx, proposal, escalationResult, proposal.Status.Steps.Escalation.Sandbox, startTime, &completedAt, "")
+	crName, escalationCR, crErr := r.createEscalationResult(spanCtx, proposal, escalationResult, proposal.Status.Steps.Escalation.Sandbox, startTime, &completedAt, "")
 	if crErr != nil {
-		return r.failStep(ctx, proposal, agenticv1alpha1.ProposalConditionEscalated, fmt.Errorf("%s: %w", ErrCreateEscalationResult, crErr))
+		return r.failStep(spanCtx, proposal, agenticv1alpha1.ProposalConditionEscalated, fmt.Errorf("%s: %w", ErrCreateEscalationResult, crErr))
+	}
+	if r.Audit != nil {
+		r.Audit.EmitEscalationCompleted(spanCtx, proposal, escalationCR)
 	}
 	proposal.Status.Steps.Escalation.Results = append(proposal.Status.Steps.Escalation.Results, agenticv1alpha1.StepResultRef{Name: crName, Outcome: agenticv1alpha1.ActionOutcomeFromBool(escalationResult.Success)})
 

@@ -86,22 +86,22 @@ func (r *ProposalReconciler) failStep(ctx context.Context, proposal *agenticv1al
 	var createErr error
 	switch conditionType {
 	case agenticv1alpha1.ProposalConditionAnalyzed:
-		crName, createErr = r.createAnalysisResult(ctx, proposal, nil, proposal.Status.Steps.Analysis.Sandbox, startTime, &completedAt, err.Error())
+		crName, _, createErr = r.createAnalysisResult(ctx, proposal, nil, proposal.Status.Steps.Analysis.Sandbox, startTime, &completedAt, err.Error())
 		if createErr == nil {
 			proposal.Status.Steps.Analysis.Results = append(proposal.Status.Steps.Analysis.Results, agenticv1alpha1.StepResultRef{Name: crName, Outcome: agenticv1alpha1.ActionOutcomeFailed})
 		}
 	case agenticv1alpha1.ProposalConditionExecuted:
-		crName, createErr = r.createExecutionResult(ctx, proposal, nil, proposal.Status.Steps.Execution.Sandbox, startTime, &completedAt, err.Error())
+		crName, _, createErr = r.createExecutionResult(ctx, proposal, nil, proposal.Status.Steps.Execution.Sandbox, startTime, &completedAt, err.Error())
 		if createErr == nil {
 			proposal.Status.Steps.Execution.Results = append(proposal.Status.Steps.Execution.Results, agenticv1alpha1.StepResultRef{Name: crName, Outcome: agenticv1alpha1.ActionOutcomeFailed})
 		}
 	case agenticv1alpha1.ProposalConditionVerified:
-		crName, createErr = r.createVerificationResult(ctx, proposal, nil, proposal.Status.Steps.Verification.Sandbox, startTime, &completedAt, err.Error())
+		crName, _, createErr = r.createVerificationResult(ctx, proposal, nil, proposal.Status.Steps.Verification.Sandbox, startTime, &completedAt, err.Error())
 		if createErr == nil {
 			proposal.Status.Steps.Verification.Results = append(proposal.Status.Steps.Verification.Results, agenticv1alpha1.StepResultRef{Name: crName, Outcome: agenticv1alpha1.ActionOutcomeFailed})
 		}
 	case agenticv1alpha1.ProposalConditionEscalated:
-		crName, createErr = r.createEscalationResult(ctx, proposal, nil, proposal.Status.Steps.Escalation.Sandbox, startTime, &completedAt, err.Error())
+		crName, _, createErr = r.createEscalationResult(ctx, proposal, nil, proposal.Status.Steps.Escalation.Sandbox, startTime, &completedAt, err.Error())
 		if createErr == nil {
 			proposal.Status.Steps.Escalation.Results = append(proposal.Status.Steps.Escalation.Results, agenticv1alpha1.StepResultRef{Name: crName, Outcome: agenticv1alpha1.ActionOutcomeFailed})
 		}
@@ -134,9 +134,21 @@ func hasSandboxClaims(proposal *agenticv1alpha1.Proposal) bool {
 		proposal.Status.Steps.Escalation.Sandbox.ClaimName != ""
 }
 
+func terminalReason(proposal *agenticv1alpha1.Proposal) string {
+	for _, c := range proposal.Status.Conditions {
+		if c.Status == metav1.ConditionFalse && c.Reason == reasonFailed {
+			return c.Message
+		}
+		if c.Status == metav1.ConditionTrue && (c.Reason == reasonUserDenied || c.Reason == reasonSystemSuspended) {
+			return c.Message
+		}
+	}
+	return ""
+}
+
 func isTerminal(phase agenticv1alpha1.ProposalPhase) bool {
 	switch phase {
-	case agenticv1alpha1.ProposalPhaseCompleted, agenticv1alpha1.ProposalPhaseDenied, agenticv1alpha1.ProposalPhaseEscalated, agenticv1alpha1.ProposalPhaseEmergencyStopped:
+	case agenticv1alpha1.ProposalPhaseCompleted, agenticv1alpha1.ProposalPhaseFailed, agenticv1alpha1.ProposalPhaseDenied, agenticv1alpha1.ProposalPhaseEscalated, agenticv1alpha1.ProposalPhaseEmergencyStopped:
 		return true
 	}
 	return false
