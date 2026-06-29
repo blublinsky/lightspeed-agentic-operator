@@ -315,7 +315,7 @@ cat <<DONE
   Sandbox image : ${SANDBOX_IMAGE}
   Console image : ${CONSOLE_IMAGE}
 
-  > Console works only on OpenShift 4.21+
+  > Console works only on OpenShift 4.22+
 ════════════════════════════════════════════════════════════════
 
   NEXT: Configure your LLM provider. Pick one:
