@@ -68,7 +68,8 @@ Kubernetes API surface for the agentic operator. **Lifecycle and gates** are in 
 - `metadata.name` (must be `cluster`), `spec.stages[]`, `spec.maxAttempts`, `spec.maxConcurrentProposals`
 
 ### AgenticOLSConfig
-- `metadata.name` (must be `cluster`), `spec.suspended`
+- `metadata.name` (must be `cluster`), `spec.suspended`, `spec.templog`
+- `spec.templog` (bool, default `true`): When `true` or absent, the lightspeed-operator deploys a custom OTel Collector for temporary audit log storage in PostgreSQL. See `templog.md`.
 - `status.conditions` — condition types: `Suspended`
 - See `system-config.md` for full behavioral rules
 
@@ -94,3 +95,4 @@ Kubernetes API surface for the agentic operator. **Lifecycle and gates** are in 
 
 - [PLANNED: OLS-2940] Autonomous workflow CRD migrations may rename or reshape fields; specs MUST be updated when `v1alpha1` changes.
 - [PLANNED: OLS-2894] Explicit **Agent** fields for per-step system prompts if moved from template/runtime-only assembly (today prompts are composed outside `Agent` CR — see `sandbox-execution.md`).
+- [OLS-3328] Add `spec.templog` to `AgenticOLSConfig` CRD for temporary audit log storage.
