@@ -177,6 +177,12 @@ func TestPodSpecBuilder_Anthropic(t *testing.T) {
 	if len(container.SecurityContext.Capabilities.Drop) != 1 || container.SecurityContext.Capabilities.Drop[0] != "ALL" {
 		t.Errorf("capabilities.drop = %v, want [ALL]", container.SecurityContext.Capabilities.Drop)
 	}
+	if container.SecurityContext.RunAsNonRoot == nil || !*container.SecurityContext.RunAsNonRoot {
+		t.Error("runAsNonRoot should be true")
+	}
+	if container.SecurityContext.SeccompProfile == nil || container.SecurityContext.SeccompProfile.Type != corev1.SeccompProfileTypeRuntimeDefault {
+		t.Error("seccompProfile.type should be RuntimeDefault")
+	}
 
 	// Verify service account
 	if podSpec.ServiceAccountName != defaultSandboxSA {

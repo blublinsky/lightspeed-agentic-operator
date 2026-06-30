@@ -53,7 +53,9 @@ func (b *PodSpecBuilder) Build(
 		}},
 		SecurityContext: &corev1.SecurityContext{
 			AllowPrivilegeEscalation: ptr.To(false),
+			RunAsNonRoot:             ptr.To(true),
 			Capabilities:             &corev1.Capabilities{Drop: []corev1.Capability{"ALL"}},
+			SeccompProfile:           &corev1.SeccompProfile{Type: corev1.SeccompProfileTypeRuntimeDefault},
 		},
 	}
 
@@ -126,8 +128,12 @@ func (b *PodSpecBuilder) Build(
 	return &corev1.PodSpec{
 		ServiceAccountName:           serviceAccount,
 		AutomountServiceAccountToken: ptr.To(true),
-		Containers:                   []corev1.Container{container},
-		Volumes:                      volumes,
+		SecurityContext: &corev1.PodSecurityContext{
+			RunAsNonRoot:   ptr.To(true),
+			SeccompProfile: &corev1.SeccompProfile{Type: corev1.SeccompProfileTypeRuntimeDefault},
+		},
+		Containers: []corev1.Container{container},
+		Volumes:    volumes,
 	}, nil
 }
 
