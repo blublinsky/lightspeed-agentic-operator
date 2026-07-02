@@ -66,7 +66,25 @@ Implementation spec for compliance audit logging in the agentic operator. Parent
 
 18. `spec.audit.otel.endpoint` controls OTEL trace export. When set, the operator configures an OTLP exporter pointed at that endpoint. When empty or absent, a no-op exporter is used. Independent of the `logging` flag — tracing works regardless of whether logging is on or off.
 
-19. The operator MUST pass the OTEL endpoint to the sandbox via environment variable or config mount so the sandbox can configure its own exporter.
+19. The operator MUST pass the OTEL tracing endpoint to the sandbox via environment variable or config mount so the sandbox can configure its own exporter.
+
+### OTLP Log Emission (Templog)
+
+20. When the OTLP log endpoint environment variable is set (wired by the lightspeed-operator when `spec.templog` is enabled), the operator MUST also emit all audit events as OTLP log records to that endpoint. This is in addition to stdout — dual emission.
+
+21. Each OTLP log record MUST carry: `trace_id` in the log record's trace context (Proposal `metadata.uid`, hyphens stripped), `event` as a log record attribute, and the full structured JSON audit event as the log record body.
+
+22. The OTLP log endpoint is independent of `spec.audit.otel.endpoint` (tracing). Both can be active simultaneously.
+
+23. When the OTLP log endpoint is absent, no OTLP log records are emitted. No error, no warning — graceful degradation.
+
+### Templog Finalizer
+
+24. When a new Proposal CR is created and templog is enabled (read from an environment variable set by the lightspeed-operator), the operator MUST add the finalizer `agentic.openshift.io/templog-cleanup` to the Proposal.
+
+25. On Proposal deletion, if the `agentic.openshift.io/templog-cleanup` finalizer is present, the operator MUST connect to PostgreSQL and execute `DELETE FROM templogs.logs WHERE trace_id = $1`. On success, remove the finalizer. On failure, block deletion and requeue with exponential backoff.
+
+26. The finalizer does not depend on the Collector being present — it connects directly to PostgreSQL. See `templog.md` for edge cases.
 
 ### Structured JSON Format
 
@@ -78,3 +96,4 @@ Implementation spec for compliance audit logging in the agentic operator. Parent
 - `approval.md` — approval flow and ProposalApproval CR
 - `sandbox-execution.md` — sandbox HTTP calls where trace context is propagated
 - `crd-api.md` — CRD definitions (ProposalApproval needs `spec.approver` addition)
+- `templog.md` — Temporary audit log storage: OTLP log emission, finalizer, Postgres cleanup
