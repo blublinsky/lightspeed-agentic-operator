@@ -2,17 +2,36 @@ package proposal
 
 import (
 	"context"
+	"fmt"
 	"strings"
 	"testing"
 
 	corev1 "k8s.io/api/core/v1"
 	rbacv1 "k8s.io/api/rbac/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
+	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
 
 	agenticv1alpha1 "github.com/openshift/lightspeed-agentic-operator/api/v1alpha1"
 )
+
+// readerBinding returns the pre-existing cluster-reader ClusterRoleBinding fixture
+// that must exist for execution SA setup to succeed.
+func readerBinding() *rbacv1.ClusterRoleBinding {
+	return &rbacv1.ClusterRoleBinding{
+		ObjectMeta: metav1.ObjectMeta{Name: defaultReaderClusterRoleBinding},
+		RoleRef:    rbacv1.RoleRef{APIGroup: rbacv1.GroupName, Kind: "ClusterRole", Name: "cluster-reader"},
+		Subjects: []rbacv1.Subject{{
+			Kind:      rbacv1.ServiceAccountKind,
+			Name:      "lightspeed-agent",
+			Namespace: "default",
+		}},
+	}
+}
 
 // ---------------------------------------------------------------------------
 // ensureExecutionRBAC
@@ -20,7 +39,7 @@ import (
 
 func TestEnsureExecutionRBAC_NamespaceScopedOnly(t *testing.T) {
 	ctx := context.Background()
-	fc := fake.NewClientBuilder().WithScheme(testScheme()).Build()
+	fc := fake.NewClientBuilder().WithScheme(testScheme()).WithObjects(readerBinding()).Build()
 
 	proposal := &agenticv1alpha1.Proposal{
 		ObjectMeta: metav1.ObjectMeta{Name: "fix-oom", Namespace: "default"},
@@ -108,7 +127,7 @@ func TestEnsureExecutionRBAC_NamespaceScopedOnly(t *testing.T) {
 
 func TestEnsureExecutionRBAC_ClusterScopedOnly(t *testing.T) {
 	ctx := context.Background()
-	fc := fake.NewClientBuilder().WithScheme(testScheme()).Build()
+	fc := fake.NewClientBuilder().WithScheme(testScheme()).WithObjects(readerBinding()).Build()
 
 	proposal := &agenticv1alpha1.Proposal{
 		ObjectMeta: metav1.ObjectMeta{Name: "check-nodes", Namespace: "default"},
@@ -152,7 +171,7 @@ func TestEnsureExecutionRBAC_ClusterScopedOnly(t *testing.T) {
 
 func TestEnsureExecutionRBAC_BothScopes(t *testing.T) {
 	ctx := context.Background()
-	fc := fake.NewClientBuilder().WithScheme(testScheme()).Build()
+	fc := fake.NewClientBuilder().WithScheme(testScheme()).WithObjects(readerBinding()).Build()
 
 	proposal := &agenticv1alpha1.Proposal{
 		ObjectMeta: metav1.ObjectMeta{Name: "full-fix", Namespace: "default"},
@@ -188,7 +207,7 @@ func TestEnsureExecutionRBAC_BothScopes(t *testing.T) {
 
 func TestEnsureExecutionRBAC_MultipleNamespaces(t *testing.T) {
 	ctx := context.Background()
-	fc := fake.NewClientBuilder().WithScheme(testScheme()).Build()
+	fc := fake.NewClientBuilder().WithScheme(testScheme()).WithObjects(readerBinding()).Build()
 
 	proposal := &agenticv1alpha1.Proposal{
 		ObjectMeta: metav1.ObjectMeta{Name: "multi-ns", Namespace: "default"},
@@ -226,7 +245,7 @@ func TestEnsureExecutionRBAC_MultipleNamespaces(t *testing.T) {
 
 func TestEnsureExecutionRBAC_Idempotent(t *testing.T) {
 	ctx := context.Background()
-	fc := fake.NewClientBuilder().WithScheme(testScheme()).Build()
+	fc := fake.NewClientBuilder().WithScheme(testScheme()).WithObjects(readerBinding()).Build()
 
 	proposal := &agenticv1alpha1.Proposal{
 		ObjectMeta: metav1.ObjectMeta{Name: "idem", Namespace: "default"},
@@ -253,7 +272,7 @@ func TestEnsureExecutionRBAC_Idempotent(t *testing.T) {
 
 func TestEnsureExecutionRBAC_NilResult(t *testing.T) {
 	ctx := context.Background()
-	fc := fake.NewClientBuilder().WithScheme(testScheme()).Build()
+	fc := fake.NewClientBuilder().WithScheme(testScheme()).WithObjects(readerBinding()).Build()
 
 	proposal := &agenticv1alpha1.Proposal{
 		ObjectMeta: metav1.ObjectMeta{Name: "no-rbac", Namespace: "default"},
@@ -266,7 +285,7 @@ func TestEnsureExecutionRBAC_NilResult(t *testing.T) {
 
 func TestEnsureExecutionRBAC_EmptyRules(t *testing.T) {
 	ctx := context.Background()
-	fc := fake.NewClientBuilder().WithScheme(testScheme()).Build()
+	fc := fake.NewClientBuilder().WithScheme(testScheme()).WithObjects(readerBinding()).Build()
 
 	proposal := &agenticv1alpha1.Proposal{
 		ObjectMeta: metav1.ObjectMeta{Name: "empty-rules", Namespace: "default"},
@@ -287,7 +306,7 @@ func TestEnsureExecutionRBAC_EmptyRules(t *testing.T) {
 
 func TestEnsureExecutionRBAC_NamespacesFromRBACRules(t *testing.T) {
 	ctx := context.Background()
-	fc := fake.NewClientBuilder().WithScheme(testScheme()).Build()
+	fc := fake.NewClientBuilder().WithScheme(testScheme()).WithObjects(readerBinding()).Build()
 
 	ns1 := "app-ns"
 	ns2 := "data-ns"
@@ -316,7 +335,7 @@ func TestEnsureExecutionRBAC_NamespacesFromRBACRules(t *testing.T) {
 
 func TestEnsureExecutionRBAC_ResourceNames(t *testing.T) {
 	ctx := context.Background()
-	fc := fake.NewClientBuilder().WithScheme(testScheme()).Build()
+	fc := fake.NewClientBuilder().WithScheme(testScheme()).WithObjects(readerBinding()).Build()
 
 	proposal := &agenticv1alpha1.Proposal{
 		ObjectMeta: metav1.ObjectMeta{Name: "with-names", Namespace: "default"},
@@ -351,7 +370,7 @@ func TestEnsureExecutionRBAC_ResourceNames(t *testing.T) {
 
 func TestCleanupExecutionRBAC_NamespaceAndCluster(t *testing.T) {
 	ctx := context.Background()
-	fc := fake.NewClientBuilder().WithScheme(testScheme()).Build()
+	fc := fake.NewClientBuilder().WithScheme(testScheme()).WithObjects(readerBinding()).Build()
 
 	proposal := &agenticv1alpha1.Proposal{
 		ObjectMeta: metav1.ObjectMeta{
@@ -416,7 +435,7 @@ func TestCleanupExecutionRBAC_NamespaceAndCluster(t *testing.T) {
 
 func TestCleanupExecutionRBAC_NoAnnotation(t *testing.T) {
 	ctx := context.Background()
-	fc := fake.NewClientBuilder().WithScheme(testScheme()).Build()
+	fc := fake.NewClientBuilder().WithScheme(testScheme()).WithObjects(readerBinding()).Build()
 
 	proposal := &agenticv1alpha1.Proposal{
 		ObjectMeta: metav1.ObjectMeta{Name: "no-annot", Namespace: "default"},
@@ -447,7 +466,7 @@ func TestCleanupExecutionRBAC_NoAnnotation(t *testing.T) {
 
 func TestCleanupExecutionRBAC_MissingResources(t *testing.T) {
 	ctx := context.Background()
-	fc := fake.NewClientBuilder().WithScheme(testScheme()).Build()
+	fc := fake.NewClientBuilder().WithScheme(testScheme()).WithObjects(readerBinding()).Build()
 
 	proposal := &agenticv1alpha1.Proposal{
 		ObjectMeta: metav1.ObjectMeta{
@@ -790,5 +809,140 @@ func TestRBACLabels_TruncatesLongProposalName(t *testing.T) {
 	}
 	if labels[LabelProposal] != strings.Repeat("a", 63) {
 		t.Errorf("proposal label = %q, want %q", labels[LabelProposal], strings.Repeat("a", 63))
+	}
+}
+
+// ---------------------------------------------------------------------------
+// addReaderSubject / removeReaderSubject / discoverReaderBinding
+// ---------------------------------------------------------------------------
+
+func TestAddReaderSubject_Idempotent(t *testing.T) {
+	ctx := context.Background()
+	readerRoleBinding.Store(defaultReaderClusterRoleBinding)
+	fc := fake.NewClientBuilder().WithScheme(testScheme()).WithObjects(readerBinding()).Build()
+
+	if err := addReaderSubject(ctx, fc, "ls-exec-test", "default"); err != nil {
+		t.Fatalf("first add: %v", err)
+	}
+	if err := addReaderSubject(ctx, fc, "ls-exec-test", "default"); err != nil {
+		t.Fatalf("second add: %v", err)
+	}
+
+	var crb rbacv1.ClusterRoleBinding
+	if err := fc.Get(ctx, types.NamespacedName{Name: defaultReaderClusterRoleBinding}, &crb); err != nil {
+		t.Fatalf("get binding: %v", err)
+	}
+
+	count := 0
+	for _, s := range crb.Subjects {
+		if s.Name == "ls-exec-test" {
+			count++
+		}
+	}
+	if count != 1 {
+		t.Fatalf("expected 1 subject entry, got %d", count)
+	}
+}
+
+func TestRemoveReaderSubject_NotPresent(t *testing.T) {
+	ctx := context.Background()
+	readerRoleBinding.Store(defaultReaderClusterRoleBinding)
+	fc := fake.NewClientBuilder().WithScheme(testScheme()).WithObjects(readerBinding()).Build()
+
+	if err := removeReaderSubject(ctx, fc, "ls-exec-nonexistent", "default"); err != nil {
+		t.Fatalf("remove non-existent subject should no-op, got: %v", err)
+	}
+}
+
+func TestDiscoverReaderBinding_NoMatches(t *testing.T) {
+	ctx := context.Background()
+	readerRoleBinding.Store(defaultReaderClusterRoleBinding)
+
+	unrelatedBinding := &rbacv1.ClusterRoleBinding{
+		ObjectMeta: metav1.ObjectMeta{Name: "unrelated-binding"},
+		RoleRef:    rbacv1.RoleRef{APIGroup: rbacv1.GroupName, Kind: "ClusterRole", Name: "admin"},
+		Subjects: []rbacv1.Subject{{
+			Kind:      rbacv1.ServiceAccountKind,
+			Name:      "other-sa",
+			Namespace: "other-ns",
+		}},
+	}
+	fc := fake.NewClientBuilder().WithScheme(testScheme()).WithObjects(unrelatedBinding).Build()
+
+	err := discoverReaderBinding(ctx, fc, "default")
+	if err == nil {
+		t.Fatal("expected error when no matching bindings found")
+	}
+	if !strings.Contains(err.Error(), "no ClusterRoleBinding found") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestDiscoverReaderBinding_MultipleMatches(t *testing.T) {
+	ctx := context.Background()
+	readerRoleBinding.Store(defaultReaderClusterRoleBinding)
+
+	binding1 := &rbacv1.ClusterRoleBinding{
+		ObjectMeta: metav1.ObjectMeta{Name: "custom-reader-1"},
+		RoleRef:    rbacv1.RoleRef{APIGroup: rbacv1.GroupName, Kind: "ClusterRole", Name: "cluster-reader"},
+		Subjects: []rbacv1.Subject{{
+			Kind:      rbacv1.ServiceAccountKind,
+			Name:      defaultSandboxSA,
+			Namespace: "default",
+		}},
+	}
+	binding2 := &rbacv1.ClusterRoleBinding{
+		ObjectMeta: metav1.ObjectMeta{Name: "custom-reader-2"},
+		RoleRef:    rbacv1.RoleRef{APIGroup: rbacv1.GroupName, Kind: "ClusterRole", Name: "cluster-monitoring-view"},
+		Subjects: []rbacv1.Subject{{
+			Kind:      rbacv1.ServiceAccountKind,
+			Name:      defaultSandboxSA,
+			Namespace: "default",
+		}},
+	}
+	fc := fake.NewClientBuilder().WithScheme(testScheme()).WithObjects(binding1, binding2).Build()
+
+	err := discoverReaderBinding(ctx, fc, "default")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	resolved := readerRoleBinding.Load().(string)
+	if resolved != "custom-reader-1" && resolved != "custom-reader-2" {
+		t.Fatalf("expected one of the custom bindings, got: %s", resolved)
+	}
+}
+
+func TestAddReaderSubject_ConflictRetryExhaustion(t *testing.T) {
+	ctx := context.Background()
+	readerRoleBinding.Store(defaultReaderClusterRoleBinding)
+
+	callCount := 0
+	fc := fake.NewClientBuilder().
+		WithScheme(testScheme()).
+		WithObjects(readerBinding()).
+		WithInterceptorFuncs(interceptor.Funcs{
+			Update: func(ctx context.Context, c client.WithWatch, obj client.Object, opts ...client.UpdateOption) error {
+				if _, ok := obj.(*rbacv1.ClusterRoleBinding); ok {
+					callCount++
+					return apierrors.NewConflict(
+						schema.GroupResource{Group: "rbac.authorization.k8s.io", Resource: "clusterrolebindings"},
+						defaultReaderClusterRoleBinding,
+						fmt.Errorf("modified concurrently"),
+					)
+				}
+				return c.Update(ctx, obj, opts...)
+			},
+		}).Build()
+
+	err := addReaderSubject(ctx, fc, "ls-exec-conflict-test", "default")
+	if err == nil {
+		t.Fatal("expected error after conflict retries exhausted")
+	}
+	if !strings.Contains(err.Error(), "conflict after retries") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if callCount != 3 {
+		t.Fatalf("expected 3 update attempts, got %d", callCount)
 	}
 }

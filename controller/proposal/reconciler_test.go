@@ -150,13 +150,25 @@ func testAutoApprovePolicyWithMaxAttempts(maxAttempts int32) *agenticv1alpha1.Ap
 // objects needed to resolve a full workflow.
 func defaultObjects() []client.Object {
 	return []client.Object{
-		testDefaultAgent(), testLLM("smart"), testAutoApprovePolicy(),
+		testDefaultAgent(), testLLM("smart"), testAutoApprovePolicy(), testReaderClusterRoleBinding(),
 	}
 }
 
 func defaultObjectsWithMaxAttempts(maxAttempts int32) []client.Object {
 	return []client.Object{
-		testDefaultAgent(), testLLM("smart"), testAutoApprovePolicyWithMaxAttempts(maxAttempts),
+		testDefaultAgent(), testLLM("smart"), testAutoApprovePolicyWithMaxAttempts(maxAttempts), testReaderClusterRoleBinding(),
+	}
+}
+
+func testReaderClusterRoleBinding() *rbacv1.ClusterRoleBinding {
+	return &rbacv1.ClusterRoleBinding{
+		ObjectMeta: metav1.ObjectMeta{Name: defaultReaderClusterRoleBinding},
+		RoleRef:    rbacv1.RoleRef{APIGroup: rbacv1.GroupName, Kind: "ClusterRole", Name: "cluster-reader"},
+		Subjects: []rbacv1.Subject{{
+			Kind:      rbacv1.ServiceAccountKind,
+			Name:      "lightspeed-agent",
+			Namespace: "default",
+		}},
 	}
 }
 

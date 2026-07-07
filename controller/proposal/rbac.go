@@ -4,24 +4,31 @@ import (
 	"context"
 	"fmt"
 	"strings"
+	"sync/atomic"
 
 	corev1 "k8s.io/api/core/v1"
 	rbacv1 "k8s.io/api/rbac/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	logf "sigs.k8s.io/controller-runtime/pkg/log"
 
 	agenticv1alpha1 "github.com/openshift/lightspeed-agentic-operator/api/v1alpha1"
 )
 
+// +kubebuilder:rbac:groups="",resources=serviceaccounts,verbs=create;delete;get
+
 const (
-	rbacNamespacesAnnotation = "agentic.openshift.io/rbac-namespaces"
+	rbacNamespacesAnnotation        = "agentic.openshift.io/rbac-namespaces"
+	defaultReaderClusterRoleBinding = "lightspeed-agent-cluster-reader"
 
 	ErrCreateExecutionSA        = "create execution SA"
 	ErrCreateRole               = "create Role in"
 	ErrCreateRoleBinding        = "create RoleBinding in"
 	ErrCreateClusterRole        = "create ClusterRole"
 	ErrCreateClusterRoleBinding = "create ClusterRoleBinding"
+	ErrAddReaderSubject         = "add subject to reader ClusterRoleBinding"
+	ErrRemoveReaderSubject      = "remove subject from reader ClusterRoleBinding"
 	ErrDeleteRoleBinding        = "delete RoleBinding in"
 	ErrDeleteRole               = "delete Role in"
 	ErrDeleteClusterRoleBinding = "delete ClusterRoleBinding"
@@ -29,7 +36,44 @@ const (
 	ErrDeleteExecutionSA        = "delete execution SA"
 )
 
-// +kubebuilder:rbac:groups="",resources=serviceaccounts,verbs=create;delete;get
+var readerRoleBinding atomic.Value
+
+func init() {
+	readerRoleBinding.Store(defaultReaderClusterRoleBinding)
+}
+
+// discoverReaderBinding finds the ClusterRoleBinding for the lightspeed-agent SA
+// when the default name doesn't exist. Updates readerRoleBinding on success.
+func discoverReaderBinding(ctx context.Context, c client.Client, operatorNS string) error {
+	log := logf.FromContext(ctx)
+	log.Info("default reader ClusterRoleBinding not found, discovering by SA subject", LogKeyName, defaultReaderClusterRoleBinding)
+
+	crbList := &rbacv1.ClusterRoleBindingList{}
+	if err := c.List(ctx, crbList); err != nil {
+		return fmt.Errorf("list ClusterRoleBindings for reader discovery: %w", err)
+	}
+
+	var matches []string
+	for i := range crbList.Items {
+		for _, s := range crbList.Items[i].Subjects {
+			if s.Kind == rbacv1.ServiceAccountKind && s.Name == defaultSandboxSA && s.Namespace == operatorNS {
+				matches = append(matches, crbList.Items[i].Name)
+				break
+			}
+		}
+	}
+
+	if len(matches) == 0 {
+		return fmt.Errorf("no ClusterRoleBinding found with subject %s/%s — ensure reader RBAC is configured", operatorNS, defaultSandboxSA)
+	}
+	if len(matches) > 1 {
+		log.Info("multiple ClusterRoleBindings found for lightspeed-agent SA", "all", matches, "selected", matches[0])
+	}
+
+	readerRoleBinding.Store(matches[0])
+	log.Info("resolved reader ClusterRoleBinding", LogKeyName, matches[0])
+	return nil
+}
 
 // executionSAName returns the per-proposal ServiceAccount name for execution RBAC isolation.
 // Uses the same truncation pattern as executionRoleName. Collision is theoretically possible
@@ -39,7 +83,8 @@ func executionSAName(proposal *agenticv1alpha1.Proposal) string {
 	return truncateK8sName(fmt.Sprintf("ls-exec-%s-%s", proposal.Namespace, proposal.Name))
 }
 
-// ensureExecutionSA creates a per-proposal ServiceAccount for execution RBAC isolation.
+// ensureExecutionSA creates a per-proposal ServiceAccount for execution RBAC isolation
+// and adds it as a subject to the shared cluster-reader ClusterRoleBinding for base read access.
 // No owner reference — cross-namespace owner refs are unsupported by Kubernetes GC.
 // Cleanup is handled explicitly by cleanupExecutionRBAC (via finalizer on Proposal deletion).
 func ensureExecutionSA(ctx context.Context, c client.Client, proposal *agenticv1alpha1.Proposal, operatorNS string) (string, error) {
@@ -54,7 +99,94 @@ func ensureExecutionSA(ctx context.Context, c client.Client, proposal *agenticv1
 	if err := c.Create(ctx, sa); err != nil && !apierrors.IsAlreadyExists(err) {
 		return "", fmt.Errorf("%s %s: %w", ErrCreateExecutionSA, saName, err)
 	}
+
+	if err := addReaderSubject(ctx, c, saName, operatorNS); err != nil {
+		return "", err
+	}
+
 	return saName, nil
+}
+
+// addReaderSubject adds the SA as a subject to the shared cluster-reader ClusterRoleBinding.
+// Idempotent — skips if the subject is already present. Retries on conflict (optimistic locking).
+// If the default binding name doesn't exist, discovers the correct name by scanning SA subjects.
+func addReaderSubject(ctx context.Context, c client.Client, saName, namespace string) error {
+	subject := rbacv1.Subject{
+		Kind:      rbacv1.ServiceAccountKind,
+		Name:      saName,
+		Namespace: namespace,
+	}
+
+	for attempts := 0; attempts < 3; attempts++ {
+		bindingName := readerRoleBinding.Load().(string)
+		crb := &rbacv1.ClusterRoleBinding{}
+		if err := c.Get(ctx, client.ObjectKey{Name: bindingName}, crb); err != nil {
+			if apierrors.IsNotFound(err) {
+				if discoverErr := discoverReaderBinding(ctx, c, namespace); discoverErr != nil {
+					return fmt.Errorf("%s: %w", ErrAddReaderSubject, discoverErr)
+				}
+				continue
+			}
+			return fmt.Errorf("%s: %w", ErrAddReaderSubject, err)
+		}
+
+		for _, s := range crb.Subjects {
+			if s.Kind == subject.Kind && s.Name == subject.Name && s.Namespace == subject.Namespace {
+				return nil
+			}
+		}
+
+		crb.Subjects = append(crb.Subjects, subject)
+		err := c.Update(ctx, crb)
+		if err == nil {
+			return nil
+		}
+		if !apierrors.IsConflict(err) {
+			return fmt.Errorf("%s: %w", ErrAddReaderSubject, err)
+		}
+	}
+	return fmt.Errorf("%s: conflict after retries", ErrAddReaderSubject)
+}
+
+// removeReaderSubject removes the SA from the shared cluster-reader ClusterRoleBinding.
+// Idempotent — no-op if the subject is not present. Retries on conflict (optimistic locking).
+// If the default binding name doesn't exist, discovers the correct name (mirrors addReaderSubject).
+func removeReaderSubject(ctx context.Context, c client.Client, saName, namespace string) error {
+	for attempts := 0; attempts < 3; attempts++ {
+		bindingName := readerRoleBinding.Load().(string)
+		crb := &rbacv1.ClusterRoleBinding{}
+		if err := c.Get(ctx, client.ObjectKey{Name: bindingName}, crb); err != nil {
+			if apierrors.IsNotFound(err) {
+				if discoverErr := discoverReaderBinding(ctx, c, namespace); discoverErr != nil {
+					return nil
+				}
+				continue
+			}
+			return fmt.Errorf("%s: %w", ErrRemoveReaderSubject, err)
+		}
+
+		filtered := make([]rbacv1.Subject, 0, len(crb.Subjects))
+		for _, s := range crb.Subjects {
+			if s.Kind == rbacv1.ServiceAccountKind && s.Name == saName && s.Namespace == namespace {
+				continue
+			}
+			filtered = append(filtered, s)
+		}
+
+		if len(filtered) == len(crb.Subjects) {
+			return nil
+		}
+
+		crb.Subjects = filtered
+		err := c.Update(ctx, crb)
+		if err == nil {
+			return nil
+		}
+		if !apierrors.IsConflict(err) {
+			return fmt.Errorf("%s: %w", ErrRemoveReaderSubject, err)
+		}
+	}
+	return fmt.Errorf("%s: conflict after retries", ErrRemoveReaderSubject)
 }
 
 // deleteExecutionSA explicitly deletes the per-proposal ServiceAccount after execution completes.
@@ -167,6 +299,11 @@ func cleanupExecutionRBAC(ctx context.Context, c client.Client, proposal *agenti
 	}
 	if err := deleteIfExists(ctx, c, &rbacv1.ClusterRole{ObjectMeta: metav1.ObjectMeta{Name: crName}}); err != nil {
 		return fmt.Errorf("%s %s: %w", ErrDeleteClusterRole, crName, err)
+	}
+
+	saName := executionSAName(proposal)
+	if err := removeReaderSubject(ctx, c, saName, operatorNS); err != nil {
+		return err
 	}
 
 	if err := deleteExecutionSA(ctx, c, proposal, operatorNS); err != nil {
