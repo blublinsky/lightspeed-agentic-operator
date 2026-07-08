@@ -86,14 +86,20 @@ func TestBuildAnalysisQuery_FullProposal(t *testing.T) {
 		},
 	}
 	result := buildAnalysisQuery("Fix the crash", proposal)
-	if !strings.Contains(result, "RBAC permissions") {
-		t.Error("full proposal should mention RBAC permissions")
+	if !strings.Contains(result, "Derive RBAC") {
+		t.Error("full proposal should mention RBAC derivation")
 	}
-	if !strings.Contains(result, "verification plan") {
+	if !strings.Contains(result, "Verification plan") {
 		t.Error("full proposal should mention verification plan")
 	}
 	if !strings.Contains(result, "Fix the crash") {
 		t.Error("should contain the request text")
+	}
+	if !strings.Contains(result, "kubectl") {
+		t.Error("should instruct use of kubectl")
+	}
+	if !strings.Contains(result, "remediation script") {
+		t.Error("should require a remediation script")
 	}
 }
 
@@ -104,10 +110,10 @@ func TestBuildAnalysisQuery_TrustMode(t *testing.T) {
 		},
 	}
 	result := buildAnalysisQuery("Fix the crash", proposal)
-	if !strings.Contains(result, "RBAC permissions") {
-		t.Error("execution proposal should mention RBAC permissions")
+	if !strings.Contains(result, "Derive RBAC") {
+		t.Error("execution proposal should mention RBAC derivation")
 	}
-	if strings.Contains(result, "verification plan") {
+	if strings.Contains(result, "Verification plan") {
 		t.Error("trust-mode proposal should NOT mention verification plan")
 	}
 }
@@ -115,10 +121,10 @@ func TestBuildAnalysisQuery_TrustMode(t *testing.T) {
 func TestBuildAnalysisQuery_Advisory(t *testing.T) {
 	proposal := &agenticv1alpha1.Proposal{}
 	result := buildAnalysisQuery("What is 2+2?", proposal)
-	if strings.Contains(result, "RBAC permissions") {
-		t.Error("advisory proposal should NOT mention RBAC permissions")
+	if strings.Contains(result, "Derive RBAC") {
+		t.Error("advisory proposal should NOT mention RBAC derivation")
 	}
-	if strings.Contains(result, "verification plan") {
+	if strings.Contains(result, "Verification plan") {
 		t.Error("advisory proposal should NOT mention verification plan")
 	}
 	if !strings.Contains(result, "What is 2+2?") {
