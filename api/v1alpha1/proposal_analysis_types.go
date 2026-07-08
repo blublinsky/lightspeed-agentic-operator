@@ -89,8 +89,7 @@ type ProposedAction struct {
 	// (e.g., "kubectl set image deployment/foo container=registry/foo:v1.3 -n production").
 	// Must be a concrete command that can be copy-pasted and run.
 	// Maximum 4096 characters.
-	// +required
-	// +kubebuilder:validation:MinLength=1
+	// +optional
 	// +kubebuilder:validation:MaxLength=4096
 	Command string `json:"command,omitempty"`
 	// type is the action phase category: "pre-check", "mutation", "wait",

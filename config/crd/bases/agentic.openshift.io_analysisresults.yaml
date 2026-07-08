@@ -220,7 +220,6 @@ spec:
                                   Must be a concrete command that can be copy-pasted and run.
                                   Maximum 4096 characters.
                                 maxLength: 4096
-                                minLength: 1
                                 type: string
                               description:
                                 description: |-
@@ -239,7 +238,6 @@ spec:
                                 minLength: 1
                                 type: string
                             required:
-                            - command
                             - description
                             - type
                             type: object
