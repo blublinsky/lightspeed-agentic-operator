@@ -17,7 +17,7 @@ bash <(curl -sL https://raw.githubusercontent.com/openshift/lightspeed-agentic-o
 
 The script installs CRDs, deploys the operator, and creates an ApprovalPolicy.
 After completion it prints instructions for configuring an LLM provider and
-submitting a test proposal.
+submitting a test run.
 
 ## Uninstall
 
@@ -63,7 +63,7 @@ The [`examples/`](examples/) directory contains LLMProvider + Agent templates:
 
 ## CLI Plugin
 
-Install the `oc-agentic` CLI plugin to manage proposals from the command line
+Install the `oc-agentic` CLI plugin to manage agenticruns from the command line
 ([install instructions](../../README.md#install)).
 
 Verify installation:
@@ -72,31 +72,31 @@ Verify installation:
 oc agentic version
 ```
 
-## Example Proposal
+## Example AgenticRun
 
 [`deploy-test-workload.yaml`](examples/deploy-test-workload.yaml) submits a
-proposal that analyzes the target namespace and deploys a test workload
+run that analyzes the target namespace and deploys a test workload
 (nginx Deployment + Service). Execution requires manual approval via
-`ProposalApproval`.
+`AgenticRunApproval`.
 
 ### Using the CLI
 
-Instead of applying YAML, you can create and manage proposals with the CLI:
+Instead of applying YAML, you can create and manage agenticruns with the CLI:
 
 ```bash
-# Create a proposal
-oc agentic proposal create --request="Deploy a test nginx workload" --target-namespaces=default
+# Create a run
+oc agentic run create --request="Deploy a test nginx workload" --target-namespaces=default
 
 # Watch it progress
-oc agentic proposal list
-oc agentic proposal get <name>
+oc agentic run list
+oc agentic run get <name>
 
 # Approve analysis, then execution
-oc agentic proposal approve <name> --stage=analysis
-oc agentic proposal approve <name> --stage=execution --option=0
+oc agentic run approve <name> --stage=analysis
+oc agentic run approve <name> --stage=execution --option=0
 
 # Stream sandbox logs
-oc agentic proposal logs <name> -f
+oc agentic run logs <name> -f
 
 # Check system status
 oc agentic status

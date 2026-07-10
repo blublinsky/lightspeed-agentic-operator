@@ -45,7 +45,7 @@ const (
 	eventReasonSuspensionDeactivated = "SuspensionDeactivated"
 )
 
-// Reconciler watches AgenticOLSConfig and Proposal resources to maintain
+// Reconciler watches AgenticOLSConfig and AgenticRun resources to maintain
 // the Suspended status condition and emit lifecycle Events on the config CR.
 type Reconciler struct {
 	client.Client
@@ -55,7 +55,7 @@ type Reconciler struct {
 // +kubebuilder:rbac:groups=agentic.openshift.io,resources=agenticolsconfigs,verbs=get;list;watch
 // +kubebuilder:rbac:groups=agentic.openshift.io,resources=agenticolsconfigs/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups="",resources=events,verbs=create;patch
-// +kubebuilder:rbac:groups=agentic.openshift.io,resources=proposals,verbs=list
+// +kubebuilder:rbac:groups=agentic.openshift.io,resources=agenticruns,verbs=list
 
 func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	var config agenticv1alpha1.AgenticOLSConfig
@@ -91,15 +91,15 @@ func (r *Reconciler) handleDeactivation(ctx context.Context, config *agenticv1al
 func (r *Reconciler) handleActivation(ctx context.Context, config *agenticv1alpha1.AgenticOLSConfig) (ctrl.Result, error) {
 	log := logf.FromContext(ctx)
 
-	var proposals agenticv1alpha1.ProposalList
-	if err := r.List(ctx, &proposals); err != nil {
-		return ctrl.Result{}, fmt.Errorf("list proposals: %w", err)
+	var runs agenticv1alpha1.AgenticRunList
+	if err := r.List(ctx, &runs); err != nil {
+		return ctrl.Result{}, fmt.Errorf("list runs: %w", err)
 	}
 
 	var nonTerminal, emergencyStopped int
-	for i := range proposals.Items {
-		phase := agenticv1alpha1.DerivePhase(proposals.Items[i].Status.Conditions)
-		if phase == agenticv1alpha1.ProposalPhaseEmergencyStopped {
+	for i := range runs.Items {
+		phase := agenticv1alpha1.DerivePhase(runs.Items[i].Status.Conditions)
+		if phase == agenticv1alpha1.AgenticRunPhaseEmergencyStopped {
 			emergencyStopped++
 			continue
 		}
@@ -109,13 +109,13 @@ func (r *Reconciler) handleActivation(ctx context.Context, config *agenticv1alph
 	}
 
 	if nonTerminal > 0 {
-		log.V(1).Info("waiting for proposals to terminate", "nonTerminal", nonTerminal)
+		log.V(1).Info("waiting for runs to terminate", "nonTerminal", nonTerminal)
 		base := config.DeepCopy()
 		meta.SetStatusCondition(&config.Status.Conditions, metav1.Condition{
 			Type:    agenticv1alpha1.AgenticOLSConfigConditionSuspended,
 			Status:  metav1.ConditionTrue,
 			Reason:  reasonDraining,
-			Message: fmt.Sprintf("Waiting for %d proposals to terminate", nonTerminal),
+			Message: fmt.Sprintf("Waiting for %d runs to terminate", nonTerminal),
 		})
 		if err := r.Status().Patch(ctx, config, client.MergeFrom(base)); err != nil {
 			return ctrl.Result{}, fmt.Errorf("patch Suspended=True/Draining: %w", err)
@@ -123,7 +123,7 @@ func (r *Reconciler) handleActivation(ctx context.Context, config *agenticv1alph
 		return ctrl.Result{RequeueAfter: requeueDelay}, nil
 	}
 
-	msg := fmt.Sprintf("System suspended; %d proposals emergency-stopped", emergencyStopped)
+	msg := fmt.Sprintf("System suspended; %d runs emergency-stopped", emergencyStopped)
 	existing := meta.FindStatusCondition(config.Status.Conditions, agenticv1alpha1.AgenticOLSConfigConditionSuspended)
 	if existing != nil && existing.Status == metav1.ConditionTrue && existing.Reason == reasonAdminActivated && existing.Message == msg {
 		return ctrl.Result{}, nil
@@ -143,13 +143,13 @@ func (r *Reconciler) handleActivation(ctx context.Context, config *agenticv1alph
 	return ctrl.Result{}, nil
 }
 
-func isTerminal(phase agenticv1alpha1.ProposalPhase) bool {
+func isTerminal(phase agenticv1alpha1.AgenticRunPhase) bool {
 	switch phase {
-	case agenticv1alpha1.ProposalPhaseCompleted,
-		agenticv1alpha1.ProposalPhaseDenied,
-		agenticv1alpha1.ProposalPhaseEscalated,
-		agenticv1alpha1.ProposalPhaseEmergencyStopped,
-		agenticv1alpha1.ProposalPhaseFailed:
+	case agenticv1alpha1.AgenticRunPhaseCompleted,
+		agenticv1alpha1.AgenticRunPhaseDenied,
+		agenticv1alpha1.AgenticRunPhaseEscalated,
+		agenticv1alpha1.AgenticRunPhaseEmergencyStopped,
+		agenticv1alpha1.AgenticRunPhaseFailed:
 		return true
 	}
 	return false
@@ -160,7 +160,7 @@ func (r *Reconciler) SetupWithManager(mgr ctrl.Manager) error {
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&agenticv1alpha1.AgenticOLSConfig{}).
 		Watches(
-			&agenticv1alpha1.Proposal{},
+			&agenticv1alpha1.AgenticRun{},
 			handler.EnqueueRequestsFromMapFunc(func(_ context.Context, _ client.Object) []reconcile.Request {
 				return []reconcile.Request{{NamespacedName: types.NamespacedName{Name: "cluster"}}}
 			}),

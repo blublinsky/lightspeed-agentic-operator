@@ -19,7 +19,7 @@ Deployed via `config/rbac/role.yaml` (`make deploy`).
 | ClusterRoleBinding | `agentic-operator-manager-rolebinding` | Binds role to SA |
 
 Key permissions:
-- Read/write Proposals, ProposalApprovals, result CRs
+- Read/write AgenticRuns, AgenticRunApprovals, result CRs
 - Create/delete SandboxTemplates, SandboxClaims
 - Read Sandboxes (wait for ready)
 - Create/delete Roles, RoleBindings, ClusterRoles, ClusterRoleBindings
@@ -70,7 +70,7 @@ subjects:
 
 **Note:** The ServiceAccount is typically included in the SandboxTemplate YAML (see `test/agent/sandboxtemplate/sandboxtemplate.yaml`).
 
-**Scope decision:** Cluster-wide read is shown above. For tighter security, use per-namespace Roles binding only to `targetNamespaces` the Proposal references — but this requires dynamic admin action per namespace.
+**Scope decision:** Cluster-wide read is shown above. For tighter security, use per-namespace Roles binding only to `targetNamespaces` the AgenticRun references — but this requires dynamic admin action per namespace.
 
 ### 2. Operator escalation privilege
 
@@ -106,24 +106,24 @@ subjects:
 **Production alternative:** Scope the ClusterRole to only the resources and verbs agents are expected to request (e.g. `deployments patch`, `configmaps get/update` in specific API groups), rather than `"*"` on everything.
 
 
-## Dynamic execution RBAC (per-Proposal)
+## Dynamic execution RBAC (per-AgenticRun)
 
-Created by the operator during the execution phase, deleted on terminal state or Proposal deletion.
+Created by the operator during the execution phase, deleted on terminal state or AgenticRun deletion.
 
 | Resource | Name pattern | Scope | Content |
 |----------|-------------|-------|---------|
-| Role | `ls-exec-<proposal>` | Per target namespace | Permissions from `analysisResult.options[selected].rbac.namespaceScoped` |
-| RoleBinding | `ls-exec-<proposal>` | Per target namespace | Binds Role to sandbox SA |
-| ClusterRole | `ls-exec-cluster-<proposal>` | Cluster | Permissions from `rbac.clusterScoped` |
-| ClusterRoleBinding | `ls-exec-cluster-<proposal>` | Cluster | Binds ClusterRole to sandbox SA |
+| Role | `ls-exec-<run>` | Per target namespace | Permissions from `analysisResult.options[selected].rbac.namespaceScoped` |
+| RoleBinding | `ls-exec-<run>` | Per target namespace | Binds Role to sandbox SA |
+| ClusterRole | `ls-exec-cluster-<run>` | Cluster | Permissions from `rbac.clusterScoped` |
+| ClusterRoleBinding | `ls-exec-cluster-<run>` | Cluster | Binds ClusterRole to sandbox SA |
 
-Subject: per-proposal `ServiceAccount ls-exec-{namespace}-{name}` in the operator namespace.
+Subject: per-run `ServiceAccount ls-exec-{namespace}-{name}` in the operator namespace.
 
 Lifecycle:
 - **Created**: just before execution agent call (`ensureExecutionRBAC`)
-- **Deleted**: immediately after execution completes (before verification starts). Retries on failure via requeue. Also cleaned up on Proposal deletion (finalizer), escalation, or system failure as fallback.
+- **Deleted**: immediately after execution completes (before verification starts). Retries on failure via requeue. Also cleaned up on AgenticRun deletion (finalizer), escalation, or system failure as fallback.
 
-> **Resolved: per-proposal SA isolation.** Each Proposal in execution phase gets its own ServiceAccount (`ls-exec-{namespace}-{name}`) in the operator namespace. Execution RBAC binds to this per-proposal SA, not the shared `lightspeed-agent`. The per-proposal SA is explicitly deleted after execution completes (before verification). This eliminates cross-Proposal permission bleed — concurrent Proposals cannot share write RBAC. Analysis and verification continue using the shared `lightspeed-agent` SA (read-only). The operator's `cluster-admin` privilege (external prerequisite) allows it to create SAs and Roles with arbitrary content without escalation issues.
+> **Resolved: per-run SA isolation.** Each AgenticRun in execution phase gets its own ServiceAccount (`ls-exec-{namespace}-{name}`) in the operator namespace. Execution RBAC binds to this per-run SA, not the shared `lightspeed-agent`. The per-run SA is explicitly deleted after execution completes (before verification). This eliminates cross-run permission bleed — concurrent AgenticRuns cannot share write RBAC. Analysis and verification continue using the shared `lightspeed-agent` SA (read-only). The operator's `cluster-admin` privilege (external prerequisite) allows it to create SAs and Roles with arbitrary content without escalation issues.
 
 ## Agent RBAC per phase
 
@@ -132,7 +132,7 @@ The sandbox SA is `lightspeed-agent` (from `SandboxTemplate.spec.podTemplate.spe
 | Phase | SA | Read access | Write access | Notes |
 |-------|-----|-------------|--------------|-------|
 | Analysis | `lightspeed-agent` | Admin-created ClusterRole (pods, deployments, events, logs, etc.) | None | Agent inspects cluster to diagnose; no mutations |
-| Execution | `ls-exec-{ns}-{name}` (per-proposal) | Inherited from bound Roles | `ls-exec-*` Roles (operator-created) | Agent mutates cluster per remediation plan; isolated SA per Proposal |
+| Execution | `ls-exec-{ns}-{name}` (per-run) | Inherited from bound Roles | `ls-exec-*` Roles (operator-created) | Agent mutates cluster per remediation plan; isolated SA per AgenticRun |
 | Verification | `lightspeed-agent` | Admin-created read access | None | Per-proposal SA deleted after execution; verification has read only |
 | Escalation | `lightspeed-agent` | Admin-created read access | None | Agent re-analyzes failure; no mutations |
 

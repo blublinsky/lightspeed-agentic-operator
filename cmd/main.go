@@ -31,7 +31,7 @@ import (
 
 	agenticv1alpha1 "github.com/openshift/lightspeed-agentic-operator/api/v1alpha1"
 	agenticcontroller "github.com/openshift/lightspeed-agentic-operator/controller"
-	"github.com/openshift/lightspeed-agentic-operator/controller/proposal"
+	"github.com/openshift/lightspeed-agentic-operator/controller/agenticrun"
 )
 
 var scheme = runtime.NewScheme()
@@ -51,7 +51,7 @@ func initTracerProvider(endpoint string, otlpInsecure bool) (*sdktrace.TracerPro
 		semconv.ServiceVersion("dev"),
 	)
 
-	idGen := &proposal.ProposalIDGenerator{}
+	idGen := &agenticrun.AgenticRunIDGenerator{}
 
 	// No endpoint - create tracer provider without exporter (no traces exported)
 	if endpoint == "" {
@@ -188,7 +188,7 @@ func main() {
 	}
 
 	// Create AuditLogger
-	var auditLogger proposal.AuditLogger
+	var auditLogger agenticrun.AuditLogger
 	loggingEnabled := auditConfig.LoggingEnabled()
 
 	if loggingEnabled {
@@ -199,10 +199,10 @@ func main() {
 			os.Exit(1)
 		}
 		defer zapLogger.Sync()
-		auditLogger = proposal.NewProductionAuditLogger(zapLogger)
+		auditLogger = agenticrun.NewProductionAuditLogger(zapLogger)
 		log.Info("Audit logging enabled")
 	} else {
-		auditLogger = proposal.NewNoOpAuditLogger()
+		auditLogger = agenticrun.NewNoOpAuditLogger()
 		log.Info("Audit logging disabled")
 	}
 

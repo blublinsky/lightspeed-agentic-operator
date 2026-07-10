@@ -309,7 +309,7 @@ type LLMProviderSpec struct {
 // +kubebuilder:printcolumn:name="Age",type=date,JSONPath=`.metadata.creationTimestamp`
 
 // LLMProvider defines an LLM provider configuration. It is the first link in
-// the CRD chain (LLMProvider -> Agent -> Workflow -> Proposal) and is
+// the CRD chain (LLMProvider -> Agent -> Workflow -> AgenticRun) and is
 // referenced by Agent resources via spec.llmProvider.
 //
 // LLMProvider is cluster-scoped — the cluster admin manages LLM infrastructure

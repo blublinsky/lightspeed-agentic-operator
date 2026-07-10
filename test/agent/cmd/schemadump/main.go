@@ -1,6 +1,6 @@
 // Prints a full POST /v1/agent/run JSON body per phase. Embeds outputSchema
 // as raw JSON bytes (no json.Marshal on the schema) so test/agent can use
-// bytes.Equal against controller/proposal schema vars.
+// bytes.Equal against controller/agenticrun schema vars.
 //
 // Usage: go run ./test/agent/cmd/schemadump [execution|verification|escalation|analysis]
 package main
@@ -9,7 +9,7 @@ import (
 	"fmt"
 	"os"
 
-	proposal "github.com/openshift/lightspeed-agentic-operator/controller/proposal"
+	agenticrun "github.com/openshift/lightspeed-agentic-operator/controller/agenticrun"
 )
 
 func main() {
@@ -20,11 +20,11 @@ func main() {
 	var schema []byte
 	switch os.Args[1] {
 	case "execution":
-		schema = proposal.ExecutionOutputSchema
+		schema = agenticrun.ExecutionOutputSchema
 	case "verification":
-		schema = proposal.VerificationOutputSchema
+		schema = agenticrun.VerificationOutputSchema
 	case "escalation":
-		schema = proposal.EscalationOutputSchema
+		schema = agenticrun.EscalationOutputSchema
 	case "analysis":
 		schema = []byte(`{"type":"object","properties":{"options":{"type":"array","minItems":1}}}`)
 	default:

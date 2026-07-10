@@ -57,7 +57,7 @@ func (o *SuspendOptions) Complete() error {
 
 func (o *SuspendOptions) Run(ctx context.Context) error {
 	if !o.yes {
-		fmt.Fprint(o.Out, "All agentic operations will be halted and in-flight proposals will be terminated. Continue? [y/N] ")
+		fmt.Fprint(o.Out, "All agentic operations will be halted and in-flight runs will be terminated. Continue? [y/N] ")
 		reader := bufio.NewReader(o.In)
 		answer, err := reader.ReadString('\n')
 		if err != nil {

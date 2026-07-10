@@ -1,4 +1,4 @@
-# Namespace inventory proposal — analysis + execution.
+# Namespace inventory run — analysis + execution.
 #
 # The analysis agent inspects workloads in the target namespace and
 # proposes remediation options with RBAC for the execution step.
@@ -6,7 +6,7 @@
 #
 # Prerequisites: LLM provider + default agent configured (see openai.yaml, etc.)
 apiVersion: agentic.openshift.io/v1alpha1
-kind: Proposal
+kind: AgenticRun
 metadata:
   name: namespace-inventory
   namespace: openshift-lightspeed

@@ -256,7 +256,7 @@ An exhaustive pre-PR checklist for OpenShift operators built with controller-run
 - [ ] **[High]** Reconciliation logic is tested in isolation with a fake client (`fake.NewClientBuilder()`). *Why: unit tests with fake clients are fast (~ms) and catch logic bugs without needing a cluster.*
 - [ ] **[High]** Validation and defaulting logic is tested independently from the reconciler. *Why: these are pure functions; testing them separately keeps test focus narrow and failures easy to diagnose.*
 - [ ] **[High]** Table-driven tests cover both happy paths and error cases for each reconciliation phase. *Why: table-driven tests make it easy to add edge cases and see all scenarios at a glance.*
-- [ ] **[Medium]** Test helpers create minimal fixtures (e.g., `testProposal()`, `testLLM()`) with only the fields needed for each test. *Why: bloated fixtures obscure what the test actually validates.*
+- [ ] **[Medium]** Test helpers create minimal fixtures (e.g., `testAgenticRun()`, `testLLM()`) with only the fields needed for each test. *Why: bloated fixtures obscure what the test actually validates.*
 
 ### Integration Tests (envtest)
 

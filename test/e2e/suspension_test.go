@@ -46,14 +46,14 @@ func TestSuspension(t *testing.T) {
 	// Let the controller cache sync.
 	time.Sleep(5 * time.Second)
 
-	prop := createProposal(t, c, "suspend-inflight")
+	prop := createAgenticRun(t, c, "suspend-inflight")
 
-	// Proposal should reach EmergencyStopped on its first reconcile.
-	waitForPhase(t, c, prop.Name, agenticv1alpha1.ProposalPhaseEmergencyStopped)
-	t.Log("proposal terminated by suspension guard")
+	// AgenticRun should reach EmergencyStopped on its first reconcile.
+	waitForPhase(t, c, prop.Name, agenticv1alpha1.AgenticRunPhaseEmergencyStopped)
+	t.Log("run terminated by suspension guard")
 
 	waitForConfigSuspended(t, c, 1)
-	waitForConfigEvent(t, c, "SuspensionActivated", "System suspended; 1 proposals emergency-stopped")
+	waitForConfigEvent(t, c, "SuspensionActivated", "System suspended; 1 runs emergency-stopped")
 	t.Log("config status and activation event verified")
 
 	// Resume: delete config.
@@ -64,19 +64,19 @@ func TestSuspension(t *testing.T) {
 	}
 	time.Sleep(5 * time.Second)
 
-	// Verify: stopped proposal stays EmergencyStopped after resume.
-	var updated agenticv1alpha1.Proposal
+	// Verify: stopped run stays EmergencyStopped after resume.
+	var updated agenticv1alpha1.AgenticRun
 	if err := c.Get(ctx, client.ObjectKeyFromObject(prop), &updated); err != nil {
-		t.Fatalf("get stopped proposal: %v", err)
+		t.Fatalf("get stopped run: %v", err)
 	}
 	phase := agenticv1alpha1.DerivePhase(updated.Status.Conditions)
-	if phase != agenticv1alpha1.ProposalPhaseEmergencyStopped {
+	if phase != agenticv1alpha1.AgenticRunPhaseEmergencyStopped {
 		t.Fatalf("expected EmergencyStopped after resume, got %s", phase)
 	}
-	t.Log("stopped proposal remains terminal after resume")
+	t.Log("stopped run remains terminal after resume")
 }
 
-// TestSuspension_InFlight verifies rule 6: a proposal that has already
+// TestSuspension_InFlight verifies rule 6: a run that has already
 // progressed past analysis (Proposed phase) is terminated when the kill
 // switch activates.
 func TestSuspension_InFlight(t *testing.T) {
@@ -84,11 +84,11 @@ func TestSuspension_InFlight(t *testing.T) {
 	createFixtures(t, c)
 	ctx := context.Background()
 
-	prop := createProposal(t, c, "suspend-inflight-proposed")
+	prop := createAgenticRun(t, c, "suspend-inflight-proposed")
 
-	// Wait for the proposal to reach Proposed (analysis complete, non-terminal).
-	waitForPhase(t, c, prop.Name, agenticv1alpha1.ProposalPhaseProposed)
-	t.Log("proposal reached Proposed — activating kill switch")
+	// Wait for the run to reach Proposed (analysis complete, non-terminal).
+	waitForPhase(t, c, prop.Name, agenticv1alpha1.AgenticRunPhaseProposed)
+	t.Log("run reached Proposed — activating kill switch")
 
 	config := &agenticv1alpha1.AgenticOLSConfig{
 		ObjectMeta: metav1.ObjectMeta{Name: "cluster"},
@@ -105,13 +105,13 @@ func TestSuspension_InFlight(t *testing.T) {
 	}
 
 	// The AgenticOLSConfig watch re-queues all non-terminal proposals.
-	waitForPhase(t, c, prop.Name, agenticv1alpha1.ProposalPhaseEmergencyStopped)
-	t.Log("in-flight proposal terminated by suspension guard")
+	waitForPhase(t, c, prop.Name, agenticv1alpha1.AgenticRunPhaseEmergencyStopped)
+	t.Log("in-flight run terminated by suspension guard")
 }
 
-// TestSuspension_ResumeNewProposal verifies rule 10: after resuming the
+// TestSuspension_ResumeNewAgenticRun verifies rule 10: after resuming the
 // system (suspended → false), new proposals proceed normally.
-func TestSuspension_ResumeNewProposal(t *testing.T) {
+func TestSuspension_ResumeNewAgenticRun(t *testing.T) {
 	c := newClient(t)
 	createFixtures(t, c)
 	ctx := context.Background()
@@ -132,8 +132,8 @@ func TestSuspension_ResumeNewProposal(t *testing.T) {
 	time.Sleep(5 * time.Second)
 
 	// Verify suspension works.
-	stopped := createProposal(t, c, "suspend-before-resume")
-	waitForPhase(t, c, stopped.Name, agenticv1alpha1.ProposalPhaseEmergencyStopped)
+	stopped := createAgenticRun(t, c, "suspend-before-resume")
+	waitForPhase(t, c, stopped.Name, agenticv1alpha1.AgenticRunPhaseEmergencyStopped)
 	t.Log("confirmed suspension is active")
 
 	// Resume via raw JSON merge patch — avoids omitempty/omitzero serialization
@@ -149,19 +149,19 @@ func TestSuspension_ResumeNewProposal(t *testing.T) {
 	waitForConfigEvent(t, c, "SuspensionDeactivated", "System resumed; agentic operations re-enabled")
 	t.Log("config deactivation condition and event verified")
 
-	// New proposal should proceed past Pending.
-	resumed := createProposal(t, c, "suspend-after-resume")
-	waitForPhase(t, c, resumed.Name, agenticv1alpha1.ProposalPhaseProposed)
-	t.Log("new proposal proceeded normally after resume")
+	// New run should proceed past Pending.
+	resumed := createAgenticRun(t, c, "suspend-after-resume")
+	waitForPhase(t, c, resumed.Name, agenticv1alpha1.AgenticRunPhaseProposed)
+	t.Log("new run proceeded normally after resume")
 }
 
 // waitForConfigSuspended polls AgenticOLSConfig until the Suspended condition
 // is True with reason AdminActivated and a message matching the expected
-// emergency-stopped proposal count.
+// emergency-stopped run count.
 func waitForConfigSuspended(t *testing.T, c client.Client, wantStopped int) {
 	t.Helper()
 	ctx := context.Background()
-	wantMsg := "System suspended; " + strconv.Itoa(wantStopped) + " proposals emergency-stopped"
+	wantMsg := "System suspended; " + strconv.Itoa(wantStopped) + " runs emergency-stopped"
 
 	err := wait.PollUntilContextTimeout(ctx, pollInterval, pollTimeout, true, func(ctx context.Context) (bool, error) {
 		var cfg agenticv1alpha1.AgenticOLSConfig

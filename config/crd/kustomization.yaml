@@ -10,6 +10,6 @@ resources:
   - bases/agentic.openshift.io_escalationresults.yaml
   - bases/agentic.openshift.io_executionresults.yaml
   - bases/agentic.openshift.io_llmproviders.yaml
-  - bases/agentic.openshift.io_proposalapprovals.yaml
-  - bases/agentic.openshift.io_proposals.yaml
+  - bases/agentic.openshift.io_agenticrunapprovals.yaml
+  - bases/agentic.openshift.io_agenticruns.yaml
   - bases/agentic.openshift.io_verificationresults.yaml

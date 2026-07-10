@@ -7,6 +7,6 @@ resources:
   - agentic_v1alpha1_escalationresult.yaml
   - agentic_v1alpha1_executionresult.yaml
   - agentic_v1alpha1_llmprovider.yaml
-  - agentic_v1alpha1_proposal.yaml
-  - agentic_v1alpha1_proposalapproval.yaml
+  - agentic_v1alpha1_agenticrun.yaml
+  - agentic_v1alpha1_agenticrunapproval.yaml
   - agentic_v1alpha1_verificationresult.yaml

@@ -211,8 +211,8 @@ spec:
               #!/bin/bash
               set -x
               cd "${ARTIFACT_DIR}"
-              oc get proposals -A -o yaml > proposals.yaml 2>/dev/null || true
-              oc get proposalapprovals -A -o yaml > proposalapprovals.yaml 2>/dev/null || true
+              oc get agenticruns -A -o yaml > agenticruns.yaml 2>/dev/null || true
+              oc get agenticrunapprovals -A -o yaml > agenticrunapprovals.yaml 2>/dev/null || true
               oc get analysisresults -A -o yaml > analysisresults.yaml 2>/dev/null || true
               oc get executionresults -A -o yaml > executionresults.yaml 2>/dev/null || true
               oc get verificationresults -A -o yaml > verificationresults.yaml 2>/dev/null || true

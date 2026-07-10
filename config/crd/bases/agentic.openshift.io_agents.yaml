@@ -32,7 +32,7 @@ spec:
       openAPIV3Schema:
         description: "Agent defines a cluster-scoped agent tier (e.g., \"default\",
           \"smart\", \"fast\").\nThe cluster admin creates Agent resources to configure
-          LLM infrastructure\nand runtime settings. Proposals reference agents by
+          LLM infrastructure\nand runtime settings. AgenticRuns reference agents by
           name per step.\n\nAgent is cluster-scoped. The metadata.name serves as the
           tier identifier.\nThe \"default\" agent must exist; \"smart\" and \"fast\"
           are optional (the\noperator auto-links to \"default\" if absent).\n\nExample

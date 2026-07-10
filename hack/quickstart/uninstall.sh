@@ -28,10 +28,10 @@ fi
 
 step "1/7" "Deleting custom resources..."
 
-for kind in proposals proposalapprovals analysisresults executionresults verificationresults escalationresults; do
+for kind in agenticruns agenticrunapprovals analysisresults executionresults verificationresults escalationresults; do
   oc delete "${kind}" --all -n "${NAMESPACE}" --ignore-not-found 2>/dev/null || true
 done
-info "Proposal resources deleted"
+info "AgenticRun resources deleted"
 
 oc delete agents --all --ignore-not-found 2>/dev/null || true
 oc delete llmproviders --all --ignore-not-found 2>/dev/null || true
@@ -92,8 +92,8 @@ for crd in \
   escalationresults.agentic.openshift.io \
   executionresults.agentic.openshift.io \
   llmproviders.agentic.openshift.io \
-  proposalapprovals.agentic.openshift.io \
-  proposals.agentic.openshift.io \
+  agenticrunapprovals.agentic.openshift.io \
+  agenticruns.agentic.openshift.io \
   verificationresults.agentic.openshift.io; do
   oc delete crd "${crd}" --ignore-not-found --timeout=30s 2>/dev/null || true
 done

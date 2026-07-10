@@ -26,7 +26,7 @@ spec:
       openAPIV3Schema:
         description: "AgenticOLSConfig is a cluster-scoped singleton that controls
           system-wide\nagentic behavior. The cluster admin creates a single AgenticOLSConfig\nnamed
-          \"cluster\". When spec.suspended is true, all non-terminal proposals\nare
+          \"cluster\". When spec.suspended is true, all non-terminal agentic runs\nare
           terminated and no new workflow steps are started.\n\nWhen no AgenticOLSConfig
           CR exists, the system behaves as if\nsuspended is false — the CR is not
           required for normal operation.\n\nExample:\n\n\tapiVersion: agentic.openshift.io/v1alpha1\n\tkind:
@@ -98,9 +98,9 @@ spec:
                 default: false
                 description: |-
                   suspended halts all agentic operations cluster-wide when set to true.
-                  All non-terminal proposals are immediately terminated with an
+                  All non-terminal agentic runs are immediately terminated with an
                   EmergencyStopped condition. Setting back to false re-enables the
-                  system for new proposals only — EmergencyStopped proposals remain
+                  system for new agentic runs only — EmergencyStopped runs remain
                   terminal and must be recreated explicitly.
                 type: boolean
             type: object
@@ -112,7 +112,7 @@ spec:
                 description: |-
                   conditions represent the latest available observations of the
                   config's state. The "Suspended" condition tracks whether the
-                  kill switch is active and all proposals have been terminated.
+                  kill switch is active and all agentic runs have been terminated.
                 items:
                   description: Condition contains details for one aspect of the current
                     state of this API Resource.

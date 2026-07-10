@@ -10,9 +10,9 @@ Audience: AI agents. Behavioral rules and phase semantics live in **what/** spec
 - Builds controller-runtime `Manager` with core + `agenticv1alpha1` + OpenShift console/operator scheme.
 - Calls `controller.Setup(mgr, opts)` which wires **dependency injection**:
   - **Mode-based provider selection** (`--sandbox-mode`):
-    - `sandbox-claim`: `proposal.NewSandboxManager(mgr.GetClient(), namespace, "lightspeed-agent")` → `SandboxProvider`.
+    - `sandbox-claim`: `agenticrun.NewSandboxManager(mgr.GetClient(), namespace, "lightspeed-agent")` → `SandboxProvider`.
     - `bare-pod` (default): `proposal.NewBarePodManager(mgr.GetClient(), &proposal.PodSpecBuilder{Image: sandboxImage}, namespace)` → `SandboxProvider`.
-  - `proposal.NewSandboxManagerAGENT(sandboxProvider, mgr.GetClient(), proposal.NewAgentHTTPClient, namespace)` → satisfies `proposal.AgentCaller`.
+  - `agenticrun.NewSandboxManagerAGENT(sandboxProvider, mgr.GetClient(), agenticrun.NewAgentHTTPClient, namespace)` → satisfies `agenticrun.AgentCaller`.
   - `proposal.AgenticRunReconciler{ Client, Log, Agent, Namespace }` → `SetupWithManager(mgr)`.
   - `agenticolsconfig.Reconciler{ Client, EventRecorder }` → `SetupWithManager(mgr)` — maintains `AgenticOLSConfig` `Suspended` condition and suspension Events (see **what/system-config.md** rules 5a–5e).
   - `agenticconsole.EnsureAgenticConsole` registered as `manager.RunnableFunc` for console plugin deployment.
@@ -21,27 +21,27 @@ Audience: AI agents. Behavioral rules and phase semantics live in **what/** spec
 
 ---
 
-## Module map: `controller/proposal/`
+## Module map: `controller/agenticrun/`
 
 | File | Types / primary responsibilities | Key functions / methods |
 |------|----------------------------------|-------------------------|
 | `reconciler.go` | `AgenticRunReconciler` (embeds `client.Client`, `Agent AgentCaller`, `Log`) | `Reconcile`, `SetupWithManager` |
-| `handlers.go` | (methods on `AgenticRunReconciler`) | `handleAnalysis`, `handleRevision`, `handleExecution`, `handleVerification`, `handleEscalation`, `handleFailed`, `denyProposal`, `conditionTime` |
+| `handlers.go` | (methods on `AgenticRunReconciler`) | `handleAnalysis`, `handleRevision`, `handleExecution`, `handleVerification`, `handleEscalation`, `handleFailed`, `denyAgenticRun`, `conditionTime` |
 | `helpers.go` | `revisionData`, `analysisQuery`, `executionQuery`, `verificationQuery`, `escalationData`; embedded templates via `//go:embed templates/*.tmpl` | `renderTemplate`, `failStep`, `statusPatch`, `hasSandboxClaims`, `isTerminal`, `setVerificationSkipped`, `getLatestAnalysisResult`, `selectedOption`, `trimNonSelectedOptions`, `resetExecutionAndVerification`, `maxAttempts`, `buildEscalationRequest`, `needsRevision`, `buildRevisionContext`, `buildAnalysisQuery`, `buildExecutionQuery`, `buildVerificationQuery`, `prettyJSON` |
 | `approval.go` | — | `getApprovalPolicy`, `getAgenticRunApproval`, `ensureAgenticRunApproval`, `isStageApproved`, `isStageDenied`, `getStageOverrideAgent`, `getStageOption` |
-| `resolve.go` | `resolvedStep`, `resolvedWorkflow` | `resolveProposal`, `stepAgentName` |
+| `resolve.go` | `resolvedStep`, `resolvedWorkflow` | `resolveAgenticRun`, `stepAgentName` |
 | `agent.go` | `AgentCaller`, `StubAgentCaller`; `AnalysisOutput`, `ExecutionOutput`, `VerificationOutput`, `EscalationOutput` | Interface methods on `StubAgentCaller` |
 | `sandbox.go` | `SandboxProvider`, `SandboxManager` | `NewSandboxManager`, `SetStep`, `Claim`, `WaitReady`, `Release`, `buildClaim` |
 | `bare_pod_manager.go` | `BarePodManager` | `NewBarePodManager`, `SetStep`, `Claim`, `WaitReady`, `Release` |
 | `podspec_builder.go` | `PodSpecBuilder` | `Build`, `buildSkills`, `buildMCPServers`, `buildRequiredSecrets`, `addProviderSpecificEnv` |
 | `sandbox_agent.go` | `SandboxAgentCaller`; private JSON DTOs for unmarshaling agent responses local to this file | `NewSandboxAgentCaller`, `Analyze`, `Execute`, `Verify`, `Escalate`, `ReleaseSandboxes`, `callWithSandbox`, `patchSandboxInfo`, `buildAgentContext`, `collectFailedResults`, `stepString` |
-| `sandbox_templates.go` | `templateHashInput`; label constants (`LabelManaged`, `LabelProposal`, etc.); MCP env DTOs | `EnsureAgentTemplate`, `SandboxTemplateServiceAccount`, `computeTemplateHash`, `agentTemplateName`, `gcOldTemplates`, `patchLLMCredentials`, `credentialsSecretName`, `providerURL`, `patchRequiredSecrets`, `patchMCPServers`, `patchSkillsImage`, `patchSkillsPaths`, `patchProbes`, unstructured helpers (`firstContainer`, `setEnvVar`, `addEnvFromSecret`, …) |
+| `sandbox_templates.go` | `templateHashInput`; label constants (`LabelManaged`, `LabelRun`, etc.); MCP env DTOs | `EnsureAgentTemplate`, `SandboxTemplateServiceAccount`, `computeTemplateHash`, `agentTemplateName`, `gcOldTemplates`, `patchLLMCredentials`, `credentialsSecretName`, `providerURL`, `patchRequiredSecrets`, `patchMCPServers`, `patchSkillsImage`, `patchSkillsPaths`, `patchProbes`, unstructured helpers (`firstContainer`, `setEnvVar`, `addEnvFromSecret`, …) |
 | `client.go` | `AgentHTTPClientInterface`, `AgentHTTPClient`; `agentRunRequest`, `agentContext`, `agentExecutionResult`, `agentPreviousAttempt`, `agentRunResponse` | `NewAgentHTTPClient`, `(*AgentHTTPClient).Run`, `executionOutputToAgentResult` |
 | `schemas.go` | Package vars: default/minimal analysis schemas, execution/verification/escalation schemas; `defaultOutputSchemas`, `builtInPropertyJSON` | `init` (precompute property JSON), `injectBuiltInProperty`, `outputSchemaForStep` |
 | `rbac.go` | — | `ensureExecutionRBAC`, `cleanupExecutionRBAC`, `annotatedRBACNamespaces`, `deleteIfExists`, `rbacTargetNamespaces`, `truncateK8sName`, `executionRoleName`, `clusterRoleName`, `rbacLabels`, `rbacRulesToPolicyRules`, `normalizeCoreAPIGroup` |
 | `results.go` | `statusHolder` interface (defined; no references elsewhere in this package) | `resultCRName`, `agenticRunOwnerRef`, `resultLabels`, `executionRetryIndex`, `resultConditions`, `createAnalysisResult`, `createExecutionResult`, `createVerificationResult`, `createEscalationResult`, `createIdempotent` |
 | `templates/*.tmpl` | Text templates | Names: `analysis_query.tmpl`, `execution_query.tmpl`, `verification_query.tmpl`, `revision_context.tmpl`, `escalation_request.tmpl` |
-| `reconciler_test.go` | `testAgentCaller`, fixtures | `testScheme`, `testDefaultAgent`, `testProposal`, `reconcileOnce`, `getProposal`, … |
+| `reconciler_test.go` | `testAgentCaller`, fixtures | `testScheme`, `testDefaultAgent`, `testAgenticRun`, `reconcileOnce`, `getAgenticRun`, … |
 | `state_machine_test.go` | Policy/combo tests | Helpers: `testManualPolicy`, `newManualReconciler`, `approveStage`, `denyStage`, `assertPhase`, … |
 | `approval_test.go` | Tests for approval helpers | — |
 | `client_test.go` | HTTP client tests | — |
@@ -90,7 +90,7 @@ Audience: AI agents. Behavioral rules and phase semantics live in **what/** spec
 5. **Phase:** `agenticv1alpha1.DerivePhase(proposal.Status.Conditions)` — see **what/** for semantics. Now includes `EmergencyStopped` as highest-precedence terminal phase.
 6. **Finalizer add:** If not terminal and finalizer missing, add RBAC cleanup finalizer (re-fetch proposal after patch).
 7. **Terminal / failed shortcuts:** Completed/Denied/Escalated/EmergencyStopped/NoActionRequired → optional sandbox release via `Agent.ReleaseSandboxes`. `AgenticRunPhaseFailed` → `handleFailed` (RBAC cleanup if annotation set).
-8. **Shared prelude:** `getApprovalPolicy` (cluster singleton name `cluster`), `ensureAgenticRunApproval`, `resolveProposal`. Resolution failure → set `AgenticRunConditionAnalyzed=False` with `reasonWorkflowFailed`, status patch, return (no requeue).
+8. **Shared prelude:** `getApprovalPolicy` (cluster singleton name `cluster`), `ensureAgenticRunApproval`, `resolveAgenticRun`. Resolution failure → set `AgenticRunConditionAnalyzed=False` with `reasonWorkflowFailed`, status patch, return (no requeue).
 9. **Phase switch:** Routes to `handleRevision` (if `needsRevision`) before analysis/execution/escalation arms; otherwise `handleAnalysis`, `handleExecution`, `handleVerification`, `handleEscalation`, or no-op.
 10. **Handlers** set step conditions (`Unknown` → agent call → `True`/`False`), create result CRs, append `Status.Steps.*.Results`, `statusPatch` proposal.
 11. **Agent path:** All agent steps go through `r.Agent.*` which (in production) is `SandboxAgentCaller`: `callWithSandbox` calls `SetStep` on the provider → `Claim` (provider-specific: `SandboxManager.Claim` handles template derivation, `BarePodManager.Claim` builds pod directly) → `patchSandboxInfo` on proposal → `WaitReady` → normalize URL → `outputSchemaForStep` → `ClientFactory(endpoint).Run` → JSON unmarshal into outputs.
@@ -165,7 +165,7 @@ Audience: AI agents. Behavioral rules and phase semantics live in **what/** spec
 
 - **Naming:** `resultCRName(agenticRunName, step, len(existingResults)+1)` with K8s name truncation.
 - **`createIdempotent`:** `Create` object (API server drops status on create), then `Status().Patch(MergeFrom)` from a deep copy that retained full status — required because status subresource is separate.
-- **Owner:** Controller ref to `AgenticRun`; labels `LabelProposal`, `LabelStep`.
+- **Owner:** Controller ref to `AgenticRun`; labels `LabelRun`, `LabelStep`.
 - **Execution/Verification result CRs:** `Spec.RetryIndex` from `executionRetryIndex` ( ties to verification retry semantics in **what/** specs).
 
 ---
@@ -183,7 +183,7 @@ Audience: AI agents. Behavioral rules and phase semantics live in **what/** spec
 - **`AgentCaller`:** Boundary between reconciler and runtime (stub vs sandbox+HTTP). Methods mirror workflow steps plus `ReleaseSandboxes`.
 - **`SandboxProvider`:** Swappable claim/wait/release (tests can fake). Implementations: `SandboxManager` (sandbox-claim mode), `BarePodManager` (bare-pod mode). `SetStep` provides resolved step config before each `Claim` call.
 - **`PodSpecBuilder`:** Shared pod-spec assembly. Produces typed `corev1.PodSpec` from image + resolved step config. Used directly by `BarePodManager`; shared helper functions also used by `EnsureAgentTemplate` (unstructured path).
-- **`resolveProposal`:** Produces `resolvedWorkflow` with cached `Agent` + `LLMProvider` per name; applies per-stage agent overrides from `AgenticRunApproval` via `getStageOverrideAgent`; `Execution`/`Verification` steps nil when corresponding spec sections are zero.
+- **`resolveAgenticRun`:** Produces `resolvedWorkflow` with cached `Agent` + `LLMProvider` per name; applies per-stage agent overrides from `AgenticRunApproval` via `getStageOverrideAgent`; `Execution`/`Verification` steps nil when corresponding spec sections are zero.
 - **`EnsureAgentTemplate`:** Deterministic derived `SandboxTemplate` name from hash of LLM spec, model, skills, MCP servers, required secrets, step, and **base template resourceVersion**. Patches pod template env/volumes for credentials, Vertex/Bedrock/Azure extras, skills image/paths, and MCP JSON env. GC older templates labeled for same agent+step.
 
 ---

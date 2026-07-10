@@ -4,5 +4,5 @@ metadata:
   name: fix-crashloop-0
   namespace: openshift-lightspeed
 spec:
-  proposalName: fix-crashloop
+  agenticRunName: fix-crashloop
   retryIndex: 0

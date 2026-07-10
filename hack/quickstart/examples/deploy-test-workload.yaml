@@ -9,7 +9,7 @@
 #
 # Prerequisites: LLM provider + default agent configured (see openai.yaml, etc.)
 apiVersion: agentic.openshift.io/v1alpha1
-kind: Proposal
+kind: AgenticRun
 metadata:
   name: deploy-test-workload
   namespace: openshift-lightspeed

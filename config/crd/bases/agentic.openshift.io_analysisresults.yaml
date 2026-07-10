@@ -15,8 +15,8 @@ spec:
   scope: Namespaced
   versions:
   - additionalPrinterColumns:
-    - jsonPath: .spec.proposalName
-      name: Proposal
+    - jsonPath: .spec.agenticRunName
+      name: AgenticRun
       type: string
     - jsonPath: .status.conditions[?(@.type=="Completed")].reason
       name: Outcome
@@ -30,7 +30,7 @@ spec:
         description: |-
           AnalysisResult records the output of a single analysis step execution.
           Created by the operator after the analysis agent completes. Owned by
-          the parent Proposal for garbage collection.
+          the parent AgenticRun for garbage collection.
         properties:
           apiVersion:
             description: |-
@@ -52,14 +52,14 @@ spec:
           spec:
             description: spec contains the immutable identity fields for this result.
             properties:
-              proposalName:
-                description: proposalName is the name of the parent Proposal in the
-                  same namespace.
+              agenticRunName:
+                description: agenticRunName is the name of the parent AgenticRun in
+                  the same namespace.
                 maxLength: 253
                 minLength: 1
                 type: string
             required:
-            - proposalName
+            - agenticRunName
             type: object
             x-kubernetes-validations:
             - message: spec is immutable
@@ -156,7 +156,7 @@ spec:
                     components:
                       description: |-
                         components contains optional adapter-defined structured data whose
-                        shape is determined by spec.analysisOutput.schema on the Proposal.
+                        shape is determined by spec.analysisOutput.schema on the AgenticRun.
                         The operator passes this through to the AnalysisResult CR; the
                         console renders it using adapter-specific UI components.
                       x-kubernetes-preserve-unknown-fields: true
@@ -196,9 +196,208 @@ spec:
                       - rootCause
                       - summary
                       type: object
-                    proposal:
+                    rbac:
                       description: |-
-                        proposal contains the remediation plan for this option.
+                        rbac contains the RBAC permissions the execution agent will need.
+                        The operator's policy engine validates these before creating the
+                        actual Kubernetes RBAC resources. Omitted for advisory-only options.
+                      minProperties: 1
+                      properties:
+                        clusterScoped:
+                          description: |-
+                            clusterScoped are rules that will be applied via ClusterRole +
+                            ClusterRoleBinding. Used when the agent needs cross-namespace or
+                            non-namespaced resource access (e.g., reading nodes, CRDs).
+                            Maximum 50 items.
+                          items:
+                            description: |-
+                              RBACRule describes a single RBAC permission that the analysis agent
+                              requests for the execution step. The operator's policy engine validates
+                              these requests against a 6-layer defense model before creating the
+                              actual Role/ClusterRole bindings. Each rule must include a justification
+                              so that users and policy can audit why the permission is needed.
+                            properties:
+                              apiGroups:
+                                description: |-
+                                  apiGroups are the API groups for this rule (e.g., "", "apps", "batch").
+                                  The empty string "" represents the core API group (pods, services, etc.).
+                                  Maximum 20 items, each up to 253 characters.
+                                items:
+                                  maxLength: 253
+                                  type: string
+                                maxItems: 20
+                                minItems: 1
+                                type: array
+                                x-kubernetes-list-type: atomic
+                              justification:
+                                description: |-
+                                  justification is a Markdown-formatted explanation of why this
+                                  permission is needed for the remediation
+                                  (e.g., "Need to patch deployment to increase memory limit").
+                                  Required for audit and policy enforcement. Maximum 1024 characters.
+                                maxLength: 1024
+                                minLength: 1
+                                type: string
+                              namespace:
+                                description: |-
+                                  namespace is the target namespace for namespace-scoped rules.
+                                  Must match one of the run's targetNamespaces. Ignored for
+                                  cluster-scoped rules. Validation is deferred to the operator's
+                                  policy engine at runtime. Must be a valid RFC 1123 DNS label.
+                                maxLength: 63
+                                minLength: 1
+                                type: string
+                                x-kubernetes-validations:
+                                - message: 'must be a valid DNS label: lowercase alphanumeric
+                                    characters and hyphens, starting with an alphabetic
+                                    character and ending with an alphanumeric character'
+                                  rule: '!format.dns1123Label().validate(self).hasValue()'
+                              resourceNames:
+                                description: |-
+                                  resourceNames restricts the rule to specific named resources.
+                                  When empty, the rule applies to all resources of the given type.
+                                  Maximum 50 items.
+                                items:
+                                  maxLength: 253
+                                  minLength: 1
+                                  type: string
+                                maxItems: 50
+                                minItems: 1
+                                type: array
+                                x-kubernetes-list-type: atomic
+                              resources:
+                                description: |-
+                                  resources are the resource types (e.g., "pods", "deployments").
+                                  Maximum 20 items.
+                                items:
+                                  maxLength: 253
+                                  minLength: 1
+                                  type: string
+                                maxItems: 20
+                                minItems: 1
+                                type: array
+                                x-kubernetes-list-type: atomic
+                              verbs:
+                                description: |-
+                                  verbs are the allowed operations (e.g., "get", "patch", "delete").
+                                  Maximum 10 items.
+                                items:
+                                  maxLength: 63
+                                  minLength: 1
+                                  type: string
+                                maxItems: 10
+                                minItems: 1
+                                type: array
+                                x-kubernetes-list-type: atomic
+                            required:
+                            - apiGroups
+                            - justification
+                            - resources
+                            - verbs
+                            type: object
+                          maxItems: 50
+                          minItems: 1
+                          type: array
+                          x-kubernetes-list-type: atomic
+                        namespaceScoped:
+                          description: |-
+                            namespaceScoped are rules that will be applied via Role + RoleBinding
+                            in the run's target namespaces. These are the most common rules.
+                            Maximum 50 items.
+                          items:
+                            description: |-
+                              RBACRule describes a single RBAC permission that the analysis agent
+                              requests for the execution step. The operator's policy engine validates
+                              these requests against a 6-layer defense model before creating the
+                              actual Role/ClusterRole bindings. Each rule must include a justification
+                              so that users and policy can audit why the permission is needed.
+                            properties:
+                              apiGroups:
+                                description: |-
+                                  apiGroups are the API groups for this rule (e.g., "", "apps", "batch").
+                                  The empty string "" represents the core API group (pods, services, etc.).
+                                  Maximum 20 items, each up to 253 characters.
+                                items:
+                                  maxLength: 253
+                                  type: string
+                                maxItems: 20
+                                minItems: 1
+                                type: array
+                                x-kubernetes-list-type: atomic
+                              justification:
+                                description: |-
+                                  justification is a Markdown-formatted explanation of why this
+                                  permission is needed for the remediation
+                                  (e.g., "Need to patch deployment to increase memory limit").
+                                  Required for audit and policy enforcement. Maximum 1024 characters.
+                                maxLength: 1024
+                                minLength: 1
+                                type: string
+                              namespace:
+                                description: |-
+                                  namespace is the target namespace for namespace-scoped rules.
+                                  Must match one of the run's targetNamespaces. Ignored for
+                                  cluster-scoped rules. Validation is deferred to the operator's
+                                  policy engine at runtime. Must be a valid RFC 1123 DNS label.
+                                maxLength: 63
+                                minLength: 1
+                                type: string
+                                x-kubernetes-validations:
+                                - message: 'must be a valid DNS label: lowercase alphanumeric
+                                    characters and hyphens, starting with an alphabetic
+                                    character and ending with an alphanumeric character'
+                                  rule: '!format.dns1123Label().validate(self).hasValue()'
+                              resourceNames:
+                                description: |-
+                                  resourceNames restricts the rule to specific named resources.
+                                  When empty, the rule applies to all resources of the given type.
+                                  Maximum 50 items.
+                                items:
+                                  maxLength: 253
+                                  minLength: 1
+                                  type: string
+                                maxItems: 50
+                                minItems: 1
+                                type: array
+                                x-kubernetes-list-type: atomic
+                              resources:
+                                description: |-
+                                  resources are the resource types (e.g., "pods", "deployments").
+                                  Maximum 20 items.
+                                items:
+                                  maxLength: 253
+                                  minLength: 1
+                                  type: string
+                                maxItems: 20
+                                minItems: 1
+                                type: array
+                                x-kubernetes-list-type: atomic
+                              verbs:
+                                description: |-
+                                  verbs are the allowed operations (e.g., "get", "patch", "delete").
+                                  Maximum 10 items.
+                                items:
+                                  maxLength: 63
+                                  minLength: 1
+                                  type: string
+                                maxItems: 10
+                                minItems: 1
+                                type: array
+                                x-kubernetes-list-type: atomic
+                            required:
+                            - apiGroups
+                            - justification
+                            - resources
+                            - verbs
+                            type: object
+                          maxItems: 50
+                          minItems: 1
+                          type: array
+                          x-kubernetes-list-type: atomic
+                      type: object
+                    remediationPlan:
+                      description: |-
+                        remediationPlan contains the remediation plan for this option.
                         Present when analysisOutput mode is Default (or omitted). Omitted
                         when mode is Minimal without an execution step.
                       properties:
@@ -275,7 +474,7 @@ spec:
                         risk:
                           description: |-
                             risk is the agent's assessment of how risky the remediation is.
-                            Critical-risk proposals typically require explicit human review.
+                            Critical-risk remediations typically require explicit human review.
                           enum:
                           - Low
                           - Medium
@@ -310,205 +509,6 @@ spec:
                       - description
                       - estimatedImpact
                       - risk
-                      type: object
-                    rbac:
-                      description: |-
-                        rbac contains the RBAC permissions the execution agent will need.
-                        The operator's policy engine validates these before creating the
-                        actual Kubernetes RBAC resources. Omitted for advisory-only options.
-                      minProperties: 1
-                      properties:
-                        clusterScoped:
-                          description: |-
-                            clusterScoped are rules that will be applied via ClusterRole +
-                            ClusterRoleBinding. Used when the agent needs cross-namespace or
-                            non-namespaced resource access (e.g., reading nodes, CRDs).
-                            Maximum 50 items.
-                          items:
-                            description: |-
-                              RBACRule describes a single RBAC permission that the analysis agent
-                              requests for the execution step. The operator's policy engine validates
-                              these requests against a 6-layer defense model before creating the
-                              actual Role/ClusterRole bindings. Each rule must include a justification
-                              so that users and policy can audit why the permission is needed.
-                            properties:
-                              apiGroups:
-                                description: |-
-                                  apiGroups are the API groups for this rule (e.g., "", "apps", "batch").
-                                  The empty string "" represents the core API group (pods, services, etc.).
-                                  Maximum 20 items, each up to 253 characters.
-                                items:
-                                  maxLength: 253
-                                  type: string
-                                maxItems: 20
-                                minItems: 1
-                                type: array
-                                x-kubernetes-list-type: atomic
-                              justification:
-                                description: |-
-                                  justification is a Markdown-formatted explanation of why this
-                                  permission is needed for the remediation
-                                  (e.g., "Need to patch deployment to increase memory limit").
-                                  Required for audit and policy enforcement. Maximum 1024 characters.
-                                maxLength: 1024
-                                minLength: 1
-                                type: string
-                              namespace:
-                                description: |-
-                                  namespace is the target namespace for namespace-scoped rules.
-                                  Must match one of the proposal's targetNamespaces. Ignored for
-                                  cluster-scoped rules. Validation is deferred to the operator's
-                                  policy engine at runtime. Must be a valid RFC 1123 DNS label.
-                                maxLength: 63
-                                minLength: 1
-                                type: string
-                                x-kubernetes-validations:
-                                - message: 'must be a valid DNS label: lowercase alphanumeric
-                                    characters and hyphens, starting with an alphabetic
-                                    character and ending with an alphanumeric character'
-                                  rule: '!format.dns1123Label().validate(self).hasValue()'
-                              resourceNames:
-                                description: |-
-                                  resourceNames restricts the rule to specific named resources.
-                                  When empty, the rule applies to all resources of the given type.
-                                  Maximum 50 items.
-                                items:
-                                  maxLength: 253
-                                  minLength: 1
-                                  type: string
-                                maxItems: 50
-                                minItems: 1
-                                type: array
-                                x-kubernetes-list-type: atomic
-                              resources:
-                                description: |-
-                                  resources are the resource types (e.g., "pods", "deployments").
-                                  Maximum 20 items.
-                                items:
-                                  maxLength: 253
-                                  minLength: 1
-                                  type: string
-                                maxItems: 20
-                                minItems: 1
-                                type: array
-                                x-kubernetes-list-type: atomic
-                              verbs:
-                                description: |-
-                                  verbs are the allowed operations (e.g., "get", "patch", "delete").
-                                  Maximum 10 items.
-                                items:
-                                  maxLength: 63
-                                  minLength: 1
-                                  type: string
-                                maxItems: 10
-                                minItems: 1
-                                type: array
-                                x-kubernetes-list-type: atomic
-                            required:
-                            - apiGroups
-                            - justification
-                            - resources
-                            - verbs
-                            type: object
-                          maxItems: 50
-                          minItems: 1
-                          type: array
-                          x-kubernetes-list-type: atomic
-                        namespaceScoped:
-                          description: |-
-                            namespaceScoped are rules that will be applied via Role + RoleBinding
-                            in the proposal's target namespaces. These are the most common rules.
-                            Maximum 50 items.
-                          items:
-                            description: |-
-                              RBACRule describes a single RBAC permission that the analysis agent
-                              requests for the execution step. The operator's policy engine validates
-                              these requests against a 6-layer defense model before creating the
-                              actual Role/ClusterRole bindings. Each rule must include a justification
-                              so that users and policy can audit why the permission is needed.
-                            properties:
-                              apiGroups:
-                                description: |-
-                                  apiGroups are the API groups for this rule (e.g., "", "apps", "batch").
-                                  The empty string "" represents the core API group (pods, services, etc.).
-                                  Maximum 20 items, each up to 253 characters.
-                                items:
-                                  maxLength: 253
-                                  type: string
-                                maxItems: 20
-                                minItems: 1
-                                type: array
-                                x-kubernetes-list-type: atomic
-                              justification:
-                                description: |-
-                                  justification is a Markdown-formatted explanation of why this
-                                  permission is needed for the remediation
-                                  (e.g., "Need to patch deployment to increase memory limit").
-                                  Required for audit and policy enforcement. Maximum 1024 characters.
-                                maxLength: 1024
-                                minLength: 1
-                                type: string
-                              namespace:
-                                description: |-
-                                  namespace is the target namespace for namespace-scoped rules.
-                                  Must match one of the proposal's targetNamespaces. Ignored for
-                                  cluster-scoped rules. Validation is deferred to the operator's
-                                  policy engine at runtime. Must be a valid RFC 1123 DNS label.
-                                maxLength: 63
-                                minLength: 1
-                                type: string
-                                x-kubernetes-validations:
-                                - message: 'must be a valid DNS label: lowercase alphanumeric
-                                    characters and hyphens, starting with an alphabetic
-                                    character and ending with an alphanumeric character'
-                                  rule: '!format.dns1123Label().validate(self).hasValue()'
-                              resourceNames:
-                                description: |-
-                                  resourceNames restricts the rule to specific named resources.
-                                  When empty, the rule applies to all resources of the given type.
-                                  Maximum 50 items.
-                                items:
-                                  maxLength: 253
-                                  minLength: 1
-                                  type: string
-                                maxItems: 50
-                                minItems: 1
-                                type: array
-                                x-kubernetes-list-type: atomic
-                              resources:
-                                description: |-
-                                  resources are the resource types (e.g., "pods", "deployments").
-                                  Maximum 20 items.
-                                items:
-                                  maxLength: 253
-                                  minLength: 1
-                                  type: string
-                                maxItems: 20
-                                minItems: 1
-                                type: array
-                                x-kubernetes-list-type: atomic
-                              verbs:
-                                description: |-
-                                  verbs are the allowed operations (e.g., "get", "patch", "delete").
-                                  Maximum 10 items.
-                                items:
-                                  maxLength: 63
-                                  minLength: 1
-                                  type: string
-                                maxItems: 10
-                                minItems: 1
-                                type: array
-                                x-kubernetes-list-type: atomic
-                            required:
-                            - apiGroups
-                            - justification
-                            - resources
-                            - verbs
-                            type: object
-                          maxItems: 50
-                          minItems: 1
-                          type: array
-                          x-kubernetes-list-type: atomic
                       type: object
                     summary:
                       description: |-
@@ -591,10 +591,10 @@ spec:
                   - title
                   type: object
                   x-kubernetes-validations:
-                  - message: proposal is required when diagnosis is present
-                    rule: '!has(self.diagnosis) || has(self.proposal)'
-                  - message: diagnosis is required when proposal is present
-                    rule: '!has(self.proposal) || has(self.diagnosis)'
+                  - message: remediationPlan is required when diagnosis is present
+                    rule: '!has(self.diagnosis) || has(self.remediationPlan)'
+                  - message: diagnosis is required when remediationPlan is present
+                    rule: '!has(self.remediationPlan) || has(self.diagnosis)'
                 maxItems: 10
                 minItems: 1
                 type: array

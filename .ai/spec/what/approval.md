@@ -46,7 +46,7 @@ Behavioral specification for gating asynchronous workflow steps. **Phase derivat
 
 26. **Cluster-admin gate.** Only users in the `system:cluster-admins` group MAY approve run execution via `patch` on `agenticrunapprovals`. This is enforced by Kubernetes RBAC.
 27. **Dedicated approver ClusterRole.** The operator ships a ClusterRole `agentic-run-approver` granting `get`, `list`, `watch`, and `patch` on `agenticrunapprovals`, plus `get`, `list`, `watch` on `agenticruns` (so approvers can see what they're approving). A ClusterRoleBinding `agentic-run-approver-binding` binds this role to the `system:cluster-admins` group. No other operator-shipped binding grants `patch agenticrunapprovals` to human actors. The operator's own `agentic-operator-manager-role` retains `patch` since it seeds AgenticRunApproval CRs programmatically (bound to the `controller-manager` ServiceAccount, not a human).
-28. **Implementation.** Manifests live in `config/rbac/proposal_approver_role.yaml` and `config/rbac/proposal_approver_binding.yaml`, included via `config/rbac/kustomization.yaml`. Applied automatically on `make deploy`.
+28. **Implementation.** Manifests live in `config/rbac/run_approver_role.yaml` and `config/rbac/run_approver_binding.yaml`, included via `config/rbac/kustomization.yaml`. Applied automatically on `make deploy`.
 
 ## Constraints
 
@@ -59,4 +59,4 @@ Behavioral specification for gating asynchronous workflow steps. **Phase derivat
 - [PLANNED: OLS-2894] **Run-scoped policy hints** (e.g. annotations) evaluated **before** cluster `ApprovalPolicy` for enterprise overrides.
 - [PLANNED: OLS-2894] **Namespace-scoped `ApprovalPolicy`** or additional policy CRDs if tenancy demands policies per namespace instead of a single cluster singleton.
 - [PLANNED: OLS-3019] Re-authorization or **re-approval** for long-running or deviating executions beyond append-only stage semantics.
-- [PLANNED: OLS-3295] Rename `ProposalApproval` CRD to `AgenticRunApproval`, `proposals` RBAC resource to `agenticruns`, and update approver ClusterRole name.
+- [DONE: OLS-3295] Renamed `ProposalApproval` CRD to `AgenticRunApproval`, `proposals` RBAC resource to `agenticruns`, approver ClusterRole to `agentic-run-approver`.

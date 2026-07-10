@@ -23,9 +23,9 @@ import (
 // Condition type for AgenticOLSConfig status.
 const (
 	// AgenticOLSConfigConditionSuspended tracks whether the system kill
-	// switch is active. True means all proposals have been emergency-stopped
+	// switch is active. True means all agentic runs have been emergency-stopped
 	// and the system is suspended; False means the admin has deactivated
-	// suspension and the system is accepting new proposals.
+	// suspension and the system is accepting new agentic runs.
 	AgenticOLSConfigConditionSuspended = "Suspended"
 )
 
@@ -112,9 +112,9 @@ func (c *AuditConfig) OTELInsecure() bool {
 // +kubebuilder:validation:MinProperties=1
 type AgenticOLSConfigSpec struct {
 	// suspended halts all agentic operations cluster-wide when set to true.
-	// All non-terminal proposals are immediately terminated with an
+	// All non-terminal agentic runs are immediately terminated with an
 	// EmergencyStopped condition. Setting back to false re-enables the
-	// system for new proposals only — EmergencyStopped proposals remain
+	// system for new agentic runs only — EmergencyStopped runs remain
 	// terminal and must be recreated explicitly.
 	// +optional
 	// +default=false
@@ -132,7 +132,7 @@ type AgenticOLSConfigSpec struct {
 type AgenticOLSConfigStatus struct {
 	// conditions represent the latest available observations of the
 	// config's state. The "Suspended" condition tracks whether the
-	// kill switch is active and all proposals have been terminated.
+	// kill switch is active and all agentic runs have been terminated.
 	// +listType=map
 	// +listMapKey=type
 	// +patchStrategy=merge
@@ -152,7 +152,7 @@ type AgenticOLSConfigStatus struct {
 
 // AgenticOLSConfig is a cluster-scoped singleton that controls system-wide
 // agentic behavior. The cluster admin creates a single AgenticOLSConfig
-// named "cluster". When spec.suspended is true, all non-terminal proposals
+// named "cluster". When spec.suspended is true, all non-terminal agentic runs
 // are terminated and no new workflow steps are started.
 //
 // When no AgenticOLSConfig CR exists, the system behaves as if

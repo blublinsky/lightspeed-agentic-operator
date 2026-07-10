@@ -39,9 +39,9 @@ LABEL name="openshift-lightspeed/lightspeed-agentic-rhel9-operator" \
       cpe="cpe:/a:redhat:openshift_lightspeed:1::el9" \
       com.redhat.component="openshift-lightspeed" \
       io.k8s.display-name="OpenShift Lightspeed Agentic Operator" \
-      summary="OpenShift Lightspeed Agentic Operator runs the agentic proposal workflow controller." \
-      description="OpenShift Lightspeed Agentic Operator manages Proposal, ProposalApproval, Agent, LLMProvider, and related resources for the agentic workflow." \
-      io.k8s.description="OpenShift Lightspeed Agentic Operator is a component of OpenShift Lightspeed for agentic proposal workflows." \
+      summary="OpenShift Lightspeed Agentic Operator runs the agentic run workflow controller." \
+      description="OpenShift Lightspeed Agentic Operator manages AgenticRun, AgenticRunApproval, Agent, LLMProvider, and related resources for the agentic workflow." \
+      io.k8s.description="OpenShift Lightspeed Agentic Operator is a component of OpenShift Lightspeed for agentic run workflows." \
       io.openshift.tags="openshift-lightspeed,agentic,ols"
 USER 65532:65532
 

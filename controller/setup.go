@@ -8,7 +8,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/webhook/admission"
 
 	"github.com/openshift/lightspeed-agentic-operator/controller/agenticolsconfig"
-	"github.com/openshift/lightspeed-agentic-operator/controller/proposal"
+	"github.com/openshift/lightspeed-agentic-operator/controller/agenticrun"
 	agenticsandbox "github.com/openshift/lightspeed-agentic-operator/controller/sandbox"
 )
 
@@ -17,33 +17,33 @@ type Options struct {
 	AgenticSandboxImage string
 	SandboxMode         string
 	ImagePullPolicy     string
-	Audit               proposal.AuditLogger
+	Audit               agenticrun.AuditLogger
 }
 
 func Setup(mgr ctrl.Manager, opts Options) error {
 	log := ctrl.Log.WithName("agentic-setup")
 
-	var sandboxProvider proposal.SandboxProvider
+	var sandboxProvider agenticrun.SandboxProvider
 	switch opts.SandboxMode {
 	case "sandbox-claim":
-		sandboxProvider = proposal.NewSandboxManager(mgr.GetClient(), opts.Namespace, "lightspeed-agent")
+		sandboxProvider = agenticrun.NewSandboxManager(mgr.GetClient(), opts.Namespace, "lightspeed-agent")
 	default:
-		builder := &proposal.PodSpecBuilder{
+		builder := &agenticrun.PodSpecBuilder{
 			Image:           opts.AgenticSandboxImage,
 			ImagePullPolicy: opts.ImagePullPolicy,
 		}
-		sandboxProvider = proposal.NewBarePodManager(mgr.GetClient(), builder, opts.Namespace)
+		sandboxProvider = agenticrun.NewBarePodManager(mgr.GetClient(), builder, opts.Namespace)
 	}
 
-	agentCaller := proposal.NewSandboxAgentCaller(
+	agentCaller := agenticrun.NewSandboxAgentCaller(
 		sandboxProvider,
 		mgr.GetClient(),
-		proposal.NewAgentHTTPClient,
+		agenticrun.NewAgentHTTPClient,
 		opts.Namespace,
 		opts.Audit,
 	)
 
-	if err := (&proposal.ProposalReconciler{
+	if err := (&agenticrun.AgenticRunReconciler{
 		Client:    mgr.GetClient(),
 		Agent:     agentCaller,
 		Namespace: opts.Namespace,
@@ -51,7 +51,7 @@ func Setup(mgr ctrl.Manager, opts Options) error {
 	}).SetupWithManager(mgr); err != nil {
 		return err
 	}
-	log.Info("Proposal controller registered", "sandboxMode", opts.SandboxMode)
+	log.Info("AgenticRun controller registered", "sandboxMode", opts.SandboxMode)
 
 	if err := (&agenticolsconfig.Reconciler{
 		Client:        mgr.GetClient(),
@@ -72,10 +72,10 @@ func Setup(mgr ctrl.Manager, opts Options) error {
 	}
 	log.Info("Sandbox bootstrap runnable registered", "sandboxMode", opts.SandboxMode)
 
-	mgr.GetWebhookServer().Register("/mutate-proposalapproval", &admission.Webhook{
-		Handler: &proposal.ProposalApprovalMutator{},
+	mgr.GetWebhookServer().Register("/mutate-agenticrunapproval", &admission.Webhook{
+		Handler: &agenticrun.AgenticRunApprovalMutator{},
 	})
-	log.Info("ProposalApproval mutating webhook registered")
+	log.Info("AgenticRunApproval mutating webhook registered")
 
 	return nil
 }

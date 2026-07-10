@@ -18,7 +18,7 @@ Layout: software (.ai/spec/)
 
 ## Structural concerns
 
-1. **how/reconciler.md size** — At 180 lines, this file covers both `controller/proposal/` (large) and `controller/console/` (small). This is acceptable given the console section is only ~10 lines, but if the console component grows it should be split into `how/console.md`.
+1. **how/reconciler.md size** — At 180 lines, this file covers both `controller/agenticrun/` (large) and `controller/console/` (small). This is acceptable given the console section is only ~10 lines, but if the console component grows it should be split into `how/console.md`.
 
 2. **how/reconciler.md entry point section** — The `cmd/main.go` description (lines 9-15) partially duplicates the new `how/project-structure.md` entry points section. The reconciler.md section should reference project-structure.md for the main binary and focus only on the controller setup flow.
 
@@ -29,8 +29,8 @@ None. The cross-reference table in README.md provides clear mapping between what
 ## No issues
 
 - All 9 spec files have real content (no empty templates or placeholders).
-- All `controller/proposal/` source files listed in how/reconciler.md module map exist on disk.
-- All `cli/proposal/` source files listed in how/cli.md module map exist on disk.
+- All `controller/agenticrun/` source files listed in how/reconciler.md module map exist on disk.
+- All `cli/run/` source files listed in how/cli.md module map exist on disk.
 - All template files (`*.tmpl`) listed in how/reconciler.md exist.
 - All CRD types in `api/v1alpha1/*_types.go` are covered by what/crd-api.md.
 - Behavioral rules are numbered sequentially in all what/ files.

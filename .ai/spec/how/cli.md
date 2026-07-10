@@ -35,12 +35,12 @@ Audience: AI agents. Command behavior and user-facing rules belong in **what/** 
 
 ---
 
-## Module map: `cli/proposal/`
+## Module map: `cli/run/`
 
 | File | Types | Key functions |
 |------|-------|----------------|
-| `proposal.go` | — | `NewProposalCmd(streams)` — registers subcommands |
-| `helpers.go` | Color constants; `scheme` (`runtime.Scheme` with client-go + `agenticv1alpha1`); output constants | `NewClient`, `NewClientFromConfig`, `ResolveNamespace`, `IsTerminalPhase`, `PhaseColor`, `ColoredPhase`, `HumanDuration`, `PrintTable`, `MarshalOutput`, `SortProposalsByAge`, `IsValidPhase`, `IsValidStep`, `NormalizeStep`, `ValidateOutputFormat`, `stepStatusFromConditions`, `valueOrDash`, `int32PtrStr` |
+| `proposal.go` | — | `NewAgenticRunCmd(streams)` — registers subcommands |
+| `helpers.go` | Color constants; `scheme` (`runtime.Scheme` with client-go + `agenticv1alpha1`); output constants | `NewClient`, `NewClientFromConfig`, `ResolveNamespace`, `IsTerminalPhase`, `PhaseColor`, `ColoredPhase`, `HumanDuration`, `PrintTable`, `MarshalOutput`, `SortAgenticRunsByAge`, `IsValidPhase`, `IsValidStep`, `NormalizeStep`, `ValidateOutputFormat`, `stepStatusFromConditions`, `valueOrDash`, `int32PtrStr` |
 | `create.go` | `CreateOptions` (embeds `IOStreams`, holds `configFlags`, typed `client.Client`, namespace) | `NewCreateCmd`, `Complete`, `Validate`, `Run` |
 | `list.go` | `ListOptions` | `NewListCmd`, `Complete`, `Validate`, `Run`, `printTable`, `printWideTable` |
 | `get.go` | `GetOptions` | `NewGetCmd`, `Complete`, `Validate`, `Run`, `printDetail` |
@@ -79,7 +79,7 @@ oc-agentic
 
 - **Primary:** `sigs.k8s.io/controller-runtime/pkg/client.Client` constructed by `NewClient(configFlags)` → `configFlags.ToRESTConfig()` → `client.New(cfg, client.Options{Scheme: scheme})`.
 - **Typed API:** `Create`/`Get`/`List`/`Patch`/`Delete` use `agenticv1alpha1` types (`AgenticRun`, `AgenticRunList`, `AgenticRunApproval`).
-- **Watch:** `cli/proposal/watch.go` uses **`k8s.io/client-go/dynamic`** `Resource(agenticRunGVR).Namespace(ns).Watch` with `FieldSelector` on `metadata.name` — events arrive as `*unstructured.Unstructured`.
+- **Watch:** `cli/run/watch.go` uses **`k8s.io/client-go/dynamic`** `Resource(agenticRunGVR).Namespace(ns).Watch` with `FieldSelector` on `metadata.name` — events arrive as `*unstructured.Unstructured`.
 - **Logs:** `k8s.io/client-go/kubernetes.Clientset` `CoreV1().Pods(ns).GetLogs(name, opts).Stream` — pod name taken from run status sandbox info (see below).
 
 There is **no** unstructured client for run CRUD in the main commands; only watch uses dynamic + unstructured.
@@ -117,11 +117,11 @@ There is **no** unstructured client for run CRUD in the main commands; only watc
 
 ---
 
-## Shared helpers (`cli/proposal/helpers.go`)
+## Shared helpers (`cli/run/helpers.go`)
 
 - **Scheme:** Registers `clientgoscheme` + `agenticv1alpha1` for typed client.
 - **Phase/step validation:** `validAgenticRunPhases` slice must stay aligned with API constants (comment in file). `validSandboxSteps` for logs `--step`.
-- **Sorting:** `SortProposalsByAge` descending by `CreationTimestamp`.
+- **Sorting:** `SortAgenticRunsByAge` descending by `CreationTimestamp`.
 - **Duration:** `k8s.io/apimachinery/pkg/util/duration.HumanDuration`.
 
 ---
@@ -160,5 +160,5 @@ User invokes oc-agentic run <cmd> [flags]
 
 ## Implementation notes
 
-- **`validAgenticRunPhases` in `helpers.go`** includes all terminal phases including `EmergencyStopped`. Still missing `Proposed` and `Escalating` relative to `AgenticRunPhase` in `api/v1alpha1/proposal_types.go`. `list --phase` validation (`IsValidPhase`) can reject phase strings that `DerivePhase` still produces; align the slice with API constants when fixing UX.
+- **`validAgenticRunPhases` in `helpers.go`** includes all terminal phases including `EmergencyStopped`. Still missing `Proposed` and `Escalating` relative to `AgenticRunPhase` in `api/v1alpha1/agenticrun_types.go`. `list --phase` validation (`IsValidPhase`) can reject phase strings that `DerivePhase` still produces; align the slice with API constants when fixing UX.
 - **`watch` terminal set:** `IsTerminalPhase` matches five phases (includes `Escalated` and `EmergencyStopped`); matches common completion paths; verify against **what/** if `Analyzing` as terminal edge cases matter.

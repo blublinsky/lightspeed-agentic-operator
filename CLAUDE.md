@@ -16,7 +16,7 @@ All specifications live in `.ai/spec/`. Start with `.ai/spec/README.md` for proj
 | Path | Role |
 |------|------|
 | `api/v1alpha1/` | CRD types, `DerivePhase`, constants |
-| `controller/proposal/` | Proposal reconciler, approval, sandbox wiring |
+| `controller/agenticrun/` | AgenticRun reconciler, approval, sandbox wiring |
 | `controller/console/` | Agentic console plugin deployment |
 | `cli/` | `oc-agentic` plugin |
 | `config/crd/bases/` | Generated CRD YAML (regen: **`README.md`** → **`make manifests`**) |

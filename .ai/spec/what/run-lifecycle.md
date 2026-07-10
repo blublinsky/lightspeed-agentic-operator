@@ -71,4 +71,4 @@ Behavioral specification for the `AgenticRun` resource lifecycle. **Approval gat
 - [PLANNED: OLS-2894] **Per-run approval overrides** (e.g. annotations) and **namespace-scoped approval policy** if product requires policy resolution beyond cluster singleton `ApprovalPolicy` named `cluster` (current code: cluster singleton only; see `approval.md`).
 - [PLANNED: OLS-3018] `EmergencyStopped` phase and condition type added to run lifecycle. See `system-config.md` for full kill switch specification.
 - [PLANNED: OLS-3268] `NoActionRequired` terminal phase: when analysis returns `actionRequired=false`, the operator sets `Analyzed=True` with reason `NoActionRequired` and the run auto-completes, bypassing approval/execution/verification.
-- [PLANNED: OLS-3295] Rename `Proposal` CRD kind to `AgenticRun`, `ProposalApproval` to `AgenticRunApproval`, and update all associated API surface (labels, RBAC resources, CLI commands, audit events, OTEL spans).
+- [DONE: OLS-3295] Renamed `Proposal` CRD kind to `AgenticRun`, `ProposalApproval` to `AgenticRunApproval`, and updated all associated API surface (labels, RBAC resources, CLI commands, audit events, OTEL spans).

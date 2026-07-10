@@ -10,11 +10,11 @@
 | `cmd/main.go` | `main`, `scheme` | Operator binary entry point |
 | `cmd/oc-agentic/main.go` | `main` | CLI binary entry point |
 | `controller/setup.go` | `Setup`, `Options` | Wires run controller + console plugin into manager |
-| `controller/proposal/` | `AgenticRunReconciler`, `SandboxAgentCaller`, `SandboxManager` | Proposal reconciler, sandbox management, agent HTTP client, RBAC, results, templates |
+| `controller/agenticrun/` | `AgenticRunReconciler`, `SandboxAgentCaller`, `SandboxManager` | AgenticRun reconciler, sandbox management, agent HTTP client, RBAC, results, templates |
 | `controller/console/` | `EnsureAgenticConsole`, `AgenticConsoleConfig` | Console plugin deployment (Deployment, Service, ConfigMap, ConsolePlugin CR) |
 | `controller/sandbox/` | `EnsureBaseSandboxTemplate`, `BaseSandboxConfig` | Bootstrap base SandboxTemplate + ServiceAccount at startup |
 | `cli/` | `NewRootCmd` | CLI root command |
-| `cli/proposal/` | `CreateOptions`, `ListOptions`, `GetOptions`, `ApproveOptions`, `DenyOptions`, `WatchOptions`, `LogsOptions`, `DeleteOptions` | CLI subcommands for run lifecycle operations |
+| `cli/run/` | `CreateOptions`, `ListOptions`, `GetOptions`, `ApproveOptions`, `DenyOptions`, `WatchOptions`, `LogsOptions`, `DeleteOptions` | CLI subcommands for run lifecycle operations |
 | `config/crd/bases/` | Generated YAML | CRD manifests (regenerate with `make manifests`) |
 | `config/rbac/` | Generated YAML | RBAC manifests: ServiceAccount, ClusterRole, bindings |
 | `config/manager/` | Kustomize patches | Operator Deployment kustomize overlays |
@@ -45,10 +45,10 @@
 
 ## Naming Conventions
 
-- **CRD type files**: `<kind>_types.go` (e.g., `proposal_types.go`, `agent_types.go`)
+- **CRD type files**: `<kind>_types.go` (e.g., `agenticrun_types.go`, `agent_types.go`)
 - **Controller files**: functional decomposition by concern (`reconciler.go`, `handlers.go`, `approval.go`, `rbac.go`, `sandbox.go`, etc.)
 - **Test files**: `<concern>_test.go` adjacent to source
-- **Embedded templates**: `controller/proposal/templates/*.tmpl` — Go text templates for agent query payloads
+- **Embedded templates**: `controller/agenticrun/templates/*.tmpl` — Go text templates for agent query payloads
 - **API package**: `api/v1alpha1/` — follows kubebuilder conventions for API group/version layout
 - **Config manifests**: `config/<concern>/` — kustomize directory structure per kubebuilder scaffold
 - **Generated code**: `zz_generated.deepcopy.go` (controller-gen), `config/crd/bases/` (CRD YAML)

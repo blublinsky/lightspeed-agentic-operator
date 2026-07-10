@@ -1,6 +1,6 @@
 # LLM providers — cluster-scoped, define once per backend.
 #
-# CRD chain: LLMProvider → Agent ← Proposal
+# CRD chain: LLMProvider → Agent ← AgenticRun
 #
 # LLMProvider is purely about provider connection (type, credentials, endpoint).
 # The model is specified on the Agent CR, allowing multiple agents to share one

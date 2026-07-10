@@ -1,6 +1,6 @@
 # lightspeed-agentic-operator
 
-Kubernetes controller for the agentic proposal workflow (`agentic.openshift.io/v1alpha1`): Proposal, ProposalApproval, Agent, LLMProvider, ApprovalPolicy, and related resources.
+Kubernetes controller for the agentic proposal workflow (`agentic.openshift.io/v1alpha1`): AgenticRun, AgenticRunApproval, Agent, LLMProvider, ApprovalPolicy, and related resources.
 
 - **How to work (agents)**: [`agent.md`](agent.md)
 - **Two Go modules (`go.mod` / `go.sum` at root and under `api/`)**: below; **directory map, phases, conventions**: [`CLAUDE.md`](CLAUDE.md)
@@ -26,33 +26,33 @@ sudo mv oc-agentic /usr/local/bin/
 
 ```bash
 # Create a proposal
-oc agentic proposal create --request="Fix crashloop in my-app namespace" --target-namespaces=my-app
+oc agentic run create --request="Fix crashloop in my-app namespace" --target-namespaces=my-app
 
 # List proposals
-oc agentic proposal list
+oc agentic run list
 
 # Inspect a proposal
-oc agentic proposal get ag-abc12
+oc agentic run get ag-abc12
 
 # Approve steps (analysis → execution → verification)
-oc agentic proposal approve ag-abc12 --stage=analysis
-oc agentic proposal approve ag-abc12 --stage=execution --option=0
-oc agentic proposal approve ag-abc12 --stage=verification
+oc agentic run approve ag-abc12 --stage=analysis
+oc agentic run approve ag-abc12 --stage=execution --option=0
+oc agentic run approve ag-abc12 --stage=verification
 
 # Or approve all pending steps at once
-oc agentic proposal approve ag-abc12 --all --wait
+oc agentic run approve ag-abc12 --all --wait
 
 # Deny a step
-oc agentic proposal deny ag-abc12 --stage=execution
+oc agentic run deny ag-abc12 --stage=execution
 
 # Watch phase transitions
-oc agentic proposal watch ag-abc12
+oc agentic run watch ag-abc12
 
 # Stream sandbox logs
-oc agentic proposal logs ag-abc12 --step=Execution -f
+oc agentic run logs ag-abc12 --step=Execution -f
 
 # Delete a proposal
-oc agentic proposal delete ag-abc12
+oc agentic run delete ag-abc12
 
 # System operations
 oc agentic status                # check if system is active or suspended
@@ -139,7 +139,7 @@ make api-lint       # Kube API linter on api/ (golangci-lint custom + plugin; se
 
 **`make test-e2e`** runs **`go test -tags=e2e ./test/e2e/...`** against a live cluster with the operator running. Prerequisites: **`make run TEMPLATE_NAME=lightspeed-agent-mock`** (or deployed operator with **`--template-name=lightspeed-agent-mock`**) and mock agent SandboxTemplate applied (**`kubectl apply -k test/agent/sandboxtemplate`**). See `test/e2e/` package doc for details.
 
-For noisy debugging: **`go test ./controller/proposal/... -v`**, **`go test ./api/... -v`**, **`go test ./cli/... -v`**.
+For noisy debugging: **`go test ./controller/agenticrun/... -v`**, **`go test ./api/... -v`**, **`go test ./cli/... -v`**.
 
 ### API lint (Kube API linter)
 

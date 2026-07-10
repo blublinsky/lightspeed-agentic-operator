@@ -7,9 +7,9 @@ How to integrate your product with the OpenShift Lightspeed agentic platform.
 You are a **component team** (ACS, CVO, CMO, OSSM, or any product team) that wants Lightspeed to automatically analyze, remediate, or advise on issues your product detects. You ship:
 
 1. A **skills image** (OCI) containing Claude Code Skills your agent should use.
-2. An **adapter** (webhook, event source, controller) that creates `Proposal` CRs at runtime.
+2. An **adapter** (webhook, event source, controller) that creates `AgenticRun` CRs at runtime.
 
-You interact with **one CRD**: `Proposal`. Everything else (LLM infrastructure, agent tiers, approval policy) is managed by the cluster admin.
+You interact with **one CRD**: `AgenticRun`. Everything else (LLM infrastructure, agent tiers, approval policy) is managed by the cluster admin.
 
 ## Architecture overview
 
@@ -18,7 +18,7 @@ Your Adapter                      Cluster Admin (Day 0)
     |                                  |
     | creates                          | creates
     v                                  v
- Proposal ----analysis.agent----> Agent ----> LLMProvider
+ AgenticRun ----analysis.agent----> Agent ----> LLMProvider
  (namespaced)                  (cluster-scoped)  (cluster-scoped)
     |                                  |
     | spec.tools                       | creates
@@ -27,9 +27,9 @@ Your Adapter                      Cluster Admin (Day 0)
  + Secrets                       (cluster-scoped singleton)
 ```
 
-Your adapter creates a `Proposal` in your namespace. The Proposal defines the workflow shape inline (which steps run and which agent handles each step) and provides your domain-specific tools (skills image, secrets). The operator resolves the agent, picks the right LLM provider, and runs the workflow.
+Your adapter creates an `AgenticRun` in your namespace. The AgenticRun defines the workflow shape inline (which steps run and which agent handles each step) and provides your domain-specific tools (skills image, secrets). The operator resolves the agent, picks the right LLM provider, and runs the workflow.
 
-The operator also creates a `ProposalApproval` resource (1:1 with each Proposal) that tracks per-step approval state. Users approve or deny individual steps via the CLI, console, or direct API.
+The operator also creates an `AgenticRunApproval` resource (1:1 with each AgenticRun) that tracks per-step approval state. Users approve or deny individual steps via the CLI, console, or direct API.
 
 You do not need to know how `LLMProvider`, `Agent`, or `ApprovalPolicy` work internally. You reference agents by name string only.
 
@@ -55,7 +55,7 @@ subjects:
     namespace: my-product-namespace
 ```
 
-This grants your adapter permission to create and manage Proposals in `my-product-namespace`.
+This grants your adapter permission to create and manage AgenticRuns in `my-product-namespace`.
 
 ### 2. Ask the cluster admin to create runtime secrets
 
@@ -72,13 +72,13 @@ stringData:
   token: "your-token-here"
 ```
 
-Your Proposal references these by name. Proposals can only reference Secrets in their own namespace — standard Kubernetes RBAC enforces isolation.
+Your AgenticRun references these by name. AgenticRuns can only reference Secrets in their own namespace — Secrets are namespace-scoped resources and the operator enforces same-namespace references.
 
-### 3. Create a Proposal
+### 3. Create an AgenticRun
 
 ```yaml
 apiVersion: agentic.openshift.io/v1alpha1
-kind: Proposal
+kind: AgenticRun
 metadata:
   name: fix-my-issue-123
   namespace: my-product-namespace
@@ -112,7 +112,7 @@ That's it. The operator picks it up and runs the workflow.
 
 ## Lifecycle
 
-Every step (analysis, execution, verification) has a built-in approval gate. The step does not run until approval is present — either auto-approved via the cluster-wide `ApprovalPolicy` or explicitly approved by the user on the `ProposalApproval` resource.
+Every step (analysis, execution, verification) has a built-in approval gate. The step does not run until approval is present — either auto-approved via the cluster-wide `ApprovalPolicy` or explicitly approved by the user on the `AgenticRunApproval` resource.
 
 ```
                           +---------+
@@ -140,35 +140,35 @@ Every step (analysis, execution, verification) has a built-in approval gate. The
     +------------+    +-----------+    +-----------+
 ```
 
-- **Pending** -- Proposal created, waiting for reconciliation.
+- **Pending** -- AgenticRun created, waiting for reconciliation.
 - **Analyzing** -- Analysis step approved (or pending approval). Agent is running or waiting.
 - **Executing** -- Analysis complete. Execution step approved (or pending approval). Agent is running or waiting.
-- **Denied** -- User denied a step on the ProposalApproval. Terminal.
+- **Denied** -- User denied a step on the AgenticRunApproval. Terminal.
 - **Verifying** -- Execution complete (or skipped). Verification step approved (or pending approval).
 - **Completed** -- Verification passed. Terminal (success).
 - **Failed** -- A step failed. May retry (up to `maxAttempts`) or escalate.
-- **Escalated** -- Max retries exhausted. A child Proposal is created with failure history.
+- **Escalated** -- Max retries exhausted. A child AgenticRun is created with failure history.
 
 ### Approval flow
 
-When a Proposal is created, the operator creates a `ProposalApproval` resource (same name, same namespace, owned by the Proposal). The `ApprovalPolicy` singleton determines which steps auto-approve.
+When an AgenticRun is created, the operator creates an `AgenticRunApproval` resource (same name, same namespace, owned by the AgenticRun). The `ApprovalPolicy` singleton determines which steps auto-approve.
 
 Users approve steps via CLI:
 ```bash
 # Approve analysis
-oc agentic proposal approve fix-my-issue-123 --stage=analysis
+oc agentic run approve fix-my-issue-123 --stage=analysis
 
 # Approve execution with option selection and agent override
-oc agentic proposal approve fix-my-issue-123 --stage=execution --option=0 --agent=fast
+oc agentic run approve fix-my-issue-123 --stage=execution --option=0 --agent=fast
 
 # Approve verification
-oc agentic proposal approve fix-my-issue-123 --stage=verification
+oc agentic run approve fix-my-issue-123 --stage=verification
 
 # Approve all remaining steps
-oc agentic proposal approve fix-my-issue-123 --all
+oc agentic run approve fix-my-issue-123 --all
 
-# Deny a step (terminal for the entire proposal)
-oc agentic proposal deny fix-my-issue-123 --stage=execution
+# Deny a step (terminal for the entire run)
+oc agentic run deny fix-my-issue-123 --stage=execution
 ```
 
 ### Watching for completion
@@ -177,17 +177,17 @@ Use a standard Kubernetes watch on conditions. Phase is derived from conditions,
 
 ```go
 // Go example
-watch, _ := client.Watch(ctx, &v1alpha1.ProposalList{}, ...)
+watch, _ := client.Watch(ctx, &v1alpha1.AgenticRunList{}, ...)
 for event := range watch.ResultChan() {
-    proposal := event.Object.(*v1alpha1.Proposal)
-    phase := v1alpha1.DerivePhase(proposal.Status.Conditions)
+    run := event.Object.(*v1alpha1.AgenticRun)
+    phase := v1alpha1.DerivePhase(run.Status.Conditions)
     switch phase {
-    case v1alpha1.ProposalPhaseCompleted:
+    case v1alpha1.AgenticRunPhaseCompleted:
         // Remediation succeeded
-    case v1alpha1.ProposalPhaseFailed:
-        // Check proposal.Status.PreviousAttempts for failure details
-    case v1alpha1.ProposalPhaseEscalated:
-        // Max retries exhausted, child proposal created
+    case v1alpha1.AgenticRunPhaseFailed:
+        // Check run.Status.PreviousAttempts for failure details
+    case v1alpha1.AgenticRunPhaseEscalated:
+        // Max retries exhausted, child run created
     }
 }
 ```
@@ -213,7 +213,7 @@ tools:
         - /skills/my-skill-b
 ```
 
-When `paths` is omitted, the entire image is mounted. When specified, only those directories are mounted (each as a separate subPath). Use selective paths when your image has many skills but a particular proposal only needs a subset.
+When `paths` is omitted, the entire image is mounted. When specified, only those directories are mounted (each as a separate subPath). Use selective paths when your image has many skills but a particular run only needs a subset.
 
 ### Required secrets
 
@@ -244,7 +244,7 @@ tools:
 ### Analysis output
 
 Configure the analysis step's structured output via `spec.analysisOutput`. The `mode` field controls which built-in properties the schema includes:
-- **Default** (or omit entirely) — full schema with diagnosis, proposal, RBAC, verification plan
+- **Default** (or omit entirely) — full schema with diagnosis, remediationPlan, RBAC, verification plan
 - **Minimal** — base structure only (options array with title); requires `schema` to be set
 
 Optionally define a JSON Schema for adapter-specific structured data injected as a required "components" property:
@@ -303,7 +303,7 @@ Note that per-step `tools` replaces the shared `spec.tools` entirely for that st
 
 ## Workflow shapes
 
-The workflow shape is defined directly on the Proposal by including or omitting steps. Analysis is always required. Common patterns:
+The workflow shape is defined directly on the AgenticRun by including or omitting steps. Analysis is always required. Common patterns:
 
 | Pattern | Steps | Use when |
 |---------|-------|----------|
@@ -396,18 +396,18 @@ metadata:
 
 ## Building an adapter
 
-An adapter is any code that creates `Proposal` CRs in response to external events. Common patterns:
+An adapter is any code that creates `AgenticRun` CRs in response to external events. Common patterns:
 
 ### Webhook adapter
 
-Your product fires an HTTP webhook when it detects an issue. The adapter receives the webhook, translates the payload into a Proposal, and creates it via the Kubernetes API.
+Your product fires an HTTP webhook when it detects an issue. The adapter receives the webhook, translates the payload into an AgenticRun, and creates it via the Kubernetes API.
 
 ```go
 func handleViolation(w http.ResponseWriter, r *http.Request) {
     var violation ACSViolation
     json.NewDecoder(r.Body).Decode(&violation)
 
-    proposal := &v1alpha1.Proposal{
+    run := &v1alpha1.AgenticRun{
         ObjectMeta: metav1.ObjectMeta{
             GenerateName: "acs-fix-",
             Namespace:    "stackrox",
@@ -415,14 +415,14 @@ func handleViolation(w http.ResponseWriter, r *http.Request) {
                 "agentic.openshift.io/source": "acs",
             },
         },
-        Spec: v1alpha1.ProposalSpec{
+        Spec: v1alpha1.AgenticRunSpec{
             Request: formatViolation(violation),
             TargetNamespaces: []string{violation.Namespace},
-            Analysis: &v1alpha1.ProposalStep{
+            Analysis: &v1alpha1.AgenticRunStep{
                 Agent: "smart",
             },
-            Execution:    &v1alpha1.ProposalStep{},
-            Verification: &v1alpha1.ProposalStep{Agent: "fast"},
+            Execution:    &v1alpha1.AgenticRunStep{},
+            Verification: &v1alpha1.AgenticRunStep{Agent: "fast"},
             Tools: v1alpha1.ToolsSpec{
                 Skills: []v1alpha1.SkillsSource{{
                     Image: "registry.redhat.io/acs/lightspeed-skills:latest",
@@ -438,17 +438,17 @@ func handleViolation(w http.ResponseWriter, r *http.Request) {
         },
     }
 
-    client.Create(ctx, proposal)
+    client.Create(ctx, run)
 }
 ```
 
 ### AlertManager adapter
 
-An AlertManager adapter is an external webhook server that receives AlertManager notifications and creates Proposals. Like any other adapter, it runs independently from the operator — the operator only reconciles the resulting Proposal CRs.
+An AlertManager adapter is an external webhook server that receives AlertManager notifications and creates AgenticRuns. Like any other adapter, it runs independently from the operator — the operator only reconciles the resulting AgenticRun CRs.
 
 ### Controller / watch adapter
 
-Write a Kubernetes controller that watches your product's resources and creates Proposals when conditions are met:
+Write a Kubernetes controller that watches your product's resources and creates AgenticRuns when conditions are met:
 
 ```go
 func (r *MyReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
@@ -456,8 +456,8 @@ func (r *MyReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Re
     r.Get(ctx, req.NamespacedName, &myResource)
 
     if myResource.NeedsRemediation() {
-        proposal := buildProposal(myResource)
-        r.Create(ctx, proposal)
+        run := buildAgenticRun(myResource)
+        r.Create(ctx, run)
     }
     return ctrl.Result{}, nil
 }
@@ -465,20 +465,20 @@ func (r *MyReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Re
 
 ## Deduplication
 
-The platform does not deduplicate Proposals automatically. Your adapter should implement deduplication to avoid creating multiple proposals for the same issue. Common strategies:
+The platform does not deduplicate AgenticRuns automatically. Your adapter should implement deduplication to avoid creating multiple runs for the same issue. Common strategies:
 
-- **Name-based:** Use a deterministic name derived from the issue (e.g., `acs-fix-nginx-cve-2024-1234`). Kubernetes will reject the create if a Proposal with that name already exists.
-- **Label-based:** Before creating, list proposals with matching labels and check for active (non-terminal) ones.
-- **Cooldown:** Track when the last proposal was created for a given issue and skip if within a cooldown window.
+- **Name-based:** Use a deterministic name derived from the issue (e.g., `acs-fix-nginx-cve-2024-1234`). Kubernetes will reject the create if an AgenticRun with that name already exists.
+- **Label-based:** Before creating, list AgenticRuns with matching labels and check for active (non-terminal) ones.
+- **Cooldown:** Track when the last AgenticRun was created for a given issue and skip if within a cooldown window.
 
 ## Secret isolation
 
-Proposals can only reference Secrets in their own namespace. A Proposal in namespace `stackrox` cannot access a Secret in namespace `openshift-cluster-version`. This is enforced by standard Kubernetes RBAC — no custom logic required.
+AgenticRuns can only reference Secrets in their own namespace. An AgenticRun in namespace `stackrox` cannot access a Secret in namespace `openshift-cluster-version`. Secrets are namespace-scoped resources and the operator enforces same-namespace references.
 
 ```
 stackrox/                          openshift-cluster-version/
   Secret: acs-api-token              Secret: github-token
-  Proposal: fix-nginx-cve            Proposal: upgrade-risk
+  AgenticRun: fix-nginx-cve            AgenticRun: upgrade-risk
     tools.requiredSecrets:             tools.requiredSecrets:
       - acs-api-token    <-- OK          - github-token    <-- OK
       - github-token     <-- DENIED      - acs-api-token   <-- DENIED
@@ -494,15 +494,15 @@ stackrox/                          openshift-cluster-version/
 
 ## API reference
 
-### ProposalSpec
+### AgenticRunSpec
 
 ```go
-type ProposalSpec struct {
+type AgenticRunSpec struct {
     // Primary input to the analysis agent.
     // Immutable after creation. Max 32768 chars.
     Request string
 
-    // Namespace(s) this proposal operates on.
+    // Namespace(s) this run operates on.
     // Immutable. Used for RBAC scoping. Max 50 namespaces.
     TargetNamespaces []string
 
@@ -519,9 +519,9 @@ type ProposalSpec struct {
     // Omit execution to skip it (advisory/assisted).
     // Omit verification to skip it.
     // All immutable after creation.
-    Analysis     *ProposalStep  // required
-    Execution    *ProposalStep
-    Verification *ProposalStep
+    Analysis     *AgenticRunStep  // required
+    Execution    *AgenticRunStep
+    Verification *AgenticRunStep
 
     // Mutable fields — the designated mutation points.
     MaxAttempts *int32  // Retry limit (patched at approval).
@@ -529,10 +529,10 @@ type ProposalSpec struct {
 }
 ```
 
-### ProposalStep
+### AgenticRunStep
 
 ```go
-type ProposalStep struct {
+type AgenticRunStep struct {
     // Name of the cluster-scoped Agent CR to use for this step.
     // Defaults to "default" when omitted.
     Agent string
@@ -551,7 +551,7 @@ type ToolsSpec struct {
     Skills []SkillsSource
 
     // Secrets the sandbox needs at runtime. Max 20 secrets.
-    // Must exist in the same namespace as the Proposal.
+    // Must exist in the same namespace as the AgenticRun.
     RequiredSecrets []SecretRequirement
 
     // External MCP servers the agent can connect to. Max 20 servers.
@@ -576,7 +576,7 @@ type SkillsSource struct {
 
 ```go
 type SecretRequirement struct {
-    // Name of the Secret (same namespace as the Proposal). Required.
+    // Name of the Secret (same namespace as the AgenticRun). Required.
     Name string
 
     // How the secret is exposed in the sandbox pod. Required.

@@ -10,9 +10,9 @@
 #     --namespace openshift-lightspeed --set openshift=true \
 #     --set rbac.create=true --set ingress.enabled=false
 ---
-# Inline proposal (no template) for MCP demo
+# Inline agentic run (no template) for MCP demo
 apiVersion: agentic.openshift.io/v1alpha1
-kind: Proposal
+kind: AgenticRun
 metadata:
   name: mcp-demo-cluster-health
   namespace: openshift-lightspeed

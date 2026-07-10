@@ -1,6 +1,6 @@
 # Architecture
 
-The lightspeed-agentic-operator is a Kubernetes operator built with controller-runtime that orchestrates AI-assisted change proposals on OpenShift clusters. It watches `Proposal` custom resources and drives each through a multi-phase workflow -- analysis, execution, and verification -- with configurable human approval gates between phases. Each phase invokes an LLM-backed agent running inside an ephemeral sandbox pod.
+The lightspeed-agentic-operator is a Kubernetes operator built with controller-runtime that orchestrates AI-assisted change proposals on OpenShift clusters. It watches `AgenticRun` custom resources and drives each through a multi-phase workflow -- analysis, execution, and verification -- with configurable human approval gates between phases. Each phase invokes an LLM-backed agent running inside an ephemeral sandbox pod.
 
 ## System Components
 
@@ -8,7 +8,7 @@ The lightspeed-agentic-operator is a Kubernetes operator built with controller-r
 graph TB
     subgraph "Operator Binary"
         MC[cmd/main.go]
-        PC[Proposal Controller]
+        PC[AgenticRun Controller]
         CC[Console Plugin Deployer]
         MC --> PC
         MC --> CC
@@ -19,8 +19,8 @@ graph TB
     end
 
     subgraph "Kubernetes API Server"
-        P[Proposal CR]
-        PA[ProposalApproval CR]
+        P[AgenticRun CR]
+        PA[AgenticRunApproval CR]
         AG[Agent CR]
         LP[LLMProvider CR]
         AP[ApprovalPolicy CR]
@@ -53,9 +53,9 @@ graph TB
     CLI -->|watch/logs| P
 ```
 
-## Proposal Data Flow
+## AgenticRun Data Flow
 
-A `Proposal` moves through phases driven by conditions on its status. The phase is derived (never stored) from the condition set using `DerivePhase()`.
+A `AgenticRun` moves through phases driven by conditions on its status. The phase is derived (never stored) from the condition set using `DerivePhase()`.
 
 ```mermaid
 stateDiagram-v2
@@ -77,7 +77,7 @@ stateDiagram-v2
 
 Each step (analysis, execution, verification, escalation) follows the same pattern:
 
-1. Check approval gate (automatic or manual via `ProposalApproval`)
+1. Check approval gate (automatic or manual via `AgenticRunApproval`)
 2. Ensure a derived `SandboxTemplate` with LLM credentials and tools
 3. Create a `SandboxClaim` to provision an ephemeral sandbox pod
 4. Wait for sandbox readiness (`Ready=True` condition)
@@ -113,7 +113,7 @@ graph LR
 
 ## Deployment Topology
 
-The operator runs as a single-replica Deployment in a designated namespace (e.g., `openshift-lightspeed`). Sandbox pods also run in this namespace, not in tenant namespaces. Proposals are namespace-scoped and created in workload namespaces.
+The operator runs as a single-replica Deployment in a designated namespace (e.g., `openshift-lightspeed`). Sandbox pods also run in this namespace, not in tenant namespaces. AgenticRuns are namespace-scoped and created in workload namespaces.
 
 ```mermaid
 graph TB
@@ -124,8 +124,8 @@ graph TB
     end
 
     subgraph "Workload Namespace A"
-        P1[Proposal]
-        PA1[ProposalApproval]
+        P1[AgenticRun]
+        PA1[AgenticRunApproval]
         AR1[AnalysisResult]
         ROLE1[Execution Role]
     end
@@ -147,12 +147,12 @@ graph TB
 
 ## Key Architectural Decisions
 
-**Condition-driven state machine.** Proposal phase is derived from `status.conditions` via a pure function (`DerivePhase`), not stored as a separate field. This ensures the phase label is always consistent with the actual condition state and can be recomputed by any consumer (controller, CLI, console) without drift.
+**Condition-driven state machine.** AgenticRun phase is derived from `status.conditions` via a pure function (`DerivePhase`), not stored as a separate field. This ensures the phase label is always consistent with the actual condition state and can be recomputed by any consumer (controller, CLI, console) without drift.
 
 **Sandbox isolation.** Each workflow step runs in an ephemeral sandbox pod provisioned through the Sandbox API (`SandboxClaim` / `SandboxTemplate`). The operator creates derived templates by cloning a base template and patching in LLM credentials, tools, and step configuration. Templates are named by content hash for deduplication.
 
-**Dual approval model.** `ApprovalPolicy` (cluster singleton) defines default automatic/manual gates. `ProposalApproval` (per-proposal) carries user decisions, option selection, and agent overrides. The combined gate function checks both: a step is approved if the policy says `Automatic` OR the approval has a non-denied entry.
+**Dual approval model.** `ApprovalPolicy` (cluster singleton) defines default automatic/manual gates. `AgenticRunApproval` (per-proposal) carries user decisions, option selection, and agent overrides. The combined gate function checks both: a step is approved if the policy says `Automatic` OR the approval has a non-denied entry.
 
-**Create-only idempotency.** Child resources (ProposalApproval, Result CRs, RBAC objects) use `Create` + handle `AlreadyExists` rather than `Get`-then-`Create`, avoiding read-modify-write race conditions.
+**Create-only idempotency.** Child resources (AgenticRunApproval, Result CRs, RBAC objects) use `Create` + handle `AlreadyExists` rather than `Get`-then-`Create`, avoiding read-modify-write race conditions.
 
 **Separate API module.** The `api/` directory is its own Go module so downstream projects can depend on CRD types without importing controller-runtime or the full operator dependency tree.

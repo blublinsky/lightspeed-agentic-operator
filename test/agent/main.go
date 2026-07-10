@@ -1,12 +1,12 @@
 // Mock agent HTTP server for e2e and local testing. Implements the same
 // contract as the in-sandbox agent service: POST /v1/agent/run with JSON
-// body matching controller/proposal/client.go (query, systemPrompt,
+// body matching controller/agenticrun/client.go (query, systemPrompt,
 // outputSchema, context, timeout_ms). Response body is raw JSON matching
-// controller/proposal/sandbox_agent.go expectations per step.
+// controller/agenticrun/sandbox_agent.go expectations per step.
 //
 // Request JSON must stay in sync with agentRunRequest + agentContext in
-// controller/proposal/client.go. Response bodies must unmarshal into the
-// per-step structs in controller/proposal/sandbox_agent.go (analysisResponse,
+// controller/agenticrun/client.go. Response bodies must unmarshal into the
+// per-step structs in controller/agenticrun/sandbox_agent.go (analysisResponse,
 // executionResponse, verificationResponse, and the anonymous struct for
 // Escalate).
 //
@@ -29,7 +29,7 @@ import (
 	"time"
 
 	agenticv1alpha1 "github.com/openshift/lightspeed-agentic-operator/api/v1alpha1"
-	proposal "github.com/openshift/lightspeed-agentic-operator/controller/proposal"
+	agenticrun "github.com/openshift/lightspeed-agentic-operator/controller/agenticrun"
 )
 
 // Per-phase response delays (hardcoded). Execution and verification get 60s delay so that
@@ -43,7 +43,7 @@ type runRequest struct {
 	TimeoutMs    *int64          `json:"timeout_ms,omitempty"`
 }
 
-// runContext mirrors controller/proposal/client.go agentContext JSON so the
+// runContext mirrors controller/agenticrun/client.go agentContext JSON so the
 // operator's marshaled requests decode without dropping fields.
 type runContext struct {
 	TargetNamespaces []string                           `json:"targetNamespaces,omitempty"`
@@ -189,11 +189,11 @@ func compactJSON(raw json.RawMessage) []byte {
 func phaseFromSchema(schema json.RawMessage) string {
 	compact := compactJSON(schema)
 	switch {
-	case bytes.Equal(compact, compactJSON(proposal.ExecutionOutputSchema)):
+	case bytes.Equal(compact, compactJSON(agenticrun.ExecutionOutputSchema)):
 		return "execution"
-	case bytes.Equal(compact, compactJSON(proposal.VerificationOutputSchema)):
+	case bytes.Equal(compact, compactJSON(agenticrun.VerificationOutputSchema)):
 		return "verification"
-	case bytes.Equal(compact, compactJSON(proposal.EscalationOutputSchema)):
+	case bytes.Equal(compact, compactJSON(agenticrun.EscalationOutputSchema)):
 		return "escalation"
 	default:
 		return "analysis"
@@ -249,7 +249,7 @@ func cannedResponse(phase, targetNS string) []byte {
         "confidence": "High",
         "rootCause": "mock root cause"
       },
-      "proposal": {
+      "remediationPlan": {
         "description": "mock proposal description",
         "actions": [
           { "command": "kubectl get configmap -n %s", "type": "pre-check", "description": "Check current configmap state" },

@@ -15,7 +15,7 @@ Replace the HTTP server with a batch CLI program that reads input from a mounted
    apiVersion: v1
    kind: ConfigMap
    metadata:
-     name: ls-analysis-<proposal>-input
+     name: ls-analysis-<run>-input
    data:
      request.json: |
        {"query":"...","outputSchema":{...},"context":{...}}
@@ -28,9 +28,9 @@ Replace the HTTP server with a batch CLI program that reads input from a mounted
    apiVersion: v1
    kind: ConfigMap
    metadata:
-     name: ls-analysis-<proposal>-output
+     name: ls-analysis-<run>-output
      labels:
-       agentic.openshift.io/proposal: <proposal>
+       agentic.openshift.io/run: <run>
        agentic.openshift.io/step: analysis
    data: {}
    ```
@@ -115,7 +115,7 @@ metadata:
 rules:
 - apiGroups: [""]
   resources: ["configmaps"]
-  resourceNames: ["ls-analysis-<proposal>-output"]
+  resourceNames: ["ls-analysis-<run>-output"]
   verbs: ["get", "update"]
 ```
 

@@ -14,208 +14,208 @@ func TestDerivePhase(t *testing.T) {
 	tests := []struct {
 		name       string
 		conditions []metav1.Condition
-		want       ProposalPhase
+		want       AgenticRunPhase
 	}{
 		{
 			name:       "no conditions",
 			conditions: nil,
-			want:       ProposalPhasePending,
+			want:       AgenticRunPhasePending,
 		},
 		{
 			name:       "empty conditions",
 			conditions: []metav1.Condition{},
-			want:       ProposalPhasePending,
+			want:       AgenticRunPhasePending,
 		},
 		{
 			name: "analyzing",
 			conditions: []metav1.Condition{
-				cond(ProposalConditionAnalyzed, metav1.ConditionUnknown, "InProgress"),
+				cond(AgenticRunConditionAnalyzed, metav1.ConditionUnknown, "InProgress"),
 			},
-			want: ProposalPhaseAnalyzing,
+			want: AgenticRunPhaseAnalyzing,
 		},
 		{
 			name: "analysis complete - proposed",
 			conditions: []metav1.Condition{
-				cond(ProposalConditionAnalyzed, metav1.ConditionTrue, "Complete"),
+				cond(AgenticRunConditionAnalyzed, metav1.ConditionTrue, "Complete"),
 			},
-			want: ProposalPhaseProposed,
+			want: AgenticRunPhaseProposed,
 		},
 		{
 			name: "analysis failed",
 			conditions: []metav1.Condition{
-				cond(ProposalConditionAnalyzed, metav1.ConditionFalse, "Failed"),
+				cond(AgenticRunConditionAnalyzed, metav1.ConditionFalse, "Failed"),
 			},
-			want: ProposalPhaseFailed,
+			want: AgenticRunPhaseFailed,
 		},
 		{
 			name: "denied",
 			conditions: []metav1.Condition{
-				cond(ProposalConditionDenied, metav1.ConditionTrue, "UserDenied"),
+				cond(AgenticRunConditionDenied, metav1.ConditionTrue, "UserDenied"),
 			},
-			want: ProposalPhaseDenied,
+			want: AgenticRunPhaseDenied,
 		},
 		{
 			name: "executing",
 			conditions: []metav1.Condition{
-				cond(ProposalConditionAnalyzed, metav1.ConditionTrue, "Complete"),
-				cond(ProposalConditionExecuted, metav1.ConditionUnknown, "InProgress"),
+				cond(AgenticRunConditionAnalyzed, metav1.ConditionTrue, "Complete"),
+				cond(AgenticRunConditionExecuted, metav1.ConditionUnknown, "InProgress"),
 			},
-			want: ProposalPhaseExecuting,
+			want: AgenticRunPhaseExecuting,
 		},
 		{
 			name: "execution failed",
 			conditions: []metav1.Condition{
-				cond(ProposalConditionAnalyzed, metav1.ConditionTrue, "Complete"),
-				cond(ProposalConditionExecuted, metav1.ConditionFalse, "Failed"),
+				cond(AgenticRunConditionAnalyzed, metav1.ConditionTrue, "Complete"),
+				cond(AgenticRunConditionExecuted, metav1.ConditionFalse, "Failed"),
 			},
-			want: ProposalPhaseFailed,
+			want: AgenticRunPhaseFailed,
 		},
 		{
 			name: "execution complete - verifying",
 			conditions: []metav1.Condition{
-				cond(ProposalConditionAnalyzed, metav1.ConditionTrue, "Complete"),
-				cond(ProposalConditionExecuted, metav1.ConditionTrue, "Complete"),
+				cond(AgenticRunConditionAnalyzed, metav1.ConditionTrue, "Complete"),
+				cond(AgenticRunConditionExecuted, metav1.ConditionTrue, "Complete"),
 			},
-			want: ProposalPhaseVerifying,
+			want: AgenticRunPhaseVerifying,
 		},
 		{
 			name: "verifying in progress",
 			conditions: []metav1.Condition{
-				cond(ProposalConditionAnalyzed, metav1.ConditionTrue, "Complete"),
-				cond(ProposalConditionExecuted, metav1.ConditionTrue, "Complete"),
-				cond(ProposalConditionVerified, metav1.ConditionUnknown, "InProgress"),
+				cond(AgenticRunConditionAnalyzed, metav1.ConditionTrue, "Complete"),
+				cond(AgenticRunConditionExecuted, metav1.ConditionTrue, "Complete"),
+				cond(AgenticRunConditionVerified, metav1.ConditionUnknown, "InProgress"),
 			},
-			want: ProposalPhaseVerifying,
+			want: AgenticRunPhaseVerifying,
 		},
 		{
 			name: "verification passed - completed",
 			conditions: []metav1.Condition{
-				cond(ProposalConditionAnalyzed, metav1.ConditionTrue, "Complete"),
-				cond(ProposalConditionExecuted, metav1.ConditionTrue, "Complete"),
-				cond(ProposalConditionVerified, metav1.ConditionTrue, "Passed"),
+				cond(AgenticRunConditionAnalyzed, metav1.ConditionTrue, "Complete"),
+				cond(AgenticRunConditionExecuted, metav1.ConditionTrue, "Complete"),
+				cond(AgenticRunConditionVerified, metav1.ConditionTrue, "Passed"),
 			},
-			want: ProposalPhaseCompleted,
+			want: AgenticRunPhaseCompleted,
 		},
 		{
 			name: "verification failed - terminal",
 			conditions: []metav1.Condition{
-				cond(ProposalConditionAnalyzed, metav1.ConditionTrue, "Complete"),
-				cond(ProposalConditionExecuted, metav1.ConditionTrue, "Complete"),
-				cond(ProposalConditionVerified, metav1.ConditionFalse, "Failed"),
+				cond(AgenticRunConditionAnalyzed, metav1.ConditionTrue, "Complete"),
+				cond(AgenticRunConditionExecuted, metav1.ConditionTrue, "Complete"),
+				cond(AgenticRunConditionVerified, metav1.ConditionFalse, "Failed"),
 			},
-			want: ProposalPhaseFailed,
+			want: AgenticRunPhaseFailed,
 		},
 		{
 			name: "verification failed - retrying execution",
 			conditions: []metav1.Condition{
-				cond(ProposalConditionAnalyzed, metav1.ConditionTrue, "Complete"),
-				cond(ProposalConditionVerified, metav1.ConditionFalse, "RetryingExecution"),
+				cond(AgenticRunConditionAnalyzed, metav1.ConditionTrue, "Complete"),
+				cond(AgenticRunConditionVerified, metav1.ConditionFalse, "RetryingExecution"),
 			},
-			want: ProposalPhaseExecuting,
+			want: AgenticRunPhaseExecuting,
 		},
 		{
 			name: "verification failed - retries exhausted (without escalated condition)",
 			conditions: []metav1.Condition{
-				cond(ProposalConditionAnalyzed, metav1.ConditionTrue, "Complete"),
-				cond(ProposalConditionVerified, metav1.ConditionFalse, "RetriesExhausted"),
+				cond(AgenticRunConditionAnalyzed, metav1.ConditionTrue, "Complete"),
+				cond(AgenticRunConditionVerified, metav1.ConditionFalse, "RetriesExhausted"),
 			},
-			want: ProposalPhaseFailed,
+			want: AgenticRunPhaseFailed,
 		},
 		{
 			name: "advisory completed - exec and verify skipped",
 			conditions: []metav1.Condition{
-				cond(ProposalConditionAnalyzed, metav1.ConditionTrue, "Complete"),
-				cond(ProposalConditionExecuted, metav1.ConditionTrue, "Skipped"),
-				cond(ProposalConditionVerified, metav1.ConditionTrue, "Skipped"),
+				cond(AgenticRunConditionAnalyzed, metav1.ConditionTrue, "Complete"),
+				cond(AgenticRunConditionExecuted, metav1.ConditionTrue, "Skipped"),
+				cond(AgenticRunConditionVerified, metav1.ConditionTrue, "Skipped"),
 			},
-			want: ProposalPhaseCompleted,
+			want: AgenticRunPhaseCompleted,
 		},
 		{
 			name: "escalated",
 			conditions: []metav1.Condition{
-				cond(ProposalConditionAnalyzed, metav1.ConditionTrue, "Complete"),
-				cond(ProposalConditionEscalated, metav1.ConditionTrue, "MaxAttemptsExhausted"),
+				cond(AgenticRunConditionAnalyzed, metav1.ConditionTrue, "Complete"),
+				cond(AgenticRunConditionEscalated, metav1.ConditionTrue, "MaxAttemptsExhausted"),
 			},
-			want: ProposalPhaseEscalated,
+			want: AgenticRunPhaseEscalated,
 		},
 		{
 			name: "escalated takes priority over other conditions",
 			conditions: []metav1.Condition{
-				cond(ProposalConditionAnalyzed, metav1.ConditionTrue, "Complete"),
-				cond(ProposalConditionExecuted, metav1.ConditionFalse, "Failed"),
-				cond(ProposalConditionEscalated, metav1.ConditionTrue, "MaxAttemptsExhausted"),
+				cond(AgenticRunConditionAnalyzed, metav1.ConditionTrue, "Complete"),
+				cond(AgenticRunConditionExecuted, metav1.ConditionFalse, "Failed"),
+				cond(AgenticRunConditionEscalated, metav1.ConditionTrue, "MaxAttemptsExhausted"),
 			},
-			want: ProposalPhaseEscalated,
+			want: AgenticRunPhaseEscalated,
 		},
 		{
 			name: "escalating - in progress",
 			conditions: []metav1.Condition{
-				cond(ProposalConditionEscalated, metav1.ConditionUnknown, "InProgress"),
+				cond(AgenticRunConditionEscalated, metav1.ConditionUnknown, "InProgress"),
 			},
-			want: ProposalPhaseEscalating,
+			want: AgenticRunPhaseEscalating,
 		},
 		{
 			name: "escalating takes priority over verified retries exhausted",
 			conditions: []metav1.Condition{
-				cond(ProposalConditionAnalyzed, metav1.ConditionTrue, "Complete"),
-				cond(ProposalConditionVerified, metav1.ConditionFalse, "RetriesExhausted"),
-				cond(ProposalConditionEscalated, metav1.ConditionUnknown, "RetriesExhausted"),
+				cond(AgenticRunConditionAnalyzed, metav1.ConditionTrue, "Complete"),
+				cond(AgenticRunConditionVerified, metav1.ConditionFalse, "RetriesExhausted"),
+				cond(AgenticRunConditionEscalated, metav1.ConditionUnknown, "RetriesExhausted"),
 			},
-			want: ProposalPhaseEscalating,
+			want: AgenticRunPhaseEscalating,
 		},
 		{
 			name: "escalation failed",
 			conditions: []metav1.Condition{
-				cond(ProposalConditionEscalated, metav1.ConditionFalse, "Failed"),
+				cond(AgenticRunConditionEscalated, metav1.ConditionFalse, "Failed"),
 			},
-			want: ProposalPhaseFailed,
+			want: AgenticRunPhaseFailed,
 		},
 		{
 			name: "denied takes priority over analyzed",
 			conditions: []metav1.Condition{
-				cond(ProposalConditionAnalyzed, metav1.ConditionTrue, "Complete"),
-				cond(ProposalConditionDenied, metav1.ConditionTrue, "UserDenied"),
+				cond(AgenticRunConditionAnalyzed, metav1.ConditionTrue, "Complete"),
+				cond(AgenticRunConditionDenied, metav1.ConditionTrue, "UserDenied"),
 			},
-			want: ProposalPhaseDenied,
+			want: AgenticRunPhaseDenied,
 		},
 		{
 			name: "emergency stopped",
 			conditions: []metav1.Condition{
-				cond(ProposalConditionEmergencyStopped, metav1.ConditionTrue, "SystemSuspended"),
+				cond(AgenticRunConditionEmergencyStopped, metav1.ConditionTrue, "SystemSuspended"),
 			},
-			want: ProposalPhaseEmergencyStopped,
+			want: AgenticRunPhaseEmergencyStopped,
 		},
 		{
 			name: "emergency stopped takes priority over analyzed",
 			conditions: []metav1.Condition{
-				cond(ProposalConditionAnalyzed, metav1.ConditionTrue, "Complete"),
-				cond(ProposalConditionEmergencyStopped, metav1.ConditionTrue, "SystemSuspended"),
+				cond(AgenticRunConditionAnalyzed, metav1.ConditionTrue, "Complete"),
+				cond(AgenticRunConditionEmergencyStopped, metav1.ConditionTrue, "SystemSuspended"),
 			},
-			want: ProposalPhaseEmergencyStopped,
+			want: AgenticRunPhaseEmergencyStopped,
 		},
 		{
 			name: "emergency stopped takes priority over escalated",
 			conditions: []metav1.Condition{
-				cond(ProposalConditionEscalated, metav1.ConditionTrue, "MaxAttemptsExhausted"),
-				cond(ProposalConditionEmergencyStopped, metav1.ConditionTrue, "SystemSuspended"),
+				cond(AgenticRunConditionEscalated, metav1.ConditionTrue, "MaxAttemptsExhausted"),
+				cond(AgenticRunConditionEmergencyStopped, metav1.ConditionTrue, "SystemSuspended"),
 			},
-			want: ProposalPhaseEmergencyStopped,
+			want: AgenticRunPhaseEmergencyStopped,
 		},
 		{
 			name: "emergency stopped takes priority over denied",
 			conditions: []metav1.Condition{
-				cond(ProposalConditionDenied, metav1.ConditionTrue, "UserDenied"),
-				cond(ProposalConditionEmergencyStopped, metav1.ConditionTrue, "SystemSuspended"),
+				cond(AgenticRunConditionDenied, metav1.ConditionTrue, "UserDenied"),
+				cond(AgenticRunConditionEmergencyStopped, metav1.ConditionTrue, "SystemSuspended"),
 			},
-			want: ProposalPhaseEmergencyStopped,
+			want: AgenticRunPhaseEmergencyStopped,
 		},
 		{
 			name: "emergency stopped false does not affect phase",
 			conditions: []metav1.Condition{
-				cond(ProposalConditionAnalyzed, metav1.ConditionTrue, "Complete"),
-				cond(ProposalConditionEmergencyStopped, metav1.ConditionFalse, ""),
+				cond(AgenticRunConditionAnalyzed, metav1.ConditionTrue, "Complete"),
+				cond(AgenticRunConditionEmergencyStopped, metav1.ConditionFalse, ""),
 			},
-			want: ProposalPhaseProposed,
+			want: AgenticRunPhaseProposed,
 		},
 	}
 

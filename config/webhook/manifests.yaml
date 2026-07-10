@@ -5,7 +5,7 @@ metadata:
   annotations:
     service.beta.openshift.io/inject-cabundle: "true"
 webhooks:
-  - name: proposalapproval-mutator.agentic.openshift.io
+  - name: agenticrunapproval-mutator.agentic.openshift.io
     namespaceSelector:
       matchLabels:
         kubernetes.io/metadata.name: __OPERATOR_NAMESPACE__
@@ -13,12 +13,12 @@ webhooks:
       service:
         name: agentic-operator-webhook-service
         namespace: __OPERATOR_NAMESPACE__
-        path: /mutate-proposalapproval
+        path: /mutate-agenticrunapproval
     rules:
       - operations: ["UPDATE"]
         apiGroups: ["agentic.openshift.io"]
         apiVersions: ["v1alpha1"]
-        resources: ["proposalapprovals"]
+        resources: ["agenticrunapprovals"]
     failurePolicy: Fail
     sideEffects: None
     admissionReviewVersions: ["v1"]

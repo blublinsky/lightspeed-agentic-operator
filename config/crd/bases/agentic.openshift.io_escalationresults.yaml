@@ -15,8 +15,8 @@ spec:
   scope: Namespaced
   versions:
   - additionalPrinterColumns:
-    - jsonPath: .spec.proposalName
-      name: Proposal
+    - jsonPath: .spec.agenticRunName
+      name: AgenticRun
       type: string
     - jsonPath: .status.conditions[?(@.type=="Completed")].reason
       name: Outcome
@@ -30,7 +30,7 @@ spec:
         description: |-
           EscalationResult records the output of the escalation step. Created by
           the operator after the escalation agent completes. Owned by the parent
-          Proposal for garbage collection.
+          AgenticRun for garbage collection.
         properties:
           apiVersion:
             description: |-
@@ -52,14 +52,14 @@ spec:
           spec:
             description: spec contains the immutable identity fields for this result.
             properties:
-              proposalName:
-                description: proposalName is the name of the parent Proposal in the
-                  same namespace.
+              agenticRunName:
+                description: agenticRunName is the name of the parent AgenticRun in
+                  the same namespace.
                 maxLength: 253
                 minLength: 1
                 type: string
             required:
-            - proposalName
+            - agenticRunName
             type: object
             x-kubernetes-validations:
             - message: spec is immutable

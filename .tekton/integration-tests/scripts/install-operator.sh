@@ -71,7 +71,7 @@ metadata:
   name: cluster
 spec:
   maxAttempts: 3
-  maxConcurrentProposals: 5
+  maxConcurrentRuns: 5
   stages:
   - name: Analysis
     approval: Automatic

@@ -136,10 +136,10 @@ collect_artifacts() {
         > "$artifact_dir/operator-logs.txt" 2>/dev/null || true
     oc logs deployment/controller-manager -n "$namespace" --tail=500 --previous \
         > "$artifact_dir/operator-logs-previous.txt" 2>/dev/null || true
-    oc get proposals -A -o yaml \
-        > "$artifact_dir/proposals.yaml" 2>/dev/null || true
-    oc get proposalapprovals -A -o yaml \
-        > "$artifact_dir/proposalapprovals.yaml" 2>/dev/null || true
+    oc get agenticruns -A -o yaml \
+        > "$artifact_dir/agenticruns.yaml" 2>/dev/null || true
+    oc get agenticrunapprovals -A -o yaml \
+        > "$artifact_dir/agenticrunapprovals.yaml" 2>/dev/null || true
     oc get analysisresults -A -o yaml \
         > "$artifact_dir/analysisresults.yaml" 2>/dev/null || true
     oc get executionresults -A -o yaml \

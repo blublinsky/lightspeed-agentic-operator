@@ -44,15 +44,34 @@ rules:
   - agentic.openshift.io
   resources:
   - agenticolsconfigs/status
+  - agenticrunapprovals/status
+  - agenticruns/status
   - analysisresults/status
   - escalationresults/status
   - executionresults/status
-  - proposalapprovals/status
-  - proposals/status
   - verificationresults/status
   verbs:
   - get
   - patch
+  - update
+- apiGroups:
+  - agentic.openshift.io
+  resources:
+  - agenticrunapprovals
+  - agenticruns
+  verbs:
+  - create
+  - delete
+  - get
+  - list
+  - patch
+  - update
+  - watch
+- apiGroups:
+  - agentic.openshift.io
+  resources:
+  - agenticruns/finalizers
+  verbs:
   - update
 - apiGroups:
   - agentic.openshift.io
@@ -66,25 +85,6 @@ rules:
   - get
   - list
   - watch
-- apiGroups:
-  - agentic.openshift.io
-  resources:
-  - proposalapprovals
-  - proposals
-  verbs:
-  - create
-  - delete
-  - get
-  - list
-  - patch
-  - update
-  - watch
-- apiGroups:
-  - agentic.openshift.io
-  resources:
-  - proposals/finalizers
-  verbs:
-  - update
 - apiGroups:
   - agents.x-k8s.io
   resources:

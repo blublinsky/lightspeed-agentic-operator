@@ -35,8 +35,8 @@ CRD_FILES=(
   agentic.openshift.io_escalationresults.yaml
   agentic.openshift.io_executionresults.yaml
   agentic.openshift.io_llmproviders.yaml
-  agentic.openshift.io_proposalapprovals.yaml
-  agentic.openshift.io_proposals.yaml
+  agentic.openshift.io_agenticrunapprovals.yaml
+  agentic.openshift.io_agenticruns.yaml
   agentic.openshift.io_verificationresults.yaml
 )
 
@@ -63,10 +63,27 @@ info "cluster-admin privileges confirmed"
 
 step "2/7" "Installing Agentic Operator CRDs..."
 
+# Prefer local CRD files when running from a checkout; fall back to GitHub.
+REPO_ROOT=""
+if [ -n "${BASH_SOURCE[0]:-}" ]; then
+  _candidate="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+  if [ -d "${_candidate}/config/crd/bases" ]; then
+    REPO_ROOT="${_candidate}"
+  fi
+fi
+
 for crd in "${CRD_FILES[@]}"; do
-  oc apply -f "${GITHUB_RAW}/config/crd/bases/${crd}"
+  if [ -n "${REPO_ROOT}" ]; then
+    oc apply -f "${REPO_ROOT}/config/crd/bases/${crd}"
+  else
+    oc apply -f "${GITHUB_RAW}/config/crd/bases/${crd}"
+  fi
 done
-info "${#CRD_FILES[@]} CRDs applied"
+if [ -n "${REPO_ROOT}" ]; then
+  info "${#CRD_FILES[@]} CRDs applied (from local checkout)"
+else
+  info "${#CRD_FILES[@]} CRDs applied (from GitHub)"
+fi
 
 # --- Step 3: Namespace + operator deployment ----------------------------------
 
@@ -225,7 +242,7 @@ metadata:
   name: cluster
 spec:
   maxAttempts: 3
-  maxConcurrentProposals: 5
+  maxConcurrentRuns: 5
   stages:
   - name: Analysis
     approval: Automatic
@@ -282,7 +299,7 @@ metadata:
   annotations:
     service.beta.openshift.io/inject-cabundle: "true"
 webhooks:
-  - name: proposalapproval-mutator.agentic.openshift.io
+  - name: agenticrunapproval-mutator.agentic.openshift.io
     namespaceSelector:
       matchLabels:
         kubernetes.io/metadata.name: ${NAMESPACE}
@@ -290,12 +307,12 @@ webhooks:
       service:
         name: agentic-operator-webhook-service
         namespace: ${NAMESPACE}
-        path: /mutate-proposalapproval
+        path: /mutate-agenticrunapproval
     rules:
       - operations: ["UPDATE"]
         apiGroups: ["agentic.openshift.io"]
         apiVersions: ["v1alpha1"]
-        resources: ["proposalapprovals"]
+        resources: ["agenticrunapprovals"]
     failurePolicy: Fail
     sideEffects: None
     admissionReviewVersions: ["v1"]
@@ -321,7 +338,11 @@ fi
 
 # --- Done ---------------------------------------------------------------------
 
-EXAMPLES_BASE="${GITHUB_RAW}/hack/quickstart/examples"
+if [ -n "${REPO_ROOT}" ] && [ -d "${REPO_ROOT}/hack/quickstart/examples" ]; then
+  EXAMPLES_BASE="${REPO_ROOT}/hack/quickstart/examples"
+else
+  EXAMPLES_BASE="${GITHUB_RAW}/hack/quickstart/examples"
+fi
 
 cat <<DONE
 
@@ -343,47 +364,42 @@ cat <<DONE
   export GOOGLE_APPLICATION_CREDENTIALS=/path/to/your/service-account-key.json
   oc create secret generic llm-creds-vertex -n ${NAMESPACE} \\
     --from-file=GOOGLE_APPLICATION_CREDENTIALS="\$GOOGLE_APPLICATION_CREDENTIALS"
-  curl -sLO ${EXAMPLES_BASE}/vertex-anthropic.yaml
   # Edit vertex-anthropic.yaml — set your GCP project ID and region
-  oc apply -f vertex-anthropic.yaml
+  oc apply -f ${EXAMPLES_BASE}/vertex-anthropic.yaml
 
   ── Vertex AI / Gemini ─────────────────────────────────────
   export GOOGLE_APPLICATION_CREDENTIALS=/path/to/your/service-account-key.json
   oc create secret generic llm-creds-vertex -n ${NAMESPACE} \\
     --from-file=GOOGLE_APPLICATION_CREDENTIALS="\$GOOGLE_APPLICATION_CREDENTIALS"
-  curl -sLO ${EXAMPLES_BASE}/vertex-google.yaml
   # Edit vertex-google.yaml — set your GCP project ID and region
-  oc apply -f vertex-google.yaml
+  oc apply -f ${EXAMPLES_BASE}/vertex-google.yaml
 
   ── OpenAI ─────────────────────────────────────────────────
   oc create secret generic llm-creds-openai -n ${NAMESPACE} \\
     --from-literal=OPENAI_API_KEY=sk-...
-  curl -sLO ${EXAMPLES_BASE}/openai.yaml
-  oc apply -f openai.yaml
+  oc apply -f ${EXAMPLES_BASE}/openai.yaml
 
-  ── Then submit an example proposal ────────────────────────
-  curl -sLO ${EXAMPLES_BASE}/namespace-inventory.yaml
-  curl -sLO ${EXAMPLES_BASE}/deploy-test-workload.yaml
+  ── Then submit an example run ────────────────────────
 
   # Investigate namespace workloads, remediate if issues found:
-  oc apply -f namespace-inventory.yaml
+  oc apply -f ${EXAMPLES_BASE}/namespace-inventory.yaml
 
   # Deploy a test workload (analysis + execution):
-  oc apply -f deploy-test-workload.yaml
+  oc apply -f ${EXAMPLES_BASE}/deploy-test-workload.yaml
 
   # Watch until analysis completes (Analyzed=True):
-  oc get proposals -n ${NAMESPACE} -w
+  oc get agenticruns -n ${NAMESPACE} -w
 
   # Check the analysis result:
   oc get analysisresult -n ${NAMESPACE} -o json
 
   # Approve execution (option 0 = first option) via oc CLI or in console UI:
-  oc patch proposalapproval namespace-inventory -n ${NAMESPACE} \\
+  oc patch agenticrunapproval namespace-inventory -n ${NAMESPACE} \\
     --type=json \\
     -p '[{"op":"add","path":"/spec/stages/-","value":{"type":"Execution","execution":{"option":0}}}]'
 
   # Watch execution progress:
-  oc get proposals -n ${NAMESPACE} -w
+  oc get agenticruns -n ${NAMESPACE} -w
 
   ── Enable audit logging / OTEL tracing ────────────────────
   # Deploy Jaeger first (if you don't have a collector):

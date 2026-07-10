@@ -52,7 +52,7 @@ func TestStatus_SuspendedWithCondition(t *testing.T) {
 		Type:               agenticv1alpha1.AgenticOLSConfigConditionSuspended,
 		Status:             metav1.ConditionTrue,
 		Reason:             "AdminActivated",
-		Message:            "System suspended; 2 proposals emergency-stopped",
+		Message:            "System suspended; 2 runs emergency-stopped",
 		LastTransitionTime: transition,
 	}}
 
@@ -65,7 +65,7 @@ func TestStatus_SuspendedWithCondition(t *testing.T) {
 	}
 
 	got := strings.TrimSpace(out.String())
-	want := "Agentic System: SUSPENDED (since 14m ago, 2026-06-19T12:00:00Z, System suspended; 2 proposals emergency-stopped)"
+	want := "Agentic System: SUSPENDED (since 14m ago, 2026-06-19T12:00:00Z, System suspended; 2 runs emergency-stopped)"
 	if got != want {
 		t.Errorf("output = %q, want %q", got, want)
 	}
@@ -108,7 +108,7 @@ func TestStatus_SuspendedDraining(t *testing.T) {
 		Type:    agenticv1alpha1.AgenticOLSConfigConditionSuspended,
 		Status:  metav1.ConditionTrue,
 		Reason:  "Draining",
-		Message: "Waiting for 3 proposals to terminate",
+		Message: "Waiting for 3 runs to terminate",
 	}}
 
 	fc := fake.NewClientBuilder().WithScheme(testScheme()).
@@ -120,7 +120,7 @@ func TestStatus_SuspendedDraining(t *testing.T) {
 	}
 
 	got := strings.TrimSpace(out.String())
-	want := "Agentic System: SUSPENDED (draining, Waiting for 3 proposals to terminate)"
+	want := "Agentic System: SUSPENDED (draining, Waiting for 3 runs to terminate)"
 	if got != want {
 		t.Errorf("output = %q, want %q", got, want)
 	}

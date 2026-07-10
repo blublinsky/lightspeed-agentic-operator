@@ -22,10 +22,10 @@ spec:
     schema:
       openAPIV3Schema:
         description: "ApprovalPolicy is a cluster-scoped singleton that configures
-          default\napproval behavior for proposal workflow steps. The cluster admin
+          default\napproval behavior for agentic run workflow steps. The cluster admin
           creates\na single ApprovalPolicy named \"cluster\" to control which steps
           auto-approve.\n\nSteps not listed in the policy default to Manual (require
-          explicit\nuser approval on the ProposalApproval resource).\n\nExample:\n\n\tapiVersion:
+          explicit\nuser approval on the AgenticRunApproval resource).\n\nExample:\n\n\tapiVersion:
           agentic.openshift.io/v1alpha1\n\tkind: ApprovalPolicy\n\tmetadata:\n\t  name:
           cluster\n\tspec:\n\t  stages:\n\t    - name: Analysis\n\t      approval:
           Automatic\n\t    - name: Execution\n\t      approval: Manual\n\t    - name:
@@ -55,17 +55,17 @@ spec:
               maxAttempts:
                 description: |-
                   maxAttempts sets the maximum number of execution retry attempts
-                  allowed for proposals. When verification fails, the operator retries
+                  allowed for agentic runs. When verification fails, the operator retries
                   execution up to this limit before escalating. Defaults to 1 if omitted.
                 format: int32
                 maximum: 3
                 minimum: 1
                 type: integer
-              maxConcurrentProposals:
+              maxConcurrentRuns:
                 default: 5
                 description: |-
-                  maxConcurrentProposals sets the maximum number of proposals the
-                  operator reconciles concurrently. Higher values allow more proposals
+                  maxConcurrentRuns sets the maximum number of agentic runs the
+                  operator reconciles concurrently. Higher values allow more agentic runs
                   to run in parallel but consume more cluster resources.
                   Defaults to 5 if omitted.
                 format: int32
@@ -83,9 +83,9 @@ spec:
                     approval:
                       description: |-
                         approval controls whether this step auto-approves or requires
-                        explicit user approval on the ProposalApproval resource.
+                        explicit user approval on the AgenticRunApproval resource.
                         Allowed values: Automatic (step runs without user approval),
-                        Manual (step waits for explicit approval on ProposalApproval).
+                        Manual (step waits for explicit approval on AgenticRunApproval).
                       enum:
                       - Automatic
                       - Manual

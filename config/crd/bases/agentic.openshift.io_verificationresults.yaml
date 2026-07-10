@@ -15,8 +15,8 @@ spec:
   scope: Namespaced
   versions:
   - additionalPrinterColumns:
-    - jsonPath: .spec.proposalName
-      name: Proposal
+    - jsonPath: .spec.agenticRunName
+      name: AgenticRun
       type: string
     - jsonPath: .spec.retryIndex
       name: Retry
@@ -33,7 +33,7 @@ spec:
         description: |-
           VerificationResult records the output of a single verification step
           execution. Created by the operator after the verification agent
-          completes. Owned by the parent Proposal for garbage collection.
+          completes. Owned by the parent AgenticRun for garbage collection.
         properties:
           apiVersion:
             description: |-
@@ -55,9 +55,9 @@ spec:
           spec:
             description: spec contains the immutable identity fields for this result.
             properties:
-              proposalName:
-                description: proposalName is the name of the parent Proposal in the
-                  same namespace.
+              agenticRunName:
+                description: agenticRunName is the name of the parent AgenticRun in
+                  the same namespace.
                 maxLength: 253
                 minLength: 1
                 type: string
@@ -69,7 +69,7 @@ spec:
                 minimum: 0
                 type: integer
             required:
-            - proposalName
+            - agenticRunName
             - retryIndex
             type: object
             x-kubernetes-validations:

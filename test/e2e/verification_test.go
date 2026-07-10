@@ -16,10 +16,10 @@ import (
 
 // TestVerificationFlow_VerifyingToCompleted validates the verification phase:
 //
-//  1. Create Proposal, drive through analysis + execution to Verifying
+//  1. Create AgenticRun, drive through analysis + execution to Verifying
 //  2. Wait for phase = Completed (verification auto-approved, runs, passes)
 //  3. Assert: VerificationResult exists, Verified=True, terminal state
-//  4. Delete Proposal, verify RBAC cleaned up
+//  4. Delete AgenticRun, verify RBAC cleaned up
 func TestVerificationFlow_VerifyingToCompleted(t *testing.T) {
 	t.Log("=== TestVerificationFlow_VerifyingToCompleted: validates full lifecycle → Completed ===")
 	c := newClient(t)
@@ -27,31 +27,31 @@ func TestVerificationFlow_VerifyingToCompleted(t *testing.T) {
 
 	t.Log("Creating fixtures (LLMProvider, Agent, ApprovalPolicy, Secret)")
 	createFixtures(t, c)
-	prop := createProposal(t, c, "e2e-verification-flow")
-	t.Logf("Proposal created: %s/%s", testNS, prop.Name)
+	prop := createAgenticRun(t, c, "e2e-verification-flow")
+	t.Logf("AgenticRun created: %s/%s", testNS, prop.Name)
 
 	t.Log("Waiting for phase: Proposed (analysis complete)")
-	waitForPhase(t, c, prop.Name, agenticv1alpha1.ProposalPhaseProposed)
+	waitForPhase(t, c, prop.Name, agenticv1alpha1.AgenticRunPhaseProposed)
 	t.Log("Phase reached: Proposed")
 
 	t.Log("Approving execution with option 0")
 	approveExecution(t, c, prop.Name, 0)
 
 	t.Log("Waiting for phase: Verifying (execution complete)")
-	waitForPhase(t, c, prop.Name, agenticv1alpha1.ProposalPhaseVerifying)
+	waitForPhase(t, c, prop.Name, agenticv1alpha1.AgenticRunPhaseVerifying)
 	t.Log("Phase reached: Verifying")
 
 	t.Log("Approving verification")
 	approveVerification(t, c, prop.Name)
 
 	t.Log("Waiting for phase: Completed (verification complete)")
-	updated := waitForPhase(t, c, prop.Name, agenticv1alpha1.ProposalPhaseCompleted)
+	updated := waitForPhase(t, c, prop.Name, agenticv1alpha1.AgenticRunPhaseCompleted)
 	t.Log("Phase reached: Completed")
 
 	// --- Verify: Verified condition ---
 	var verifiedFound bool
 	for _, cond := range updated.Status.Conditions {
-		if cond.Type == agenticv1alpha1.ProposalConditionVerified {
+		if cond.Type == agenticv1alpha1.AgenticRunConditionVerified {
 			verifiedFound = true
 			if cond.Status != metav1.ConditionTrue {
 				t.Errorf("Verified condition status = %s, want True", cond.Status)
@@ -65,7 +65,7 @@ func TestVerificationFlow_VerifyingToCompleted(t *testing.T) {
 
 	// --- Verify: VerificationResult exists ---
 	var verifyList agenticv1alpha1.VerificationResultList
-	if err := c.List(ctx, &verifyList, client.InNamespace(testNS), client.MatchingLabels{"agentic.openshift.io/proposal": prop.Name}); err != nil {
+	if err := c.List(ctx, &verifyList, client.InNamespace(testNS), client.MatchingLabels{"agentic.openshift.io/run": prop.Name}); err != nil {
 		t.Fatalf("list VerificationResult: %v", err)
 	}
 	if len(verifyList.Items) == 0 {
@@ -84,9 +84,9 @@ func TestVerificationFlow_VerifyingToCompleted(t *testing.T) {
 
 	// --- Cleanup and verify RBAC removed ---
 	roleName := "ls-exec-" + prop.Name
-	t.Log("Deleting Proposal — verifying RBAC cleanup")
+	t.Log("Deleting AgenticRun — verifying RBAC cleanup")
 	if err := c.Delete(ctx, prop); err != nil {
-		t.Fatalf("delete Proposal: %v", err)
+		t.Fatalf("delete AgenticRun: %v", err)
 	}
 	waitForDeletion(t, c, prop.Name)
 

@@ -134,7 +134,7 @@ func deleteBarePod(t *testing.T, c client.Client, name string) {
 
 // --- Fixture builders ---
 
-// e2eFixtures holds the prerequisite CRs needed for any proposal flow.
+// e2eFixtures holds the prerequisite CRs needed for any run flow.
 type e2eFixtures struct {
 	LLM       *agenticv1alpha1.LLMProvider
 	Agent     *agenticv1alpha1.Agent
@@ -320,27 +320,27 @@ func createRealProviderFixtures(t *testing.T, c client.Client) *e2eFixtures {
 	return f
 }
 
-// createProposal creates a Proposal + pre-created ProposalApproval (CEL workaround).
-// Cleans up leftovers from previous runs. Returns the created Proposal.
-func createProposal(t *testing.T, c client.Client, name string) *agenticv1alpha1.Proposal {
+// createAgenticRun creates a AgenticRun + pre-created AgenticRunApproval (CEL workaround).
+// Cleans up leftovers from previous runs. Returns the created AgenticRun.
+func createAgenticRun(t *testing.T, c client.Client, name string) *agenticv1alpha1.AgenticRun {
 	t.Helper()
 	ctx := context.Background()
 
-	prop := &agenticv1alpha1.Proposal{
+	prop := &agenticv1alpha1.AgenticRun{
 		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: testNS},
-		Spec: agenticv1alpha1.ProposalSpec{
+		Spec: agenticv1alpha1.AgenticRunSpec{
 			Request:          "Pod crash-looping in staging namespace",
 			TargetNamespaces: []string{"staging"},
 			Tools:            agenticv1alpha1.ToolsSpec{Skills: []agenticv1alpha1.SkillsSource{{Image: "quay.io/openshift-lightspeed/ols-qe:lightspeed-mock-agent", Paths: []string{"/skills"}}}},
-			Analysis:         agenticv1alpha1.ProposalStep{Agent: "e2e-agent"},
-			Execution:        agenticv1alpha1.ProposalStep{Agent: "e2e-agent"},
-			Verification:     agenticv1alpha1.ProposalStep{Agent: "e2e-agent"},
+			Analysis:         agenticv1alpha1.AgenticRunStep{Agent: "e2e-agent"},
+			Execution:        agenticv1alpha1.AgenticRunStep{Agent: "e2e-agent"},
+			Verification:     agenticv1alpha1.AgenticRunStep{Agent: "e2e-agent"},
 		},
 	}
 
-	// Clean leftovers from previous runs (proposals, approvals, sandbox claims, bare pods).
-	cleanup(t, c, &agenticv1alpha1.Proposal{ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: testNS}})
-	cleanup(t, c, &agenticv1alpha1.ProposalApproval{ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: testNS}})
+	// Clean leftovers from previous runs (runs, approvals, sandbox claims, bare pods).
+	cleanup(t, c, &agenticv1alpha1.AgenticRun{ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: testNS}})
+	cleanup(t, c, &agenticv1alpha1.AgenticRunApproval{ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: testNS}})
 	deleteSandboxClaim(t, c, "ls-analysis-"+name, testNS)
 	deleteSandboxClaim(t, c, "ls-execution-"+name, testNS)
 	deleteSandboxClaim(t, c, "ls-verification-"+name, testNS)
@@ -349,18 +349,18 @@ func createProposal(t *testing.T, c client.Client, name string) *agenticv1alpha1
 	deleteBarePod(t, c, "ls-verification-"+name)
 
 	if err := c.Create(ctx, prop); err != nil {
-		t.Fatalf("create Proposal: %v", err)
+		t.Fatalf("create AgenticRun: %v", err)
 	}
 	t.Cleanup(func() { cleanup(t, c, prop) })
 
 	return prop
 }
 
-// waitForPhase polls until the Proposal reaches the target phase or times out.
-func waitForPhase(t *testing.T, c client.Client, name string, target agenticv1alpha1.ProposalPhase) agenticv1alpha1.Proposal {
+// waitForPhase polls until the AgenticRun reaches the target phase or times out.
+func waitForPhase(t *testing.T, c client.Client, name string, target agenticv1alpha1.AgenticRunPhase) agenticv1alpha1.AgenticRun {
 	t.Helper()
 	ctx := context.Background()
-	var updated agenticv1alpha1.Proposal
+	var updated agenticv1alpha1.AgenticRun
 
 	err := wait.PollUntilContextTimeout(ctx, pollInterval, pollTimeout, true, func(ctx context.Context) (bool, error) {
 		if err := c.Get(ctx, types.NamespacedName{Name: name, Namespace: testNS}, &updated); err != nil {
@@ -377,31 +377,31 @@ func waitForPhase(t *testing.T, c client.Client, name string, target agenticv1al
 	return updated
 }
 
-// waitForDeletion polls until the Proposal is gone (finalizer completed).
+// waitForDeletion polls until the AgenticRun is gone (finalizer completed).
 func waitForDeletion(t *testing.T, c client.Client, name string) {
 	t.Helper()
 	ctx := context.Background()
 
 	err := wait.PollUntilContextTimeout(ctx, pollInterval, pollTimeout, true, func(ctx context.Context) (bool, error) {
-		var gone agenticv1alpha1.Proposal
+		var gone agenticv1alpha1.AgenticRun
 		if err := c.Get(ctx, types.NamespacedName{Name: name, Namespace: testNS}, &gone); err != nil {
 			return true, nil
 		}
 		return false, nil
 	})
 	if err != nil {
-		t.Fatalf("timed out waiting for Proposal %s deletion (finalizer may be stuck)", name)
+		t.Fatalf("timed out waiting for AgenticRun %s deletion (finalizer may be stuck)", name)
 	}
 }
 
-// denyStage patches the ProposalApproval to deny the given stage.
+// denyStage patches the AgenticRunApproval to deny the given stage.
 func denyStage(t *testing.T, c client.Client, name string, stageType agenticv1alpha1.ApprovalStageType) {
 	t.Helper()
 	ctx := context.Background()
 
-	var approval agenticv1alpha1.ProposalApproval
+	var approval agenticv1alpha1.AgenticRunApproval
 	if err := c.Get(ctx, types.NamespacedName{Name: name, Namespace: testNS}, &approval); err != nil {
-		t.Fatalf("get ProposalApproval for denial: %v", err)
+		t.Fatalf("get AgenticRunApproval for denial: %v", err)
 	}
 
 	base := approval.DeepCopy()
@@ -434,14 +434,14 @@ func denyStage(t *testing.T, c client.Client, name string, stageType agenticv1al
 	t.Logf("denied stage %s", stageType)
 }
 
-// approveExecution patches the ProposalApproval to approve execution with the given option index.
+// approveExecution patches the AgenticRunApproval to approve execution with the given option index.
 func approveExecution(t *testing.T, c client.Client, name string, optionIdx int32) {
 	t.Helper()
 	ctx := context.Background()
 
-	var approval agenticv1alpha1.ProposalApproval
+	var approval agenticv1alpha1.AgenticRunApproval
 	if err := c.Get(ctx, types.NamespacedName{Name: name, Namespace: testNS}, &approval); err != nil {
-		t.Fatalf("get ProposalApproval for execution approval: %v", err)
+		t.Fatalf("get AgenticRunApproval for execution approval: %v", err)
 	}
 
 	base := approval.DeepCopy()
@@ -468,14 +468,14 @@ func approveExecution(t *testing.T, c client.Client, name string, optionIdx int3
 	t.Logf("approved execution with option %d", optionIdx)
 }
 
-// approveVerification patches the ProposalApproval to approve verification.
+// approveVerification patches the AgenticRunApproval to approve verification.
 func approveVerification(t *testing.T, c client.Client, name string) {
 	t.Helper()
 	ctx := context.Background()
 
-	var approval agenticv1alpha1.ProposalApproval
+	var approval agenticv1alpha1.AgenticRunApproval
 	if err := c.Get(ctx, types.NamespacedName{Name: name, Namespace: testNS}, &approval); err != nil {
-		t.Fatalf("get ProposalApproval for verification approval: %v", err)
+		t.Fatalf("get AgenticRunApproval for verification approval: %v", err)
 	}
 
 	base := approval.DeepCopy()

@@ -25,7 +25,7 @@ spec:
     schema:
       openAPIV3Schema:
         description: "LLMProvider defines an LLM provider configuration. It is the
-          first link in\nthe CRD chain (LLMProvider -> Agent -> Workflow -> Proposal)
+          first link in\nthe CRD chain (LLMProvider -> Agent -> Workflow -> AgenticRun)
           and is\nreferenced by Agent resources via spec.llmProvider.\n\nLLMProvider
           is cluster-scoped — the cluster admin manages LLM infrastructure\ncentrally.
           The operator uses the credentials to configure the LLM client\ninside agent

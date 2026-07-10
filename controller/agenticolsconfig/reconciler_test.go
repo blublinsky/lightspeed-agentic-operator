@@ -33,15 +33,15 @@ func testConfig(suspended bool) *agenticv1alpha1.AgenticOLSConfig {
 	}
 }
 
-func emergencyStoppedProposal(name string) *agenticv1alpha1.Proposal {
-	return &agenticv1alpha1.Proposal{
+func emergencyStoppedAgenticRun(name string) *agenticv1alpha1.AgenticRun {
+	return &agenticv1alpha1.AgenticRun{
 		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: "default"},
-		Spec: agenticv1alpha1.ProposalSpec{
+		Spec: agenticv1alpha1.AgenticRunSpec{
 			Request: "test",
 		},
-		Status: agenticv1alpha1.ProposalStatus{
+		Status: agenticv1alpha1.AgenticRunStatus{
 			Conditions: []metav1.Condition{{
-				Type:   agenticv1alpha1.ProposalConditionEmergencyStopped,
+				Type:   agenticv1alpha1.AgenticRunConditionEmergencyStopped,
 				Status: metav1.ConditionTrue,
 				Reason: "SystemSuspended",
 			}},
@@ -49,10 +49,10 @@ func emergencyStoppedProposal(name string) *agenticv1alpha1.Proposal {
 	}
 }
 
-func pendingProposal(name string) *agenticv1alpha1.Proposal {
-	return &agenticv1alpha1.Proposal{
+func pendingAgenticRun(name string) *agenticv1alpha1.AgenticRun {
+	return &agenticv1alpha1.AgenticRun{
 		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: "default"},
-		Spec: agenticv1alpha1.ProposalSpec{
+		Spec: agenticv1alpha1.AgenticRunSpec{
 			Request: "test",
 		},
 	}
@@ -100,7 +100,7 @@ func TestReconcile_NotFound(t *testing.T) {
 
 func TestReconcile_Activation(t *testing.T) {
 	config := testConfig(true)
-	prop := emergencyStoppedProposal("stopped-1")
+	prop := emergencyStoppedAgenticRun("stopped-1")
 	fc := fake.NewClientBuilder().
 		WithScheme(testScheme()).
 		WithObjects(config, prop).
@@ -114,7 +114,7 @@ func TestReconcile_Activation(t *testing.T) {
 		t.Fatalf("Reconcile() error = %v", err)
 	}
 	if result.Requeue {
-		t.Fatal("expected no requeue when all proposals are terminal")
+		t.Fatal("expected no requeue when all runs are terminal")
 	}
 
 	got := getConfig(t, fc)
@@ -128,7 +128,7 @@ func TestReconcile_Activation(t *testing.T) {
 	if cond.Reason != reasonAdminActivated {
 		t.Fatalf("condition reason = %q, want %q", cond.Reason, reasonAdminActivated)
 	}
-	wantMsg := "System suspended; 1 proposals emergency-stopped"
+	wantMsg := "System suspended; 1 runs emergency-stopped"
 	if cond.Message != wantMsg {
 		t.Fatalf("condition message = %q, want %q", cond.Message, wantMsg)
 	}
@@ -139,9 +139,9 @@ func TestReconcile_Activation(t *testing.T) {
 	}
 }
 
-func TestReconcile_ActivationPendingProposals(t *testing.T) {
+func TestReconcile_ActivationPendingAgenticRuns(t *testing.T) {
 	config := testConfig(true)
-	prop := pendingProposal("pending-1")
+	prop := pendingAgenticRun("pending-1")
 	fc := fake.NewClientBuilder().
 		WithScheme(testScheme()).
 		WithObjects(config, prop).
@@ -155,7 +155,7 @@ func TestReconcile_ActivationPendingProposals(t *testing.T) {
 		t.Fatalf("Reconcile() error = %v", err)
 	}
 	if result.RequeueAfter == 0 {
-		t.Fatal("expected requeue while non-terminal proposals remain")
+		t.Fatal("expected requeue while non-terminal runs remain")
 	}
 
 	got := getConfig(t, fc)
@@ -169,7 +169,7 @@ func TestReconcile_ActivationPendingProposals(t *testing.T) {
 	if cond.Reason != reasonDraining {
 		t.Fatalf("condition reason = %q, want %q", cond.Reason, reasonDraining)
 	}
-	wantMsg := "Waiting for 1 proposals to terminate"
+	wantMsg := "Waiting for 1 runs to terminate"
 	if cond.Message != wantMsg {
 		t.Fatalf("condition message = %q, want %q", cond.Message, wantMsg)
 	}
