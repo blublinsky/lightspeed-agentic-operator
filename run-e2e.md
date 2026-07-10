@@ -12,7 +12,7 @@ Run end-to-end tests on an OpenShift cluster using locally built images for the 
 ## Setup: Build and Push Local Images
 
 ```bash
-export KUBECONFIG=$HOME/clusterbot/kubeconfig
+export KUBECONFIG=/path/to/kubeconfig
 
 # 1. Create namespace
 oc create namespace openshift-lightspeed 2>/dev/null || true
@@ -32,12 +32,12 @@ TOKEN=$(oc create token image-pusher -n openshift-lightspeed --duration=1h)
 podman login -u image-pusher -p "$TOKEN" "$REGISTRY" --tls-verify=false
 
 # 3. Build + push SANDBOX image
-cd /home/hasun/lightspeed-agentic-sandbox
+cd /path/to/lightspeed-agentic-sandbox
 podman build -t $REGISTRY/openshift-lightspeed/agentic-sandbox:latest .
 podman push $REGISTRY/openshift-lightspeed/agentic-sandbox:latest --tls-verify=false
 
 # 4. Build + push OPERATOR image
-cd /home/hasun/lightspeed-agentic-operator
+cd /path/to/lightspeed-agentic-operator
 podman build -t $REGISTRY/openshift-lightspeed/agentic-operator:latest .
 podman push $REGISTRY/openshift-lightspeed/agentic-operator:latest --tls-verify=false
 
@@ -52,7 +52,7 @@ podman push $REGISTRY/openshift-lightspeed/agentic-console:latest --tls-verify=f
 Deploy the operator, console, and webhook in-cluster using the quickstart script with local images:
 
 ```bash
-cd /home/hasun/lightspeed-agentic-operator
+cd /path/to/lightspeed-agentic-operator
 INTERNAL=image-registry.openshift-image-registry.svc:5000/openshift-lightspeed
 
 OPERATOR_IMAGE=$INTERNAL/agentic-operator:latest \
@@ -69,7 +69,7 @@ To skip console deployment, set `CONSOLE_IMAGE=""`.
 Skip building/pushing the operator image. The operator runs on your workstation and connects to the cluster via KUBECONFIG:
 
 ```bash
-cd /home/hasun/lightspeed-agentic-operator
+cd /path/to/lightspeed-agentic-operator
 INTERNAL=image-registry.openshift-image-registry.svc:5000/openshift-lightspeed
 
 # Install CRDs
@@ -88,7 +88,7 @@ Pick one provider and configure it:
 ### OpenAI
 ```bash
 oc create secret generic llm-creds-openai -n openshift-lightspeed \
-  --from-literal=OPENAI_API_KEY=$(cat openai-key.txt)
+  --from-literal=OPENAI_API_KEY=sk-...
 oc apply -f hack/quickstart/examples/openai.yaml
 ```
 
