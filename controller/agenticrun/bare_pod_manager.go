@@ -12,6 +12,8 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 
+	"k8s.io/utils/ptr"
+
 	agenticv1alpha1 "github.com/openshift/lightspeed-agentic-operator/api/v1alpha1"
 )
 
@@ -33,6 +35,7 @@ type BarePodManager struct {
 	Namespace       string
 	DeletionTimeout time.Duration
 
+	run            *agenticv1alpha1.AgenticRun
 	agent          *agenticv1alpha1.Agent
 	llm            *agenticv1alpha1.LLMProvider
 	tools          *agenticv1alpha1.ToolsSpec
@@ -55,6 +58,12 @@ func (m *BarePodManager) SetStep(agent *agenticv1alpha1.Agent, llm *agenticv1alp
 	m.llm = llm
 	m.tools = tools
 	m.serviceAccount = serviceAccount
+}
+
+// SetOwner stores the AgenticRun so that pods created by Claim carry an
+// ownerReference back to the run, enabling garbage collection.
+func (m *BarePodManager) SetOwner(run *agenticv1alpha1.AgenticRun) {
+	m.run = run
 }
 
 // Claim creates a bare Pod for the given run step. The templateName
@@ -82,6 +91,17 @@ func (m *BarePodManager) Claim(ctx context.Context, agenticRunName, step, _ stri
 			},
 		},
 		Spec: *podSpec,
+	}
+
+	if m.run != nil {
+		pod.OwnerReferences = []metav1.OwnerReference{{
+			APIVersion:         agenticv1alpha1.GroupVersion.String(),
+			Kind:               "AgenticRun",
+			Name:               m.run.Name,
+			UID:                m.run.UID,
+			Controller:         ptr.To(true),
+			BlockOwnerDeletion: ptr.To(true),
+		}}
 	}
 
 	if err := m.Client.Create(ctx, pod); err != nil {
@@ -136,8 +156,15 @@ func (m *BarePodManager) WaitReady(ctx context.Context, podName string, timeout 
 
 			var pod corev1.Pod
 			if err := m.Client.Get(ctx, key, &pod); err != nil {
-				log.V(1).Info("Waiting for pod", LogKeyName, podName)
+				if apierrors.IsNotFound(err) {
+					return "", fmt.Errorf("pod %q was deleted while waiting for readiness", podName)
+				}
+				log.V(1).Info("Waiting for pod", LogKeyName, podName, "error", err)
 				continue
+			}
+
+			if !pod.DeletionTimestamp.IsZero() {
+				return "", fmt.Errorf("pod %q is terminating, will not become ready", podName)
 			}
 
 			for _, cond := range pod.Status.Conditions {

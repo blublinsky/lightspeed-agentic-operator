@@ -46,6 +46,13 @@ type SandboxProvider interface {
 	Release(ctx context.Context, claimName string) error
 }
 
+// SandboxOwnerSetter is an optional interface that SandboxProvider implementations
+// can satisfy to receive the owning AgenticRun, enabling ownerReference-based
+// garbage collection on sandbox resources.
+type SandboxOwnerSetter interface {
+	SetOwner(run *agenticv1alpha1.AgenticRun)
+}
+
 // SandboxManager handles SandboxClaim lifecycle for run execution.
 type SandboxManager struct {
 	Client           client.Client

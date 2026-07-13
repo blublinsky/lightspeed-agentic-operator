@@ -7,6 +7,7 @@ import (
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
@@ -211,6 +212,107 @@ func TestBarePodManager_Claim_AuditAlwaysEnabled(t *testing.T) {
 	env := envToMap(pod.Spec.Containers[0].Env)
 	if env["LIGHTSPEED_AUDIT_ENABLED"] != "true" {
 		t.Errorf("LIGHTSPEED_AUDIT_ENABLED = %q, want true (audit is always on)", env["LIGHTSPEED_AUDIT_ENABLED"])
+	}
+}
+
+func TestBarePodManager_WaitReady_NotFoundIsTerminal(t *testing.T) {
+	fc := newBarePodClient().Build()
+	m := NewBarePodManager(fc, &PodSpecBuilder{Image: "img"}, "test-ns")
+
+	_, err := m.WaitReady(context.Background(), "nonexistent-pod", 10*time.Second)
+	if err == nil {
+		t.Fatal("WaitReady should fail for NotFound pod")
+	}
+	if !strings.Contains(err.Error(), "was deleted while waiting") {
+		t.Errorf("unexpected error: %v", err)
+	}
+}
+
+func TestBarePodManager_WaitReady_TerminatingIsTerminal(t *testing.T) {
+	now := metav1.Now()
+	pod := &corev1.Pod{}
+	pod.Name = "terminating-pod"
+	pod.Namespace = "test-ns"
+	pod.DeletionTimestamp = &now
+	pod.Finalizers = []string{"keep-alive"}
+
+	fc := newBarePodClient().WithObjects(pod).Build()
+	m := NewBarePodManager(fc, &PodSpecBuilder{Image: "img"}, "test-ns")
+
+	_, err := m.WaitReady(context.Background(), "terminating-pod", 10*time.Second)
+	if err == nil {
+		t.Fatal("WaitReady should fail for terminating pod")
+	}
+	if !strings.Contains(err.Error(), "is terminating") {
+		t.Errorf("unexpected error: %v", err)
+	}
+}
+
+func TestBarePodManager_Claim_SetsOwnerReference(t *testing.T) {
+	fc := newBarePodClient().Build()
+	builder := &PodSpecBuilder{Image: "quay.io/test/sandbox:latest"}
+	m := NewBarePodManager(fc, builder, "test-ns")
+	m.SetStep(
+		&agenticv1alpha1.Agent{Spec: agenticv1alpha1.AgentSpec{Model: "claude-opus-4-6"}},
+		testLLMProvider(agenticv1alpha1.LLMProviderAnthropic),
+		nil,
+		defaultSandboxSA,
+	)
+
+	run := &agenticv1alpha1.AgenticRun{}
+	run.Name = "my-run"
+	run.UID = "test-uid-1234"
+	m.SetOwner(run)
+
+	name, err := m.Claim(context.Background(), "my-run", "analysis", "")
+	if err != nil {
+		t.Fatalf("Claim: %v", err)
+	}
+
+	var pod corev1.Pod
+	if err := fc.Get(context.Background(), types.NamespacedName{Name: name, Namespace: "test-ns"}, &pod); err != nil {
+		t.Fatalf("pod not created: %v", err)
+	}
+	if len(pod.OwnerReferences) != 1 {
+		t.Fatalf("expected 1 ownerReference, got %d", len(pod.OwnerReferences))
+	}
+	ref := pod.OwnerReferences[0]
+	if ref.Kind != "AgenticRun" {
+		t.Errorf("ownerReference kind = %q, want AgenticRun", ref.Kind)
+	}
+	if ref.Name != "my-run" {
+		t.Errorf("ownerReference name = %q, want my-run", ref.Name)
+	}
+	if ref.Controller == nil || !*ref.Controller {
+		t.Error("ownerReference should be controller")
+	}
+	if ref.BlockOwnerDeletion == nil || !*ref.BlockOwnerDeletion {
+		t.Error("ownerReference should block owner deletion")
+	}
+}
+
+func TestBarePodManager_Claim_NoOwnerReferenceWithoutSetOwner(t *testing.T) {
+	fc := newBarePodClient().Build()
+	builder := &PodSpecBuilder{Image: "quay.io/test/sandbox:latest"}
+	m := NewBarePodManager(fc, builder, "test-ns")
+	m.SetStep(
+		&agenticv1alpha1.Agent{Spec: agenticv1alpha1.AgentSpec{Model: "claude-opus-4-6"}},
+		testLLMProvider(agenticv1alpha1.LLMProviderAnthropic),
+		nil,
+		defaultSandboxSA,
+	)
+
+	name, err := m.Claim(context.Background(), "my-run", "analysis", "")
+	if err != nil {
+		t.Fatalf("Claim: %v", err)
+	}
+
+	var pod corev1.Pod
+	if err := fc.Get(context.Background(), types.NamespacedName{Name: name, Namespace: "test-ns"}, &pod); err != nil {
+		t.Fatalf("pod not created: %v", err)
+	}
+	if len(pod.OwnerReferences) != 0 {
+		t.Errorf("expected no ownerReferences without SetOwner, got %d", len(pod.OwnerReferences))
 	}
 }
 
