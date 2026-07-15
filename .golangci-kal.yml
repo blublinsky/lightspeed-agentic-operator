@@ -21,6 +21,7 @@ linters:
             disable:
               - statusoptional # Legacy, not recommended
               - nonpointerstructs # Intended for native types, not CRD types
+              - nomaps # ReasoningConfig is a deliberate freeform map (spec rule 18)
           lintersConfig:
             conditions:
               isFirstField: Warn

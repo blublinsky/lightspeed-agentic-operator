@@ -17,6 +17,7 @@ limitations under the License.
 package v1alpha1
 
 import (
+	apiextensionsv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
@@ -81,6 +82,20 @@ type AgentSpec struct {
 	// +kubebuilder:validation:Minimum=1
 	// +kubebuilder:validation:Maximum=500
 	MaxTurns int32 `json:"maxTurns,omitempty"`
+
+	// reasoningConfig is a freeform map of provider- and model-specific
+	// reasoning parameters. The exact keys and values depend on the provider
+	// and model — consult the provider's SDK documentation for supported
+	// parameters (e.g., Claude: thinking/budget_tokens, Gemini: thinking_budget/
+	// thinking_level, OpenAI: reasoning.effort/reasoning.summary).
+	// The operator serializes this map as the LIGHTSPEED_REASONING_CONFIG JSON
+	// env var on the sandbox pod without validation — the sandbox and upstream
+	// SDK/API validate at invocation time. Invalid keys are ignored by the
+	// adapter; invalid values on recognized keys are rejected by the SDK/API.
+	// When omitted, the env var is not set and the sandbox uses SDK defaults.
+	// +optional
+	// +kubebuilder:validation:MinProperties=1
+	ReasoningConfig map[string]apiextensionsv1.JSON `json:"reasoningConfig,omitempty"`
 }
 
 // +kubebuilder:object:root=true
@@ -99,7 +114,7 @@ type AgentSpec struct {
 // The "default" agent must exist; "smart" and "fast" are optional (the
 // operator auto-links to "default" if absent).
 //
-// Example — a high-capability agent tier:
+// Example — a high-capability agent tier with extended thinking:
 //
 //	apiVersion: agentic.openshift.io/v1alpha1
 //	kind: Agent
@@ -113,6 +128,9 @@ type AgentSpec struct {
 //	    analysisSeconds: 300
 //	    executionSeconds: 600
 //	  maxTurns: 200
+//	  reasoningConfig:
+//	    thinking: "enabled"
+//	    effort: "high"
 //
 // Example — a fast, cost-efficient agent tier:
 //
