@@ -36,11 +36,12 @@ spec:
           name per step.\n\nAgent is cluster-scoped. The metadata.name serves as the
           tier identifier.\nThe \"default\" agent must exist; \"smart\" and \"fast\"
           are optional (the\noperator auto-links to \"default\" if absent).\n\nExample
-          — a high-capability agent tier:\n\n\tapiVersion: agentic.openshift.io/v1alpha1\n\tkind:
-          Agent\n\tmetadata:\n\t  name: smart\n\tspec:\n\t  llmProvider:\n\t    name:
-          vertex-ai\n\t  model: claude-opus-4-6\n\t  timeouts:\n\t    analysisSeconds:
-          300\n\t    executionSeconds: 600\n\t  maxTurns: 200\n\nExample — a fast,
-          cost-efficient agent tier:\n\n\tapiVersion: agentic.openshift.io/v1alpha1\n\tkind:
+          — a high-capability agent tier with extended thinking:\n\n\tapiVersion:
+          agentic.openshift.io/v1alpha1\n\tkind: Agent\n\tmetadata:\n\t  name: smart\n\tspec:\n\t
+          \ llmProvider:\n\t    name: vertex-ai\n\t  model: claude-opus-4-6\n\t  timeouts:\n\t
+          \   analysisSeconds: 300\n\t    executionSeconds: 600\n\t  maxTurns: 200\n\t
+          \ reasoningConfig:\n\t    thinking: \"enabled\"\n\t    effort: \"high\"\n\nExample
+          — a fast, cost-efficient agent tier:\n\n\tapiVersion: agentic.openshift.io/v1alpha1\n\tkind:
           Agent\n\tmetadata:\n\t  name: fast\n\tspec:\n\t  llmProvider:\n\t    name:
           vertex-ai\n\t  model: claude-haiku-4-5\n\t  timeouts:\n\t    analysisSeconds:
           120\n\t    executionSeconds: 300\n\t  maxTurns: 100"
@@ -108,6 +109,22 @@ spec:
                     only alphanumerics, dots, hyphens, underscores, slashes, colons,
                     and at-signs
                   rule: self.matches('^[a-zA-Z0-9][a-zA-Z0-9._\\-/:@]*$')
+              reasoningConfig:
+                additionalProperties:
+                  x-kubernetes-preserve-unknown-fields: true
+                description: |-
+                  reasoningConfig is a freeform map of provider- and model-specific
+                  reasoning parameters. The exact keys and values depend on the provider
+                  and model — consult the provider's SDK documentation for supported
+                  parameters (e.g., Claude: thinking/budget_tokens, Gemini: thinking_budget/
+                  thinking_level, OpenAI: reasoning.effort/reasoning.summary).
+                  The operator serializes this map as the LIGHTSPEED_REASONING_CONFIG JSON
+                  env var on the sandbox pod without validation — the sandbox and upstream
+                  SDK/API validate at invocation time. Invalid keys are ignored by the
+                  adapter; invalid values on recognized keys are rejected by the SDK/API.
+                  When omitted, the env var is not set and the sandbox uses SDK defaults.
+                minProperties: 1
+                type: object
               timeouts:
                 description: |-
                   timeouts configures per-step and per-turn timeout limits.
