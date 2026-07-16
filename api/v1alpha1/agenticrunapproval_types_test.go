@@ -4,6 +4,8 @@ import (
 	"encoding/json"
 	"strings"
 	"testing"
+
+	"k8s.io/utils/ptr"
 )
 
 func TestNewApprovalStage_MarshalsDiscriminantArms(t *testing.T) {
@@ -32,7 +34,7 @@ func TestNewApprovalStage_MarshalsDiscriminantArms(t *testing.T) {
 		},
 		{
 			name:        "execution option zero",
-			stage:       NewApprovalStage(ApprovalStageExecution, "", "", ptrInt32(0), 0),
+			stage:       NewApprovalStage(ApprovalStageExecution, "", "", ptr.To(int32(0)), 0),
 			wantContain: []string{`"type":"Execution"`, `"execution":{"option":0}`},
 		},
 		{
@@ -69,4 +71,11 @@ func TestNewApprovalStage_MarshalsDiscriminantArms(t *testing.T) {
 	}
 }
 
-func ptrInt32(v int32) *int32 { return &v }
+func TestNewApprovalStage_UnknownTypePanics(t *testing.T) {
+	defer func() {
+		if r := recover(); r == nil {
+			t.Fatal("expected panic for unknown ApprovalStageType")
+		}
+	}()
+	_ = NewApprovalStage(ApprovalStageType("Nope"), "", "", nil, 0)
+}

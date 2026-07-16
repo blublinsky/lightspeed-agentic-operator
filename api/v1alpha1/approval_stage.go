@@ -37,6 +37,8 @@ func NewApprovalStage(typ ApprovalStageType, decision ApprovalDecision, agent st
 			e.Agent = agent
 		}
 		stage.Escalation = e
+	default:
+		panic("NewApprovalStage: unknown ApprovalStageType " + string(typ))
 	}
 	return stage
 }

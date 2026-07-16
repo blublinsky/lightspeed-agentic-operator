@@ -68,8 +68,6 @@ const (
 // AnalysisApproval contains approval parameters for the analysis step.
 // Empty objects ({}) are valid: presence of the arm satisfies CEL; omitted
 // agent means no override of AgenticRun.spec.analysis.agent.
-//
-// +kubebuilder:validation:MinProperties=0
 type AnalysisApproval struct {
 	// agent is an optional override of AgenticRun.spec.analysis.agent.
 	// When omitted, the run's configured analysis agent is used.
@@ -83,8 +81,6 @@ type AnalysisApproval struct {
 // ExecutionApproval contains approval parameters for the execution step.
 // Empty objects ({}) are valid: presence of the arm satisfies CEL; omitted
 // agent means no override of AgenticRun.spec.execution.agent.
-//
-// +kubebuilder:validation:MinProperties=0
 type ExecutionApproval struct {
 	// agent is an optional override of AgenticRun.spec.execution.agent.
 	// When omitted, the run's configured execution agent is used.
@@ -112,8 +108,6 @@ type ExecutionApproval struct {
 // VerificationApproval contains approval parameters for the verification step.
 // Empty objects ({}) are valid: presence of the arm satisfies CEL; omitted
 // agent means no override of AgenticRun.spec.verification.agent.
-//
-// +kubebuilder:validation:MinProperties=0
 type VerificationApproval struct {
 	// agent is an optional override of AgenticRun.spec.verification.agent.
 	// When omitted, the run's configured verification agent is used.
@@ -127,8 +121,6 @@ type VerificationApproval struct {
 // EscalationApproval contains approval parameters for the escalation step.
 // Empty objects ({}) are valid: presence of the arm satisfies CEL; omitted
 // agent means no override (controller uses the analysis agent).
-//
-// +kubebuilder:validation:MinProperties=0
 type EscalationApproval struct {
 	// agent is an optional override of the escalation agent.
 	// When omitted, the analysis agent is used (controller resolution rules).

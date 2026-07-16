@@ -419,6 +419,8 @@ func denyStage(t *testing.T, c client.Client, name string, stageType agenticv1al
 			Decision: agenticv1alpha1.ApprovalDecisionDenied,
 		}
 		switch stageType {
+		case agenticv1alpha1.ApprovalStageAnalysis:
+			stage.Analysis = &agenticv1alpha1.AnalysisApproval{Agent: "e2e-agent"}
 		case agenticv1alpha1.ApprovalStageExecution:
 			stage.Execution = &agenticv1alpha1.ExecutionApproval{Agent: "e2e-agent"}
 		case agenticv1alpha1.ApprovalStageVerification:

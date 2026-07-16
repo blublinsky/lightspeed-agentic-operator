@@ -98,7 +98,6 @@ spec:
                         analysis contains approval parameters for the analysis step.
                         Required when type is Analysis. Use a non-nil empty object ({}) when
                         approving without an agent override so the field is present for CEL.
-                      minProperties: 0
                       properties:
                         agent:
                           description: |-
@@ -126,7 +125,6 @@ spec:
                       description: |-
                         escalation contains approval parameters for the escalation step.
                         Required when type is Escalation.
-                      minProperties: 0
                       properties:
                         agent:
                           description: |-
@@ -144,7 +142,6 @@ spec:
                       description: |-
                         execution contains approval parameters for the execution step.
                         Required when type is Execution.
-                      minProperties: 0
                       properties:
                         agent:
                           description: |-
@@ -187,7 +184,6 @@ spec:
                       description: |-
                         verification contains approval parameters for the verification step.
                         Required when type is Verification.
-                      minProperties: 0
                       properties:
                         agent:
                           description: |-
