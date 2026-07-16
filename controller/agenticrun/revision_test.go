@@ -101,6 +101,9 @@ func TestBuildAnalysisQuery_FullAgenticRun(t *testing.T) {
 	if !strings.Contains(result, "remediation script") {
 		t.Error("should require a remediation script")
 	}
+	if !strings.Contains(result, "skill") {
+		t.Error("should mention skill priority")
+	}
 }
 
 func TestBuildAnalysisQuery_TrustMode(t *testing.T) {
