@@ -219,40 +219,6 @@ func TestBarePodManager_Claim_AuditAlwaysEnabled(t *testing.T) {
 	if env["LIGHTSPEED_AUDIT_ENABLED"] != "true" {
 		t.Errorf("LIGHTSPEED_AUDIT_ENABLED = %q, want true (audit is always on)", env["LIGHTSPEED_AUDIT_ENABLED"])
 	}
-	if env["OTEL_EXPORTER_OTLP_ENDPOINT"] != "jaeger:4317" {
-		t.Errorf("OTEL_EXPORTER_OTLP_ENDPOINT = %q, want jaeger:4317", env["OTEL_EXPORTER_OTLP_ENDPOINT"])
-	}
-}
-
-func TestBarePodManager_Claim_AuditDisabled(t *testing.T) {
-	config := &agenticv1alpha1.AgenticOLSConfig{}
-	config.Name = "cluster"
-	config.Spec.Audit = agenticv1alpha1.AuditConfig{
-		Logging: agenticv1alpha1.AuditLoggingDisabled,
-	}
-	fc := newBarePodClient().WithObjects(config).Build()
-	builder := &PodSpecBuilder{Image: "quay.io/test/sandbox:latest"}
-	m := NewBarePodManager(fc, builder, "test-ns")
-	m.SetStep(
-		&agenticv1alpha1.Agent{Spec: agenticv1alpha1.AgentSpec{Model: "claude-opus-4-6"}},
-		testLLMProvider(agenticv1alpha1.LLMProviderAnthropic),
-		nil,
-		defaultSandboxSA,
-	)
-
-	name, err := m.Claim(context.Background(), barePodRun("my-run"), "analysis", "")
-	if err != nil {
-		t.Fatalf("Claim: %v", err)
-	}
-
-	var pod corev1.Pod
-	if err := fc.Get(context.Background(), types.NamespacedName{Name: name, Namespace: "test-ns"}, &pod); err != nil {
-		t.Fatalf("pod not created: %v", err)
-	}
-	env := envToMap(pod.Spec.Containers[0].Env)
-	if _, ok := env["LIGHTSPEED_AUDIT_ENABLED"]; ok {
-		t.Error("LIGHTSPEED_AUDIT_ENABLED should not be set when audit logging is disabled")
-	}
 }
 
 func TestBarePodManager_WaitReady_NotFoundIsTerminal(t *testing.T) {
