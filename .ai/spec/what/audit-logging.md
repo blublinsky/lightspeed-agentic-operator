@@ -63,7 +63,7 @@ Implementation spec for compliance audit logging in the agentic operator. Parent
 ### Structured Log Format — OTel JSON via Stdout Exporter
 
 12. The operator MUST configure two exporters on its TracerProvider:
-    - **Stdout exporter** — serializes spans as OTLP JSON to stdout. Always active (audit is unconditionally enabled). This is the compliance record. The stdout exporter MUST NOT truncate span attributes or event attributes.
+    - **Stdout exporter** — serializes spans as OTLP JSON to stdout. Active when audit is enabled (`spec.audit.enabled` is `true` or absent — see rules 24–25). When `spec.audit.enabled` is `false`, the stdout exporter produces no output. This is the compliance record. The stdout exporter MUST NOT truncate span attributes or event attributes.
     - **OTLP exporter** — sends spans to the in-cluster Collector via OTLP gRPC. Configured from the `lightspeed-otel-collector-client` ConfigMap (managed by lightspeed-operator). Uses a no-op exporter when the ConfigMap is not yet available.
 
 13. The single-emission rule MUST be followed: each audit-significant datum is recorded exactly once, as an OTel span or span event. The stdout and OTLP exporters are two destinations for the same emission, not two separate emission paths. Application-level loggers (Go `logr`) MUST emit only developer-debugging messages and MUST NOT re-emit data that appears in spans or span events.
@@ -99,11 +99,11 @@ Implementation spec for compliance audit logging in the agentic operator. Parent
 
 ### Configuration
 
-23. The operator reads audit config from the `AgenticOLSConfig` CR at `spec.audit`.
+23. [PLANNED -- spec.audit field not yet in AgenticOLSConfig CRD; see crd-api.md] The operator reads audit config from the `AgenticOLSConfig` CR at `spec.audit`.
 
-24. `spec.audit.enabled` controls whether audit emission is active. Defaults to `true` — when the CR is absent or the field is not set, audit is enabled. Set to `false` to disable all audit emission (both stdout and OTLP exporters).
+24. [PLANNED -- spec.audit field not yet in AgenticOLSConfig CRD; see crd-api.md] `spec.audit.enabled` controls whether audit emission is active. Defaults to `true` — when the CR is absent or the field is not set, audit is enabled. Set to `false` to disable all audit emission (both stdout and OTLP exporters).
 
-25. When audit is enabled, the stdout exporter always emits OTLP JSON to stdout. This is what any log aggregator (Loki, Splunk, Fluentd, etc.) reads from container logs.
+25. When audit is enabled (`spec.audit.enabled` is `true` or absent), the stdout exporter always emits OTLP JSON to stdout. When `spec.audit.enabled` is `false`, the stdout exporter produces no output. This is what any log aggregator (Loki, Splunk, Fluentd, etc.) reads from container logs.
 
 26. The OTLP exporter endpoint is sourced from the `lightspeed-otel-collector-client` ConfigMap (field `collector-endpoint`). The operator blocks at startup until this ConfigMap exists (5 min timeout, fatal on expiry). Runtime changes to the ConfigMap reconfigure the exporter without restart. The OTLP exporter is additive — it provides distributed tracing and log persistence alongside the stdout compliance record.
 
@@ -115,7 +115,7 @@ Implementation spec for compliance audit logging in the agentic operator. Parent
 
 29. Each OTLP log record MUST carry: `agenticrun.uid` as a log record attribute (raw Kubernetes `metadata.uid` with hyphens — collector normalizes to 32-char hex for the `agentic_run_id` column), `agenticrun.phase` as a log record attribute (the current audit phase: `analysis`, `approval`, `execution`, `verification`, `escalation`, `terminal`), and the span event data as the log record body. The OTel log record's native `TraceID` field carries the per-phase trace ID and is not used by the collector for templog column mapping.
 
-30. OTLP logs and traces share the same Collector endpoint (from ConfigMap). Both are always active when the Collector is configured.
+30. OTLP logs and traces share the same Collector endpoint (from ConfigMap). Both are active when the Collector is configured and audit is enabled (`spec.audit.enabled` is `true` or absent). When `spec.audit.enabled` is `false`, neither OTLP traces nor OTLP log records are emitted.
 
 31. When the OTLP log endpoint is absent, no OTLP log records are emitted. No error, no warning — graceful degradation.
 
@@ -125,7 +125,7 @@ Implementation spec for compliance audit logging in the agentic operator. Parent
 
 33. On AgenticRun deletion, if the `agentic.openshift.io/templog-cleanup` finalizer is present, the operator MUST call the Collector admin API: `DELETE /api/v1/logs?agentic_run_id=<uid>` passing the raw Kubernetes UID (with hyphens; collector normalizes internally). On success, remove the finalizer. On failure, block deletion and requeue with exponential backoff.
 
-34. The finalizer does not depend on the Collector being present — it connects directly to PostgreSQL. See `templog.md` for edge cases.
+34. The finalizer calls the Collector admin API (`DELETE /api/v1/logs?agentic_run_id=<uid>`) to delete all temporary log entries for the run. The finalizer depends on the Collector admin API being reachable. Retry on failure with a 30-second interval, up to 3 attempts total, before blocking the run's deletion. See `templog.md` for edge cases.
 
 ## Cross-References
 
