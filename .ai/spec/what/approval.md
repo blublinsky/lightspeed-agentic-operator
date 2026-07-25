@@ -52,7 +52,7 @@ Behavioral specification for gating asynchronous workflow steps. **Phase derivat
 
 - Product documentation that speaks in terms such as “always approve”, “always require approval”, or “require approval only for execution” MUST be translated into explicit `Automatic`/`Manual` combinations on `ApprovalPolicy.spec.stages`; the CRD does **not** encode those phrases as enumerated `ApprovalMode` values.
 - Policy MUST NOT be namespace-scoped in the current API — only the cluster singleton is read by name `cluster`.
-- The cluster-admin approval gate is binary. Namespace-scoped approval delegation is out of scope for the current release (see `agentic-security.md` Planned Changes).
+- The cluster-admin approval gate is binary. Namespace-scoped approval delegation is out of scope for the current release (see the workspace-level agentic security spec at `ols/.ai/spec/what/agentic-security.md` Planned Changes).
 
 ## Planned Changes
 
