@@ -45,9 +45,11 @@ The script:
      to install it. Declining **stops** the script (re-run with
      `--ols-bundle-image=…`).
    - **No user image, OLS present:** three-way choice — (1) leave OLS as-is and
-     continue to agentic, (2) update to the related_images bundle, or (3) stop
-     and re-run with `--ols-bundle-image=…`.
-3. After a successful OLS install/update: writes/exports an `OLSConfig` file
+     continue to agentic (still creates `OLSConfig` if the CR is missing),
+     (2) update to the related_images bundle, or (3) stop and re-run with
+     `--ols-bundle-image=…`.
+3. After a successful OLS install/update, or when leaving OLS as-is but
+   `OLSConfig` is missing: writes/exports an `OLSConfig` file
    (`OLS_CONFIG_FILE`), lets you edit/apply in a loop, and waits until
    `status.overallStatus=Ready` (dumps diagnostics on failure).
 4. Installs Agentic Operator CRDs, Deployment, ApprovalPolicy, and webhook.
@@ -79,6 +81,7 @@ OLS decisions, set `REMOVE_OLS=1` (uninstall OLS) or `REMOVE_OLS=0` (keep OLS).
 | Flag | Description |
 |---|---|
 | `--ols-bundle-image=IMAGE` | Lightspeed Operator OLM bundle for `operator-sdk run bundle` / `bundle-upgrade`. Required non-empty when set. If omitted, resolves `lightspeed-operator-bundle` from `related_images.json` and prompts (see Install flow above). |
+| `--sandbox-image=IMAGE` | Agentic sandbox container image (passed to the operator as `--agentic-sandbox-image`). Overrides `SANDBOX_IMAGE`. Defaults to the Konflux `:main` sandbox image. |
 | `-h`, `--help` | Show usage and exit |
 
 ## Environment Variables
@@ -87,7 +90,7 @@ OLS decisions, set `REMOVE_OLS=1` (uninstall OLS) or `REMOVE_OLS=0` (keep OLS).
 |---|---|---|
 | `NAMESPACE` | `openshift-lightspeed` | Target namespace |
 | `OPERATOR_IMAGE` | Konflux `:main` | Agentic operator container image |
-| `SANDBOX_IMAGE` | Konflux `:main` | Agent sandbox container image |
+| `SANDBOX_IMAGE` | Konflux `:main` | Agent sandbox container image; same as `--sandbox-image` (flag overrides) |
 | `SANDBOX_MODE` | `bare-pod` | Sandbox mode (`bare-pod` or `sandbox-claim`) |
 | `IMAGE_PULL_POLICY` | *(empty — Kubernetes default)* | Image pull policy for operator and sandbox pods (`Always`, `IfNotPresent`, `Never`) |
 | `OLS_BUNDLE_IMAGE` | *(empty)* | Same as `--ols-bundle-image`; the flag overrides this env var |
@@ -104,7 +107,8 @@ Example with overrides:
 
 ```bash
 NAMESPACE=my-ns SANDBOX_MODE=sandbox-claim bash install-agentic.sh \
-  --ols-bundle-image=quay.io/example/lightspeed-operator-bundle:main
+  --ols-bundle-image=quay.io/example/lightspeed-operator-bundle:main \
+  --sandbox-image=quay.io/example/lightspeed-agentic-sandbox:main
 ```
 
 For dev environments with floating tags like `:main`, force fresh pulls:

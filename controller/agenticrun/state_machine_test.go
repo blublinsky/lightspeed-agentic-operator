@@ -625,10 +625,10 @@ func TestManualApproval_NoAutoApprovedStages(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// Execution not reported as success → fails
+// Execution success=false with no mutations → hard failure
 // ---------------------------------------------------------------------------
 
-func TestManualApproval_ExecutionReportsFailure(t *testing.T) {
+func TestManualApproval_ExecutionSuccessFalse_NoMutations_Fails(t *testing.T) {
 	run := testAgenticRun()
 	agent := newTestAgentCaller()
 	agent.executeResult = &ExecutionOutput{Success: false}

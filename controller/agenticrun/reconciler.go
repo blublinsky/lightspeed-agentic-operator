@@ -22,6 +22,7 @@ const (
 	ErrRemoveFinalizer             = "remove finalizer"
 	ErrAddFinalizer                = "add finalizer"
 	ErrPatchTemplogCleanupAttempts = "patch templog cleanup attempts"
+	ErrPatchRBACCleanupAttempts    = "patch rbac cleanup attempts"
 )
 
 // TempLogCleaner is the interface for deleting templog records on CR deletion.
@@ -74,20 +75,7 @@ func (r *AgenticRunReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 			r.Audit.Cleanup(&run)
 		}
 		if controllerutil.ContainsFinalizer(&run, rbacCleanupFinalizer) {
-			if err := r.Agent.ReleaseSandboxes(ctx, &run); err != nil {
-				return ctrl.Result{}, err
-			}
-			if err := cleanupExecutionRBAC(ctx, r.Client, &run, r.Namespace); err != nil {
-				return ctrl.Result{}, err
-			}
-			original := run.DeepCopy()
-			controllerutil.RemoveFinalizer(&run, rbacCleanupFinalizer)
-			if err := r.Patch(ctx, &run, client.MergeFrom(original)); err != nil {
-				return ctrl.Result{}, fmt.Errorf("%s: %w", ErrRemoveFinalizer, err)
-			}
-			// Requeue so templog cleanup Patches a fresh object (avoids conflict
-			// from two sequential Patches in one reconcile).
-			return ctrl.Result{Requeue: true}, nil
+			return r.handleRBACCleanup(ctx, &run)
 		}
 		if controllerutil.ContainsFinalizer(&run, templogCleanupFinalizer) {
 			return r.handleTemplogCleanup(ctx, &run)
@@ -321,4 +309,55 @@ func (r *AgenticRunReconciler) handleTemplogCleanup(ctx context.Context, run *ag
 		return ctrl.Result{}, fmt.Errorf("%s: %w", ErrRemoveFinalizer, err)
 	}
 	return ctrl.Result{}, nil
+}
+
+// handleRBACCleanup releases sandboxes and deletes execution RBAC resources
+// for a deleting AgenticRun. Retries up to rbacMaxCleanupAttempts, then
+// removes the finalizer regardless to avoid leaving the CR stuck in Terminating.
+func (r *AgenticRunReconciler) handleRBACCleanup(ctx context.Context, run *agenticv1alpha1.AgenticRun) (ctrl.Result, error) {
+	log := logf.FromContext(ctx)
+
+	attempts := 0
+	if v, ok := run.Annotations[rbacCleanupAttemptsAnnotation]; ok {
+		parsed, err := strconv.Atoi(v)
+		if err != nil || parsed < 0 {
+			log.Info("ignoring invalid rbac cleanup attempts annotation", "value", v)
+			attempts = 0
+		} else {
+			attempts = parsed
+		}
+	}
+
+	if attempts < rbacMaxCleanupAttempts {
+		sandboxErr := r.Agent.ReleaseSandboxes(ctx, run)
+		rbacErr := cleanupExecutionRBAC(ctx, r.Client, run, r.Namespace)
+		if sandboxErr != nil || rbacErr != nil {
+			if sandboxErr != nil {
+				log.Error(sandboxErr, "sandbox release failed, will retry", "attempt", attempts+1, "max", rbacMaxCleanupAttempts)
+			}
+			if rbacErr != nil {
+				log.Error(rbacErr, "RBAC cleanup failed, will retry", "attempt", attempts+1, "max", rbacMaxCleanupAttempts)
+			}
+			original := run.DeepCopy()
+			if run.Annotations == nil {
+				run.Annotations = make(map[string]string)
+			}
+			run.Annotations[rbacCleanupAttemptsAnnotation] = fmt.Sprintf("%d", attempts+1)
+			if patchErr := r.Patch(ctx, run, client.MergeFrom(original)); patchErr != nil {
+				return ctrl.Result{}, fmt.Errorf("%s: %w", ErrPatchRBACCleanupAttempts, patchErr)
+			}
+			return ctrl.Result{RequeueAfter: rbacCleanupRequeueAfter}, nil
+		}
+	} else {
+		log.Info("RBAC cleanup exhausted retries, removing finalizer with orphaned resources", "attempts", attempts)
+	}
+
+	original := run.DeepCopy()
+	controllerutil.RemoveFinalizer(run, rbacCleanupFinalizer)
+	if err := r.Patch(ctx, run, client.MergeFrom(original)); err != nil {
+		return ctrl.Result{}, fmt.Errorf("%s: %w", ErrRemoveFinalizer, err)
+	}
+	// Requeue so templog cleanup Patches a fresh object (avoids conflict
+	// from two sequential Patches in one reconcile).
+	return ctrl.Result{Requeue: true}, nil
 }

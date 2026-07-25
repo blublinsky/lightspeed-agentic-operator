@@ -14,6 +14,7 @@
 #     https://raw.githubusercontent.com/openshift/lightspeed-agentic-operator/main/hack/quickstart/install.sh
 #   bash install-agentic.sh
 #   bash install-agentic.sh --ols-bundle-image=quay.io/.../lightspeed-operator-bundle:tag
+#   bash install-agentic.sh --sandbox-image=quay.io/.../lightspeed-agentic-sandbox:tag
 #
 # Do not use: curl … | bash  (stdin is the script; prompts cannot read y/n)
 #
@@ -66,6 +67,10 @@ Options:
                              If omitted, resolves lightspeed-operator-bundle
                              from related_images.json (${OLS_RELATED_IMAGES_URL})
                              and prompts (decline / option 3 stops the script).
+  --sandbox-image=IMAGE      Agentic sandbox container image passed to the
+                             operator as --agentic-sandbox-image.
+                             Overrides SANDBOX_IMAGE. Default:
+                             ${SANDBOX_IMAGE}
   -h, --help                 Show this help and exit
 
 Environment variables (OPERATOR_IMAGE, SANDBOX_IMAGE, NAMESPACE, …) are
@@ -84,6 +89,17 @@ while [ $# -gt 0 ]; do
       [ $# -ge 2 ] || fail "--ols-bundle-image requires an image argument"
       OLS_BUNDLE_IMAGE="$2"
       [ -n "${OLS_BUNDLE_IMAGE}" ] || fail "--ols-bundle-image requires a non-empty image"
+      shift 2
+      ;;
+    --sandbox-image=*)
+      SANDBOX_IMAGE="${1#*=}"
+      [ -n "${SANDBOX_IMAGE}" ] || fail "--sandbox-image requires a non-empty image"
+      shift
+      ;;
+    --sandbox-image)
+      [ $# -ge 2 ] || fail "--sandbox-image requires an image argument"
+      SANDBOX_IMAGE="$2"
+      [ -n "${SANDBOX_IMAGE}" ] || fail "--sandbox-image requires a non-empty image"
       shift 2
       ;;
     -h|--help)
@@ -106,10 +122,20 @@ if [ -n "${_ols_bundle_raw}" ] && [ -z "${OLS_BUNDLE_IMAGE}" ]; then
 fi
 unset _ols_bundle_raw
 
+_sandbox_raw="${SANDBOX_IMAGE}"
+SANDBOX_IMAGE="${SANDBOX_IMAGE#"${SANDBOX_IMAGE%%[![:space:]]*}"}"
+SANDBOX_IMAGE="${SANDBOX_IMAGE%"${SANDBOX_IMAGE##*[![:space:]]}"}"
+if [ -z "${SANDBOX_IMAGE}" ]; then
+  fail "--sandbox-image / SANDBOX_IMAGE must be non-empty"
+fi
+unset _sandbox_raw
+
 if [ -n "${OLS_BUNDLE_IMAGE}" ] && [[ "${OLS_BUNDLE_IMAGE}" != *[:/]* ]]; then
   fail "OLS_BUNDLE_IMAGE looks invalid: ${OLS_BUNDLE_IMAGE}"
 fi
-
+if [[ "${SANDBOX_IMAGE}" != *[:/]* ]]; then
+  fail "SANDBOX_IMAGE looks invalid: ${SANDBOX_IMAGE}"
+fi
 # Set when a related_images.json bundle is resolved (for logging / summary).
 OLS_RELATED_BUNDLE_IMAGE=""
 # install | update | left-as-is | none — what happened to OLS in this run.
@@ -139,6 +165,10 @@ fi
 
 ols_crd_installed() {
   oc get crd olsconfigs.ols.openshift.io >/dev/null 2>&1
+}
+
+olsconfig_exists() {
+  oc get olsconfig cluster >/dev/null 2>&1
 }
 
 require_tty_for_prompts() {
@@ -291,7 +321,7 @@ prompt_ols_already_installed() {
     ${bundle_image}
 
   Choose:
-    1) Leave current OLS as-is (continue to agentic)
+    1) Leave current OLS as-is
     2) Update OLS to the related_images bundle above
     3) Stop and re-run with --ols-bundle-image=<your-image>
 
@@ -452,6 +482,7 @@ if [ -z "${OLS_BUNDLE_IMAGE}" ]; then
 else
   info "OLS bundle image override: ${OLS_BUNDLE_IMAGE}"
 fi
+info "Sandbox image: ${SANDBOX_IMAGE}"
 
 oc whoami >/dev/null 2>&1 || fail "Not logged into a cluster. Run: oc login ..."
 info "Logged in as $(oc whoami)"
@@ -500,6 +531,13 @@ else
       leave)
         warn "Leaving current Lightspeed Operator as-is"
         OLS_ACTION="left-as-is"
+        # CRD present does not imply OLSConfig exists — create one if missing.
+        if olsconfig_exists; then
+          info "OLSConfig cluster already present — skipping OLSConfig setup"
+        else
+          warn "OLSConfig cluster not found — will create one before agentic install"
+          CONFIGURE_OLSCONFIG=1
+        fi
         ;;
       update)
         install_or_update_ols update "${OLS_RELATED_BUNDLE_IMAGE}"

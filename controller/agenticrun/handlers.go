@@ -334,7 +334,11 @@ func (r *AgenticRunReconciler) handleExecution(
 		return r.failStep(spanCtx, run, agenticv1alpha1.AgenticRunConditionExecuted, err)
 	}
 	if !execResult.Success {
-		return r.failStep(spanCtx, run, agenticv1alpha1.AgenticRunConditionExecuted, fmt.Errorf("execution agent reported failure"))
+		if !hasMutationSuccess(execResult.ActionsTaken) {
+			return r.failStep(spanCtx, run, agenticv1alpha1.AgenticRunConditionExecuted, fmt.Errorf("execution agent reported failure"))
+		}
+		log.Info("execution agent reported success=false but all mutations succeeded; deferring outcome to verification step")
+		execResult.Success = true
 	}
 
 	base = run.DeepCopy()
@@ -750,6 +754,34 @@ func conditionTime(conditions []metav1.Condition, condType string) *metav1.Time 
 		return &c.LastTransitionTime
 	}
 	return nil
+}
+
+// hasMutationSuccess returns true if at least one mutating action succeeded
+// and none failed. Returns false when no mutating actions exist (the agent
+// never attempted the fix) or when any mutation was rejected.
+// Non-mutating action types (pre-check, post-check, verification, check, wait)
+// are skipped — their outcome reflects observation, not execution success.
+func hasMutationSuccess(actions []agenticv1alpha1.ExecutionAction) bool {
+	found := false
+	for i := range actions {
+		if isObservationAction(actions[i].Type) {
+			continue
+		}
+		if actions[i].Outcome != agenticv1alpha1.ActionOutcomeSucceeded {
+			return false
+		}
+		found = true
+	}
+	return found
+}
+
+func isObservationAction(actionType string) bool {
+	switch actionType {
+	case "pre-check", "post-check", "verification", "check", "wait":
+		return true
+	default:
+		return false
+	}
 }
 
 // denyAgenticRun transitions the run to Denied (terminal).

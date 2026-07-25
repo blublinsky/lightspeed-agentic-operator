@@ -42,7 +42,11 @@ const (
 
 	templogCleanupAttemptsAnnotation = "agentic.openshift.io/templog-cleanup-attempts"
 	templogMaxCleanupAttempts        = 3
-	templogCleanupRequeueAfter       = 30 * time.Second
+	templogCleanupRequeueAfter       = 5 * time.Second
+
+	rbacCleanupAttemptsAnnotation = "agentic.openshift.io/rbac-cleanup-attempts"
+	rbacMaxCleanupAttempts        = 3
+	rbacCleanupRequeueAfter       = 1 * time.Second
 
 	reasonInProgress        = "InProgress"
 	reasonComplete          = "Complete"

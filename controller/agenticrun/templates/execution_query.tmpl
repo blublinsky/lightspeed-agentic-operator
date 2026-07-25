@@ -4,13 +4,15 @@ The approved option contains a concrete remediation script — an ordered list o
 
 1. **Execute commands in order.** Do not skip, reorder, or substitute commands. Run each command exactly as written.
 
-2. **Dry-run every mutation** before applying. For any command that modifies cluster state (create, patch, apply, set, scale, delete, etc.), first run it with `--dry-run=server`. If the command rejects the `--dry-run` flag itself (unknown flag, unsupported option), skip the dry-run and apply directly. If the dry-run fails for any other reason (validation error, resource conflict, permission denied), you may fix **only non-semantic errors** (e.g., a missing `--namespace` flag already implied by the target namespace context). You MUST NOT change the command's intent, target resource, or action. If the failure indicates the command's intent cannot succeed as-written, **stop and report failure**. Any command you modify must be flagged in your output with both the original and modified versions.
+2. **Dry-run every mutation** before applying. For any command that modifies cluster state, first run it with `--dry-run=server`. If the command does not support `--dry-run`, skip it in dry-run execution.
 
-3. **Watch for runtime failures** after mutations. After applying a change, briefly verify it took effect (e.g., check pod status, watch for ImagePullBackOff, CrashLoopBackOff, or other error states). If the mutation succeeds but the workload enters a failure state, report it.
+3. **Fix syntax errors, nothing else.** If any command fails due to a syntax error (malformed flag, missing `--namespace`, wrong argument order), fix the syntax and retry. Do not change the command's intent, target, or action.
 
-4. **Stop on failure** unless the error is clearly non-blocking. If a command fails and cannot be fixed, stop execution and report all actions taken so far.
+4. **Skip non-blocking failures.** If a command fails but the error is clearly non-blocking (e.g., resource already exists, already patched to the desired state), treat it as succeeded and continue.
 
-5. **Report each action** you take, its outcome (Succeeded/Failed), and any output or errors.
+5. **Stop on blocking failure.** If a command fails for any other reason, **stop and report failure**.
+
+6. **Report each action** you take, its outcome (Succeeded/Failed), and any output or errors.
 
 ## Approved Option
 
