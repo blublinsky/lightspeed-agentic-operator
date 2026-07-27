@@ -19,6 +19,10 @@ import (
 	agenticv1alpha1 "github.com/openshift/lightspeed-agentic-operator/api/v1alpha1"
 )
 
+func resetReaderBindings() {
+	readerBindings.Store([]string(nil))
+}
+
 // readerBinding returns the pre-existing cluster-reader ClusterRoleBinding fixture
 // that must exist for execution SA setup to succeed.
 func readerBinding() *rbacv1.ClusterRoleBinding {
@@ -39,6 +43,7 @@ func readerBinding() *rbacv1.ClusterRoleBinding {
 
 func TestEnsureExecutionRBAC_NamespaceScopedOnly(t *testing.T) {
 	ctx := context.Background()
+	resetReaderBindings()
 	fc := fake.NewClientBuilder().WithScheme(testScheme()).WithObjects(readerBinding()).Build()
 
 	run := &agenticv1alpha1.AgenticRun{
@@ -127,6 +132,7 @@ func TestEnsureExecutionRBAC_NamespaceScopedOnly(t *testing.T) {
 
 func TestEnsureExecutionRBAC_ClusterScopedOnly(t *testing.T) {
 	ctx := context.Background()
+	resetReaderBindings()
 	fc := fake.NewClientBuilder().WithScheme(testScheme()).WithObjects(readerBinding()).Build()
 
 	run := &agenticv1alpha1.AgenticRun{
@@ -171,6 +177,7 @@ func TestEnsureExecutionRBAC_ClusterScopedOnly(t *testing.T) {
 
 func TestEnsureExecutionRBAC_BothScopes(t *testing.T) {
 	ctx := context.Background()
+	resetReaderBindings()
 	fc := fake.NewClientBuilder().WithScheme(testScheme()).WithObjects(readerBinding()).Build()
 
 	run := &agenticv1alpha1.AgenticRun{
@@ -207,6 +214,7 @@ func TestEnsureExecutionRBAC_BothScopes(t *testing.T) {
 
 func TestEnsureExecutionRBAC_MultipleNamespaces(t *testing.T) {
 	ctx := context.Background()
+	resetReaderBindings()
 	fc := fake.NewClientBuilder().WithScheme(testScheme()).WithObjects(readerBinding()).Build()
 
 	run := &agenticv1alpha1.AgenticRun{
@@ -245,6 +253,7 @@ func TestEnsureExecutionRBAC_MultipleNamespaces(t *testing.T) {
 
 func TestEnsureExecutionRBAC_Idempotent(t *testing.T) {
 	ctx := context.Background()
+	resetReaderBindings()
 	fc := fake.NewClientBuilder().WithScheme(testScheme()).WithObjects(readerBinding()).Build()
 
 	run := &agenticv1alpha1.AgenticRun{
@@ -272,6 +281,7 @@ func TestEnsureExecutionRBAC_Idempotent(t *testing.T) {
 
 func TestEnsureExecutionRBAC_NilResult(t *testing.T) {
 	ctx := context.Background()
+	resetReaderBindings()
 	fc := fake.NewClientBuilder().WithScheme(testScheme()).WithObjects(readerBinding()).Build()
 
 	run := &agenticv1alpha1.AgenticRun{
@@ -285,6 +295,7 @@ func TestEnsureExecutionRBAC_NilResult(t *testing.T) {
 
 func TestEnsureExecutionRBAC_EmptyRules(t *testing.T) {
 	ctx := context.Background()
+	resetReaderBindings()
 	fc := fake.NewClientBuilder().WithScheme(testScheme()).WithObjects(readerBinding()).Build()
 
 	run := &agenticv1alpha1.AgenticRun{
@@ -306,6 +317,7 @@ func TestEnsureExecutionRBAC_EmptyRules(t *testing.T) {
 
 func TestEnsureExecutionRBAC_NamespacesFromRBACRules(t *testing.T) {
 	ctx := context.Background()
+	resetReaderBindings()
 	fc := fake.NewClientBuilder().WithScheme(testScheme()).WithObjects(readerBinding()).Build()
 
 	ns1 := "app-ns"
@@ -335,6 +347,7 @@ func TestEnsureExecutionRBAC_NamespacesFromRBACRules(t *testing.T) {
 
 func TestEnsureExecutionRBAC_ResourceNames(t *testing.T) {
 	ctx := context.Background()
+	resetReaderBindings()
 	fc := fake.NewClientBuilder().WithScheme(testScheme()).WithObjects(readerBinding()).Build()
 
 	run := &agenticv1alpha1.AgenticRun{
@@ -370,6 +383,7 @@ func TestEnsureExecutionRBAC_ResourceNames(t *testing.T) {
 
 func TestCleanupExecutionRBAC_NamespaceAndCluster(t *testing.T) {
 	ctx := context.Background()
+	resetReaderBindings()
 	fc := fake.NewClientBuilder().WithScheme(testScheme()).WithObjects(readerBinding()).Build()
 
 	run := &agenticv1alpha1.AgenticRun{
@@ -435,6 +449,7 @@ func TestCleanupExecutionRBAC_NamespaceAndCluster(t *testing.T) {
 
 func TestCleanupExecutionRBAC_NoAnnotation(t *testing.T) {
 	ctx := context.Background()
+	resetReaderBindings()
 	fc := fake.NewClientBuilder().WithScheme(testScheme()).WithObjects(readerBinding()).Build()
 
 	run := &agenticv1alpha1.AgenticRun{
@@ -466,6 +481,7 @@ func TestCleanupExecutionRBAC_NoAnnotation(t *testing.T) {
 
 func TestCleanupExecutionRBAC_MissingResources(t *testing.T) {
 	ctx := context.Background()
+	resetReaderBindings()
 	fc := fake.NewClientBuilder().WithScheme(testScheme()).WithObjects(readerBinding()).Build()
 
 	run := &agenticv1alpha1.AgenticRun{
@@ -813,12 +829,12 @@ func TestRBACLabels_TruncatesLongAgenticRunName(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// addReaderSubject / removeReaderSubject / discoverReaderBinding
+// addReaderSubject / removeReaderSubject / resolveReaderBindings
 // ---------------------------------------------------------------------------
 
 func TestAddReaderSubject_Idempotent(t *testing.T) {
 	ctx := context.Background()
-	readerRoleBinding.Store(defaultReaderClusterRoleBinding)
+	resetReaderBindings()
 	fc := fake.NewClientBuilder().WithScheme(testScheme()).WithObjects(readerBinding()).Build()
 
 	if err := addReaderSubject(ctx, fc, "ls-exec-test", "default"); err != nil {
@@ -844,9 +860,46 @@ func TestAddReaderSubject_Idempotent(t *testing.T) {
 	}
 }
 
+func TestAddReaderSubject_MultipleBindings(t *testing.T) {
+	ctx := context.Background()
+	resetReaderBindings()
+
+	monitoringBinding := &rbacv1.ClusterRoleBinding{
+		ObjectMeta: metav1.ObjectMeta{Name: "lightspeed-agent-monitoring-view"},
+		RoleRef:    rbacv1.RoleRef{APIGroup: rbacv1.GroupName, Kind: "ClusterRole", Name: "cluster-monitoring-view"},
+		Subjects: []rbacv1.Subject{{
+			Kind:      rbacv1.ServiceAccountKind,
+			Name:      defaultSandboxSA,
+			Namespace: "default",
+		}},
+	}
+	fc := fake.NewClientBuilder().WithScheme(testScheme()).WithObjects(readerBinding(), monitoringBinding).Build()
+
+	if err := addReaderSubject(ctx, fc, "ls-exec-test", "default"); err != nil {
+		t.Fatalf("addReaderSubject: %v", err)
+	}
+
+	for _, name := range []string{defaultReaderClusterRoleBinding, "lightspeed-agent-monitoring-view"} {
+		var crb rbacv1.ClusterRoleBinding
+		if err := fc.Get(ctx, types.NamespacedName{Name: name}, &crb); err != nil {
+			t.Fatalf("get %s: %v", name, err)
+		}
+		found := false
+		for _, s := range crb.Subjects {
+			if s.Name == "ls-exec-test" {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Fatalf("subject ls-exec-test not added to %s", name)
+		}
+	}
+}
+
 func TestRemoveReaderSubject_NotPresent(t *testing.T) {
 	ctx := context.Background()
-	readerRoleBinding.Store(defaultReaderClusterRoleBinding)
+	resetReaderBindings()
 	fc := fake.NewClientBuilder().WithScheme(testScheme()).WithObjects(readerBinding()).Build()
 
 	if err := removeReaderSubject(ctx, fc, "ls-exec-nonexistent", "default"); err != nil {
@@ -854,9 +907,45 @@ func TestRemoveReaderSubject_NotPresent(t *testing.T) {
 	}
 }
 
-func TestDiscoverReaderBinding_NoMatches(t *testing.T) {
+func TestRemoveReaderSubject_MultipleBindings(t *testing.T) {
 	ctx := context.Background()
-	readerRoleBinding.Store(defaultReaderClusterRoleBinding)
+	resetReaderBindings()
+
+	saName := "ls-exec-remove-test"
+	monitoringBinding := &rbacv1.ClusterRoleBinding{
+		ObjectMeta: metav1.ObjectMeta{Name: "lightspeed-agent-monitoring-view"},
+		RoleRef:    rbacv1.RoleRef{APIGroup: rbacv1.GroupName, Kind: "ClusterRole", Name: "cluster-monitoring-view"},
+		Subjects: []rbacv1.Subject{
+			{Kind: rbacv1.ServiceAccountKind, Name: defaultSandboxSA, Namespace: "default"},
+			{Kind: rbacv1.ServiceAccountKind, Name: saName, Namespace: "default"},
+		},
+	}
+	readerWithExec := readerBinding()
+	readerWithExec.Subjects = append(readerWithExec.Subjects, rbacv1.Subject{
+		Kind: rbacv1.ServiceAccountKind, Name: saName, Namespace: "default",
+	})
+	fc := fake.NewClientBuilder().WithScheme(testScheme()).WithObjects(readerWithExec, monitoringBinding).Build()
+
+	if err := removeReaderSubject(ctx, fc, saName, "default"); err != nil {
+		t.Fatalf("removeReaderSubject: %v", err)
+	}
+
+	for _, name := range []string{defaultReaderClusterRoleBinding, "lightspeed-agent-monitoring-view"} {
+		var crb rbacv1.ClusterRoleBinding
+		if err := fc.Get(ctx, types.NamespacedName{Name: name}, &crb); err != nil {
+			t.Fatalf("get %s: %v", name, err)
+		}
+		for _, s := range crb.Subjects {
+			if s.Name == saName {
+				t.Fatalf("subject %s should have been removed from %s", saName, name)
+			}
+		}
+	}
+}
+
+func TestResolveReaderBindings_NoMatches(t *testing.T) {
+	ctx := context.Background()
+	resetReaderBindings()
 
 	unrelatedBinding := &rbacv1.ClusterRoleBinding{
 		ObjectMeta: metav1.ObjectMeta{Name: "unrelated-binding"},
@@ -869,7 +958,7 @@ func TestDiscoverReaderBinding_NoMatches(t *testing.T) {
 	}
 	fc := fake.NewClientBuilder().WithScheme(testScheme()).WithObjects(unrelatedBinding).Build()
 
-	err := discoverReaderBinding(ctx, fc, "default")
+	_, err := resolveReaderBindings(ctx, fc, "default")
 	if err == nil {
 		t.Fatal("expected error when no matching bindings found")
 	}
@@ -878,9 +967,9 @@ func TestDiscoverReaderBinding_NoMatches(t *testing.T) {
 	}
 }
 
-func TestDiscoverReaderBinding_MultipleMatches(t *testing.T) {
+func TestResolveReaderBindings_MultipleMatches(t *testing.T) {
 	ctx := context.Background()
-	readerRoleBinding.Store(defaultReaderClusterRoleBinding)
+	resetReaderBindings()
 
 	binding1 := &rbacv1.ClusterRoleBinding{
 		ObjectMeta: metav1.ObjectMeta{Name: "custom-reader-1"},
@@ -902,20 +991,44 @@ func TestDiscoverReaderBinding_MultipleMatches(t *testing.T) {
 	}
 	fc := fake.NewClientBuilder().WithScheme(testScheme()).WithObjects(binding1, binding2).Build()
 
-	err := discoverReaderBinding(ctx, fc, "default")
+	resolved, err := resolveReaderBindings(ctx, fc, "default")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
+	if len(resolved) != 2 {
+		t.Fatalf("expected 2 bindings, got %d: %v", len(resolved), resolved)
+	}
 
-	resolved := readerRoleBinding.Load().(string)
-	if resolved != "custom-reader-1" && resolved != "custom-reader-2" {
-		t.Fatalf("expected one of the custom bindings, got: %s", resolved)
+	found := map[string]bool{}
+	for _, name := range resolved {
+		found[name] = true
+	}
+	if !found["custom-reader-1"] || !found["custom-reader-2"] {
+		t.Fatalf("expected both custom bindings, got: %v", resolved)
+	}
+}
+
+func TestResolveReaderBindings_Cached(t *testing.T) {
+	ctx := context.Background()
+	resetReaderBindings()
+	fc := fake.NewClientBuilder().WithScheme(testScheme()).WithObjects(readerBinding()).Build()
+
+	first, err := resolveReaderBindings(ctx, fc, "default")
+	if err != nil {
+		t.Fatalf("first resolve: %v", err)
+	}
+	second, err := resolveReaderBindings(ctx, fc, "default")
+	if err != nil {
+		t.Fatalf("second resolve: %v", err)
+	}
+	if len(first) != len(second) || first[0] != second[0] {
+		t.Fatalf("cached result should match: %v vs %v", first, second)
 	}
 }
 
 func TestAddReaderSubject_ConflictRetryExhaustion(t *testing.T) {
 	ctx := context.Background()
-	readerRoleBinding.Store(defaultReaderClusterRoleBinding)
+	resetReaderBindings()
 
 	callCount := 0
 	fc := fake.NewClientBuilder().

@@ -1016,7 +1016,7 @@ func TestReconcile_ExecutingPhase_DoesNotReExecute(t *testing.T) {
 	}
 }
 
-func TestReconcile_ExecutionOutcomeFailed_FailsStep(t *testing.T) {
+func TestReconcile_ExecutionMutationFailed_FailsStep(t *testing.T) {
 	scheme := testScheme()
 	run := testAgenticRun()
 
@@ -1031,16 +1031,75 @@ func TestReconcile_ExecutionOutcomeFailed_FailsStep(t *testing.T) {
 	}
 	r := &AgenticRunReconciler{Client: fc, Agent: agent, Namespace: "default"}
 
-	// Analysis → Executing
 	reconcileOnce(r, "fix-crash")
-	// Approve
 	approveAgenticRun(t, fc, "fix-crash")
-	// Execution with success=false → Failed
 	reconcileOnce(r, "fix-crash")
 
 	p, _ := getAgenticRun(r, "fix-crash")
 	if agenticv1alpha1.DerivePhase(p.Status.Conditions) != agenticv1alpha1.AgenticRunPhaseFailed {
-		t.Fatalf("expected Failed when execution success=false, got %s", agenticv1alpha1.DerivePhase(p.Status.Conditions))
+		t.Fatalf("expected Failed when mutation action failed, got %s", agenticv1alpha1.DerivePhase(p.Status.Conditions))
+	}
+}
+
+func TestReconcile_ExecutionPreCheckFailed_ProceedsToVerification(t *testing.T) {
+	scheme := testScheme()
+	run := testAgenticRun()
+
+	objs := append([]client.Object{run}, defaultObjects()...)
+	fc := fake.NewClientBuilder().WithScheme(scheme).WithObjects(objs...).
+		WithStatusSubresource(run, &agenticv1alpha1.AnalysisResult{}, &agenticv1alpha1.ExecutionResult{}, &agenticv1alpha1.VerificationResult{}, &agenticv1alpha1.EscalationResult{}).Build()
+
+	agent := newTestAgentCaller()
+	agent.executeResult = &ExecutionOutput{
+		Success: false,
+		ActionsTaken: []agenticv1alpha1.ExecutionAction{
+			{Type: "pre-check", Description: "Confirmed problem exists", Outcome: agenticv1alpha1.ActionOutcomeFailed},
+			{Type: "patch", Description: "Patched deployment", Outcome: agenticv1alpha1.ActionOutcomeSucceeded},
+		},
+	}
+	r := &AgenticRunReconciler{Client: fc, Agent: agent, Namespace: "default"}
+
+	reconcileOnce(r, "fix-crash")
+	approveAgenticRun(t, fc, "fix-crash")
+	reconcileOnce(r, "fix-crash")
+
+	p, _ := getAgenticRun(r, "fix-crash")
+	phase := agenticv1alpha1.DerivePhase(p.Status.Conditions)
+	if phase != agenticv1alpha1.AgenticRunPhaseVerifying {
+		t.Fatalf("expected Verifying when only pre-check failed (observational), got %s", phase)
+	}
+}
+
+func TestReconcile_ExecutionInlineVerificationFailed_ProceedsToVerification(t *testing.T) {
+	scheme := testScheme()
+	run := testAgenticRun()
+
+	objs := append([]client.Object{run}, defaultObjects()...)
+	fc := fake.NewClientBuilder().WithScheme(scheme).WithObjects(objs...).
+		WithStatusSubresource(run, &agenticv1alpha1.AnalysisResult{}, &agenticv1alpha1.ExecutionResult{}, &agenticv1alpha1.VerificationResult{}, &agenticv1alpha1.EscalationResult{}).Build()
+
+	agent := newTestAgentCaller()
+	agent.executeResult = &ExecutionOutput{
+		Success: false,
+		ActionsTaken: []agenticv1alpha1.ExecutionAction{
+			{Type: "patch", Description: "Patched NetworkPolicy", Outcome: agenticv1alpha1.ActionOutcomeSucceeded},
+			{Type: "verification", Description: "Checked frontend logs", Outcome: agenticv1alpha1.ActionOutcomeFailed},
+		},
+		Verification: agenticv1alpha1.ExecutionVerification{
+			ConditionOutcome: agenticv1alpha1.ConditionOutcomeUnchanged,
+			Summary:          "Logs still show timeout — checked too early",
+		},
+	}
+	r := &AgenticRunReconciler{Client: fc, Agent: agent, Namespace: "default"}
+
+	reconcileOnce(r, "fix-crash")
+	approveAgenticRun(t, fc, "fix-crash")
+	reconcileOnce(r, "fix-crash")
+
+	p, _ := getAgenticRun(r, "fix-crash")
+	phase := agenticv1alpha1.DerivePhase(p.Status.Conditions)
+	if phase != agenticv1alpha1.AgenticRunPhaseVerifying {
+		t.Fatalf("expected Verifying when only inline verification failed, got %s", phase)
 	}
 }
 
