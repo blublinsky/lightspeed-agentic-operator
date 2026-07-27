@@ -290,7 +290,7 @@ install_or_update_ols() {
 
   if [ "${mode}" = "update" ]; then
     echo "  Updating Lightspeed Operator via operator-sdk run bundle-upgrade..."
-    if ! "${OPERATOR_SDK_BIN}" run bundle-upgrade --timeout="${BUNDLE_TIMEOUT}" --namespace "${NAMESPACE}" "${bundle_image}"; then
+    if ! "${OPERATOR_SDK_BIN}" run bundle-upgrade --security-context-config=restricted --timeout="${BUNDLE_TIMEOUT}" --namespace "${NAMESPACE}" "${bundle_image}"; then
       fail "Lightspeed Operator bundle-upgrade failed.
 
   Refusing to fall back to a fresh 'run bundle' (that can leave a conflicting OLM install).
@@ -304,7 +304,7 @@ install_or_update_ols() {
   fi
 
   echo "  Installing Lightspeed Operator via operator-sdk run bundle..."
-  "${OPERATOR_SDK_BIN}" run bundle --timeout="${BUNDLE_TIMEOUT}" --namespace "${NAMESPACE}" "${bundle_image}" \
+  "${OPERATOR_SDK_BIN}" run bundle --security-context-config=restricted --timeout="${BUNDLE_TIMEOUT}" --namespace "${NAMESPACE}" "${bundle_image}" \
     || fail "Lightspeed Operator bundle install failed"
   info "Lightspeed Operator installed"
   OLS_ACTION="install"
