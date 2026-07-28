@@ -104,9 +104,10 @@ spec:
                       type: string
                     source:
                       description: |-
-                        source is what performed the check (e.g., "oc", "promql", "curl").
-                        Maximum 256 characters.
-                      maxLength: 256
+                        source is the command or query that was run for this check
+                        (e.g., "oc get pod -n production -o jsonpath='{.status.phase}'").
+                        Maximum 4096 characters.
+                      maxLength: 4096
                       minLength: 1
                       type: string
                     value:

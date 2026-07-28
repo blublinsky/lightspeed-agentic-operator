@@ -119,11 +119,12 @@ type VerifyCheck struct {
 	// +kubebuilder:validation:MinLength=1
 	// +kubebuilder:validation:MaxLength=253
 	Name string `json:"name,omitempty"`
-	// source is what performed the check (e.g., "oc", "promql", "curl").
-	// Maximum 256 characters.
+	// source is the command or query that was run for this check
+	// (e.g., "oc get pod -n production -o jsonpath='{.status.phase}'").
+	// Maximum 4096 characters.
 	// +required
 	// +kubebuilder:validation:MinLength=1
-	// +kubebuilder:validation:MaxLength=256
+	// +kubebuilder:validation:MaxLength=4096
 	Source string `json:"source,omitempty"`
 	// value is the actual observed value (e.g., "Running", "3 replicas").
 	// Maximum 4096 characters.
