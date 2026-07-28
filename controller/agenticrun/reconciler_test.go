@@ -225,7 +225,7 @@ func fakeBaseTemplate() *unstructured.Unstructured {
 			"apiVersion": "extensions.agents.x-k8s.io/v1alpha1",
 			"kind":       "SandboxTemplate",
 			"metadata": map[string]any{
-				"name":      defaultBaseTemplateName,
+				"name":      "lightspeed-agent",
 				"namespace": "test-ns",
 			},
 			"spec": map[string]any{
@@ -719,5 +719,261 @@ func TestDeletion_RequeuesAfterRBACFinalizerBeforeTemplog(t *testing.T) {
 	}
 	if err == nil && controllerutil.ContainsFinalizer(&updated, templogCleanupFinalizer) {
 		t.Error("templog finalizer should be removed after cleanup")
+	}
+}
+
+// --- copyResultStatus tests ---
+
+func TestCopyResultStatus_AnalysisResult(t *testing.T) {
+	src := &agenticv1alpha1.AnalysisResult{}
+	src.Status.ActionRequired = agenticv1alpha1.ActionRequiredTrue
+	src.Status.Diagnosis = agenticv1alpha1.DiagnosisResult{RootCause: "OOM"}
+	src.Status.FailureReason = "timeout"
+	src.Status.Sandbox = agenticv1alpha1.SandboxInfo{ClaimName: "claim-a"}
+	src.Status.Options = []agenticv1alpha1.RemediationOption{{Title: "fix1"}}
+
+	dst := &agenticv1alpha1.AnalysisResult{}
+	copyResultStatus(dst, src)
+
+	if dst.Status.ActionRequired != agenticv1alpha1.ActionRequiredTrue {
+		t.Errorf("ActionRequired = %q", dst.Status.ActionRequired)
+	}
+	if dst.Status.Diagnosis.RootCause != "OOM" {
+		t.Errorf("Diagnosis.RootCause = %q", dst.Status.Diagnosis.RootCause)
+	}
+	if dst.Status.FailureReason != "timeout" {
+		t.Errorf("FailureReason = %q", dst.Status.FailureReason)
+	}
+	if dst.Status.Sandbox.ClaimName != "claim-a" {
+		t.Errorf("Sandbox.ClaimName = %q", dst.Status.Sandbox.ClaimName)
+	}
+	if len(dst.Status.Options) != 1 || dst.Status.Options[0].Title != "fix1" {
+		t.Errorf("Options = %v", dst.Status.Options)
+	}
+}
+
+func TestCopyResultStatus_ExecutionResult(t *testing.T) {
+	src := &agenticv1alpha1.ExecutionResult{}
+	src.Status.ActionsTaken = []agenticv1alpha1.ExecutionAction{{Description: "scaled up"}}
+	src.Status.Verification = agenticv1alpha1.ExecutionVerification{
+		ConditionOutcome: agenticv1alpha1.ConditionOutcomeImproved,
+		Summary:          "pod running",
+	}
+	src.Status.FailureReason = "rbac denied"
+	src.Status.Sandbox = agenticv1alpha1.SandboxInfo{ClaimName: "claim-e"}
+
+	dst := &agenticv1alpha1.ExecutionResult{}
+	copyResultStatus(dst, src)
+
+	if len(dst.Status.ActionsTaken) != 1 || dst.Status.ActionsTaken[0].Description != "scaled up" {
+		t.Errorf("ActionsTaken = %v", dst.Status.ActionsTaken)
+	}
+	if dst.Status.Verification.ConditionOutcome != agenticv1alpha1.ConditionOutcomeImproved {
+		t.Errorf("Verification.ConditionOutcome = %q", dst.Status.Verification.ConditionOutcome)
+	}
+	if dst.Status.Verification.Summary != "pod running" {
+		t.Errorf("Verification.Summary = %q", dst.Status.Verification.Summary)
+	}
+	if dst.Status.FailureReason != "rbac denied" {
+		t.Errorf("FailureReason = %q", dst.Status.FailureReason)
+	}
+	if dst.Status.Sandbox.ClaimName != "claim-e" {
+		t.Errorf("Sandbox.ClaimName = %q", dst.Status.Sandbox.ClaimName)
+	}
+}
+
+func TestCopyResultStatus_VerificationResult(t *testing.T) {
+	src := &agenticv1alpha1.VerificationResult{}
+	src.Status.Checks = []agenticv1alpha1.VerifyCheck{
+		{Name: "pod-running", Source: "oc", Value: "Running", Result: agenticv1alpha1.CheckResultPassed},
+	}
+	src.Status.Summary = "all green"
+	src.Status.FailureReason = "check timeout"
+	src.Status.Sandbox = agenticv1alpha1.SandboxInfo{ClaimName: "claim-v"}
+
+	dst := &agenticv1alpha1.VerificationResult{}
+	copyResultStatus(dst, src)
+
+	if len(dst.Status.Checks) != 1 || dst.Status.Checks[0].Name != "pod-running" {
+		t.Errorf("Checks = %v", dst.Status.Checks)
+	}
+	if dst.Status.Summary != "all green" {
+		t.Errorf("Summary = %q", dst.Status.Summary)
+	}
+	if dst.Status.FailureReason != "check timeout" {
+		t.Errorf("FailureReason = %q", dst.Status.FailureReason)
+	}
+	if dst.Status.Sandbox.ClaimName != "claim-v" {
+		t.Errorf("Sandbox.ClaimName = %q", dst.Status.Sandbox.ClaimName)
+	}
+}
+
+func TestCopyResultStatus_EscalationResult(t *testing.T) {
+	src := &agenticv1alpha1.EscalationResult{}
+	src.Status.Summary = "needs human"
+	src.Status.Content = "detailed report"
+	src.Status.FailureReason = "agent error"
+	src.Status.Sandbox = agenticv1alpha1.SandboxInfo{ClaimName: "claim-esc"}
+
+	dst := &agenticv1alpha1.EscalationResult{}
+	copyResultStatus(dst, src)
+
+	if dst.Status.Summary != "needs human" {
+		t.Errorf("Summary = %q", dst.Status.Summary)
+	}
+	if dst.Status.Content != "detailed report" {
+		t.Errorf("Content = %q", dst.Status.Content)
+	}
+	if dst.Status.FailureReason != "agent error" {
+		t.Errorf("FailureReason = %q", dst.Status.FailureReason)
+	}
+	if dst.Status.Sandbox.ClaimName != "claim-esc" {
+		t.Errorf("Sandbox.ClaimName = %q", dst.Status.Sandbox.ClaimName)
+	}
+}
+
+func TestCopyResultStatus_TypeMismatch(t *testing.T) {
+	src := &agenticv1alpha1.AnalysisResult{}
+	src.Status.FailureReason = "should not copy"
+
+	dst := &agenticv1alpha1.ExecutionResult{}
+	copyResultStatus(dst, src)
+
+	if dst.Status.FailureReason != "" {
+		t.Error("mismatched types should not copy anything")
+	}
+}
+
+// --- handleRBACCleanup tests ---
+
+type failingAgentCaller struct {
+	testAgentCaller
+	releaseErr error
+}
+
+func (f *failingAgentCaller) ReleaseSandboxes(_ context.Context, _ *agenticv1alpha1.AgenticRun) error {
+	return f.releaseErr
+}
+
+func TestHandleRBACCleanup_HappyPath(t *testing.T) {
+	now := metav1.Now()
+	run := testAgenticRun()
+	run.DeletionTimestamp = &now
+	run.Finalizers = []string{rbacCleanupFinalizer}
+
+	objs := append([]client.Object{run}, defaultObjects()...)
+	fc := fake.NewClientBuilder().WithScheme(testScheme()).WithObjects(objs...).
+		WithStatusSubresource(run).Build()
+
+	r := &AgenticRunReconciler{Client: fc, Agent: newTestAgentCaller(), Namespace: "default"}
+	result, err := r.handleRBACCleanup(context.Background(), run)
+	if err != nil {
+		t.Fatalf("handleRBACCleanup: %v", err)
+	}
+	if !result.Requeue {
+		t.Error("expected requeue after removing RBAC finalizer")
+	}
+
+	var updated agenticv1alpha1.AgenticRun
+	err = fc.Get(context.Background(), types.NamespacedName{Name: "fix-crash", Namespace: "default"}, &updated)
+	if client.IgnoreNotFound(err) != nil {
+		t.Fatalf("get updated run: %v", err)
+	}
+	if err == nil && controllerutil.ContainsFinalizer(&updated, rbacCleanupFinalizer) {
+		t.Error("rbac finalizer should be removed on success")
+	}
+}
+
+func TestHandleRBACCleanup_RetryOnSandboxError(t *testing.T) {
+	now := metav1.Now()
+	run := testAgenticRun()
+	run.DeletionTimestamp = &now
+	run.Finalizers = []string{rbacCleanupFinalizer}
+
+	objs := append([]client.Object{run}, defaultObjects()...)
+	fc := fake.NewClientBuilder().WithScheme(testScheme()).WithObjects(objs...).
+		WithStatusSubresource(run).Build()
+
+	agent := &failingAgentCaller{
+		testAgentCaller: *newTestAgentCaller(),
+		releaseErr:      fmt.Errorf("sandbox unreachable"),
+	}
+	r := &AgenticRunReconciler{Client: fc, Agent: agent, Namespace: "default"}
+	result, err := r.handleRBACCleanup(context.Background(), run)
+	if err != nil {
+		t.Fatalf("handleRBACCleanup: %v", err)
+	}
+	if result.RequeueAfter != rbacCleanupRequeueAfter {
+		t.Errorf("RequeueAfter = %v, want %v", result.RequeueAfter, rbacCleanupRequeueAfter)
+	}
+
+	var updated agenticv1alpha1.AgenticRun
+	if err := fc.Get(context.Background(), types.NamespacedName{Name: "fix-crash", Namespace: "default"}, &updated); err != nil {
+		t.Fatalf("get updated run: %v", err)
+	}
+	if !controllerutil.ContainsFinalizer(&updated, rbacCleanupFinalizer) {
+		t.Error("finalizer should remain on failure")
+	}
+	if updated.Annotations[rbacCleanupAttemptsAnnotation] != "1" {
+		t.Errorf("attempts = %q, want '1'", updated.Annotations[rbacCleanupAttemptsAnnotation])
+	}
+}
+
+func TestHandleRBACCleanup_ExhaustedRetries(t *testing.T) {
+	now := metav1.Now()
+	run := testAgenticRun()
+	run.DeletionTimestamp = &now
+	run.Finalizers = []string{rbacCleanupFinalizer}
+	run.Annotations = map[string]string{
+		rbacCleanupAttemptsAnnotation: fmt.Sprintf("%d", rbacMaxCleanupAttempts),
+	}
+
+	objs := append([]client.Object{run}, defaultObjects()...)
+	fc := fake.NewClientBuilder().WithScheme(testScheme()).WithObjects(objs...).
+		WithStatusSubresource(run).Build()
+
+	agent := &failingAgentCaller{
+		testAgentCaller: *newTestAgentCaller(),
+		releaseErr:      fmt.Errorf("still broken"),
+	}
+	r := &AgenticRunReconciler{Client: fc, Agent: agent, Namespace: "default"}
+	result, err := r.handleRBACCleanup(context.Background(), run)
+	if err != nil {
+		t.Fatalf("handleRBACCleanup: %v", err)
+	}
+	if !result.Requeue {
+		t.Error("expected Requeue after removing finalizer")
+	}
+
+	var updated agenticv1alpha1.AgenticRun
+	err = fc.Get(context.Background(), types.NamespacedName{Name: "fix-crash", Namespace: "default"}, &updated)
+	if client.IgnoreNotFound(err) != nil {
+		t.Fatalf("get updated run: %v", err)
+	}
+	if err == nil && controllerutil.ContainsFinalizer(&updated, rbacCleanupFinalizer) {
+		t.Error("finalizer should be removed after exhausting retries")
+	}
+}
+
+func TestHandleRBACCleanup_InvalidAnnotation(t *testing.T) {
+	now := metav1.Now()
+	run := testAgenticRun()
+	run.DeletionTimestamp = &now
+	run.Finalizers = []string{rbacCleanupFinalizer}
+	run.Annotations = map[string]string{
+		rbacCleanupAttemptsAnnotation: "garbage",
+	}
+
+	objs := append([]client.Object{run}, defaultObjects()...)
+	fc := fake.NewClientBuilder().WithScheme(testScheme()).WithObjects(objs...).
+		WithStatusSubresource(run).Build()
+
+	r := &AgenticRunReconciler{Client: fc, Agent: newTestAgentCaller(), Namespace: "default"}
+	result, err := r.handleRBACCleanup(context.Background(), run)
+	if err != nil {
+		t.Fatalf("handleRBACCleanup: %v", err)
+	}
+	if !result.Requeue {
+		t.Error("expected Requeue (cleanup succeeded, annotation reset to 0)")
 	}
 }

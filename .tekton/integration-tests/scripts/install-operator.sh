@@ -36,7 +36,7 @@ make install
 
 # Deploy operator (kustomize-based).
 echo "Deploying operator..."
-make deploy IMG="${IMG}" OPERATOR_NAMESPACE="${OPERATOR_NAMESPACE}" SANDBOX_MODE="${SANDBOX_MODE}" SANDBOX_IMAGE="${SANDBOX_IMAGE}"
+make deploy IMG="${IMG}" OPERATOR_NAMESPACE="${OPERATOR_NAMESPACE}" SANDBOX_MODE="${SANDBOX_MODE}"
 
 # Grant cluster-admin to operator SA (same as quickstart — covers escalation + SCC).
 echo "Granting cluster-admin to operator SA..."
@@ -72,16 +72,26 @@ subjects:
   namespace: ${OPERATOR_NAMESPACE}
 EOF
 
-# Create empty telemetry ConfigMap (no real Collector in test environment).
-# Presence unblocks startup; empty data disables OTLP export (IsValid=false).
-echo "Creating telemetry ConfigMap (empty for e2e)..."
+# Create the unified configuration ConfigMap.
+# sandbox-mode + sandbox-pod-spec drive pod creation; OTEL keys are absent
+# so telemetry is silently disabled (IsValid=false).
+echo "Creating lightspeed-agentic-configuration ConfigMap..."
 oc apply -f - <<EOF
 apiVersion: v1
 kind: ConfigMap
 metadata:
-  name: lightspeed-otel-collector-client
+  name: lightspeed-agentic-configuration
   namespace: ${OPERATOR_NAMESPACE}
-data: {}
+data:
+  sandbox-mode: "${SANDBOX_MODE}"
+  sandbox-pod-spec: |
+    {
+      "containers": [{
+        "name": "agent",
+        "image": "${SANDBOX_IMAGE}",
+        "ports": [{"containerPort": 8080}]
+      }]
+    }
 EOF
 
 # Wait for rollout.

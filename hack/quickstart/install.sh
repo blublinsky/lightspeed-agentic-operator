@@ -639,9 +639,6 @@ spec:
 $([ -n "${IMAGE_PULL_POLICY}" ] && echo "        imagePullPolicy: ${IMAGE_PULL_POLICY}")
         args:
         - "--namespace=${NAMESPACE}"
-        - "--sandbox-mode=${SANDBOX_MODE}"
-        - "--agentic-sandbox-image=${SANDBOX_IMAGE}"
-$([ -n "${IMAGE_PULL_POLICY}" ] && echo '        - "--image-pull-policy='"${IMAGE_PULL_POLICY}"'"')
         ports:
         - name: metrics
           containerPort: 8080
@@ -775,7 +772,6 @@ info "Webhook Service created"
 
 step "8/9" "Waiting for agentic operator to become ready..."
 
-# Agentic blocks at startup on lightspeed-otel-collector-client (up to ~5m).
 AGENTIC_ROLLOUT_TIMEOUT="${AGENTIC_ROLLOUT_TIMEOUT:-300s}"
 if ! oc rollout status deployment/lightspeed-agentic-operator \
     -n "${NAMESPACE}" --timeout="${AGENTIC_ROLLOUT_TIMEOUT}" >/dev/null 2>&1; then
@@ -783,8 +779,7 @@ if ! oc rollout status deployment/lightspeed-agentic-operator \
 
   Check:
     oc logs deployment/lightspeed-agentic-operator -n ${NAMESPACE}
-    oc get configmap lightspeed-otel-collector-client -n ${NAMESPACE}
-    oc get olsconfig cluster -o yaml"
+    oc get configmap lightspeed-agentic-configuration -n ${NAMESPACE}"
 fi
 info "Agentic operator is running"
 

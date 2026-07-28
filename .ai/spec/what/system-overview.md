@@ -24,7 +24,7 @@ The lightspeed-agentic-operator is a Kubernetes operator that watches `AgenticRu
 ### External Dependencies
 
 8. The operator MUST interact with the Kubernetes API server for all CR CRUD, status updates, and RBAC management.
-9. When `--sandbox-mode=sandbox-claim`, the operator MUST interact with the Sandbox API (`extensions.agents.x-k8s.io/v1alpha1` `SandboxClaim`, `agents.x-k8s.io/v1alpha1` `Sandbox`) to provision ephemeral agent workloads. In the default `bare-pod` mode, the operator creates Pods directly and does not depend on Sandbox API CRDs.
+9. When `sandbox-mode=sandbox-claim` (from `lightspeed-agentic-configuration` ConfigMap), the operator MUST interact with the Sandbox API (`extensions.agents.x-k8s.io/v1alpha1` `SandboxClaim`, `agents.x-k8s.io/v1alpha1` `Sandbox`) to provision ephemeral agent workloads. In the default `bare-pod` mode, the operator creates Pods directly and does not depend on Sandbox API CRDs.
 10. The operator MUST resolve `Agent` CRs and their referenced `LLMProvider` CRs to determine model configuration and credentials for each workflow step.
 11. The operator MUST call the sandbox agent's `POST /v1/agent/run` HTTP endpoint for each workflow step (analysis, execution, verification, escalation).
 12. [PLANNED: OLS-3236] Console plugin deployment is migrated to the lightspeed-operator. The agentic-operator no longer interacts with OpenShift Console APIs for plugin deployment.
@@ -47,13 +47,13 @@ The lightspeed-agentic-operator is a Kubernetes operator that watches `AgenticRu
 | `--namespace` / `POD_NAMESPACE` | string | (required) | Operator install namespace |
 | `--metrics-bind-address` | string | `:8080` | Metrics endpoint bind address |
 | `--health-probe-bind-address` | string | `:8081` | Health probe endpoint bind address |
-| `--agentic-sandbox-image` | string | `""` | Sandbox container image (default provided by lightspeed-operator constants, overridable) |
-| `--sandbox-mode` | string | `bare-pod` | Sandbox mode: `bare-pod` (direct Pod management) or `sandbox-claim` (Agent Sandbox API) |
+| `lightspeed-agentic-configuration` ConfigMap | — | — | Sandbox mode, base PodSpec, OTEL endpoints, MCP endpoint (produced by lightspeed-operator) |
 
 ## Constraints
 
 - The operator assumes it is the sole controller for `agentic.openshift.io/v1alpha1` resources; running multiple replicas without leader election would cause conflicts.
-- Sandbox provisioning via `SandboxClaim` depends on the Sandbox API CRDs being installed in the cluster; this dependency only applies when `--sandbox-mode=sandbox-claim`. The default `bare-pod` mode has no external CRD dependency.
+- Sandbox provisioning via `SandboxClaim` depends on the Sandbox API CRDs being installed in the cluster; this dependency only applies when `sandbox-mode=sandbox-claim` in the ConfigMap. The default `bare-pod` mode has no external CRD dependency.
+- The `lightspeed-agentic-configuration` ConfigMap must be created by lightspeed-operator before any AgenticRun can execute. The operator does not block startup on this ConfigMap — it starts normally and individual runs fail gracefully when the ConfigMap is missing.
 - The operator requires OpenShift APIs for console plugin deployment; running on vanilla Kubernetes skips console integration.
 
 ## Planned Changes
@@ -63,4 +63,4 @@ The lightspeed-agentic-operator is a Kubernetes operator that watches `AgenticRu
 | OLS-2957 | Sandbox template management UX and CRD ergonomics may change operator/template coupling |
 | OLS-2940 | Autonomous workflow CRD migrations may rename or reshape `v1alpha1` fields |
 | OLS-3236 | Remove `controller/console/` package and `--agentic-console-image` flag. Console plugin and alerts adapter deployment moves to lightspeed-operator. |
-| OLS-3572 | Inter-operator config handoff: read base PodSpec from `lightspeed-sandbox-config` ConfigMap (produced by lightspeed-operator). Deprecate `--sandbox-mode` flag in favor of ConfigMap-provided mode. Fail hard if ConfigMap missing. |
+| OLS-3685/3686 | [DONE] Inter-operator config handoff: unified `SandboxManager` reads base PodSpec from `lightspeed-agentic-configuration` ConfigMap. Sandbox mode, image, and PodSpec all sourced from ConfigMap. CLI flags removed. No-blocking startup; graceful degradation. |

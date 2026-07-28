@@ -1,4 +1,4 @@
-package telemetry
+package configuration
 
 import (
 	"bytes"
@@ -78,10 +78,10 @@ func TestReadFromConfigMap_ParsesAllFields(t *testing.T) {
 	cm := &corev1.ConfigMap{
 		ObjectMeta: metav1.ObjectMeta{Name: ConfigMapName, Namespace: "test-ns"},
 		Data: map[string]string{
-			"collector-endpoint": "otel-collector.ns.svc:4317",
-			"admin-endpoint":     "https://otel-collector.ns.svc:8080",
-			"ca.crt":             string(testCACertPEM(t)),
-			"credentials-secret": "my-secret",
+			KeyOtelCollectorEndpoint: "otel-collector.ns.svc:4317",
+			KeyOtelAdminEndpoint:     "https://otel-collector.ns.svc:8080",
+			KeyOtelCASecret:          "my-ca-secret",
+			KeyOtelCredentialsSecret: "my-creds-secret",
 		},
 	}
 	fc := fake.NewClientBuilder().WithScheme(testScheme()).WithObjects(cm).Build()
@@ -99,11 +99,11 @@ func TestReadFromConfigMap_ParsesAllFields(t *testing.T) {
 	if cfg.AdminEndpoint != "https://otel-collector.ns.svc:8080" {
 		t.Errorf("AdminEndpoint = %q", cfg.AdminEndpoint)
 	}
-	if cfg.CredentialsSecret != "my-secret" {
-		t.Errorf("CredentialsSecret = %q", cfg.CredentialsSecret)
+	if cfg.CASecretName != "my-ca-secret" {
+		t.Errorf("CASecretName = %q", cfg.CASecretName)
 	}
-	if len(cfg.CACert) == 0 {
-		t.Error("CACert should be populated")
+	if cfg.CredentialsSecret != "my-creds-secret" {
+		t.Errorf("CredentialsSecret = %q", cfg.CredentialsSecret)
 	}
 }
 
@@ -111,7 +111,7 @@ func TestReadFromConfigMap_MissingOptionalFields(t *testing.T) {
 	cm := &corev1.ConfigMap{
 		ObjectMeta: metav1.ObjectMeta{Name: ConfigMapName, Namespace: "test-ns"},
 		Data: map[string]string{
-			"collector-endpoint": "collector:4317",
+			KeyOtelCollectorEndpoint: "collector:4317",
 		},
 	}
 	fc := fake.NewClientBuilder().WithScheme(testScheme()).WithObjects(cm).Build()
@@ -123,8 +123,11 @@ func TestReadFromConfigMap_MissingOptionalFields(t *testing.T) {
 	if cfg.AdminEndpoint != "" {
 		t.Errorf("AdminEndpoint should be empty, got %q", cfg.AdminEndpoint)
 	}
-	if len(cfg.CACert) != 0 {
-		t.Error("CACert should be empty when not in ConfigMap")
+	if cfg.CASecretName != "" {
+		t.Errorf("CASecretName should be empty, got %q", cfg.CASecretName)
+	}
+	if cfg.CredentialsSecret != "" {
+		t.Errorf("CredentialsSecret should be empty, got %q", cfg.CredentialsSecret)
 	}
 }
 
@@ -260,12 +263,14 @@ func TestCollectorConfig_Equal(t *testing.T) {
 	a := &CollectorConfig{
 		CollectorEndpoint: "c:4317",
 		AdminEndpoint:     "https://c:8080",
+		CASecretName:      "ca-secret",
 		CACert:            []byte("ca"),
 		CredentialsSecret: "sec",
 	}
 	b := &CollectorConfig{
 		CollectorEndpoint: "c:4317",
 		AdminEndpoint:     "https://c:8080",
+		CASecretName:      "ca-secret",
 		CACert:            []byte("ca"),
 		CredentialsSecret: "sec",
 	}

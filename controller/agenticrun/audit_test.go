@@ -204,7 +204,7 @@ func TestStartPhaseSpan_StandardAttributes(t *testing.T) {
 	}
 
 	checks := map[string]string{
-		"agenticrun.uid":       strings.ReplaceAll(string(run.UID), "-", ""),
+		"agenticrun.uid":       string(run.UID),
 		"agenticrun.name":      "test-run",
 		"agenticrun.namespace": "test-ns",
 	}

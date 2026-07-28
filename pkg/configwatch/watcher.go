@@ -3,11 +3,9 @@ package configwatch
 import (
 	"context"
 	"fmt"
-	"time"
 
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/types"
-	"k8s.io/apimachinery/pkg/util/wait"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller"
@@ -17,9 +15,11 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/source"
 )
 
+const errGetConfigMap = "get ConfigMap"
+
 // Handler is called when a watched ConfigMap is created, updated, or deleted.
 // Receives nil when the ConfigMap is deleted.
-// Returning an error fails WaitFor (startup). Reconcile logs handler errors
+// Returning an error fails TryLoad (startup). Reconcile logs handler errors
 // and does not requeue — invalid config is not fixed by retrying.
 type Handler func(ctx context.Context, cm *corev1.ConfigMap) error
 
@@ -102,33 +102,15 @@ func (w *Watcher) SetupWithManager(mgr ctrl.Manager) error {
 		Complete(w)
 }
 
-// WaitFor blocks until the named ConfigMap exists or the timeout expires,
-// then invokes the handler with the found ConfigMap.
-// Used at startup before the manager is running (informers not yet active).
-// Handler errors are returned to the caller (fatal at startup).
-func WaitFor(ctx context.Context, c client.Reader, namespace, name string, timeout time.Duration, h Handler) error {
-	log := logf.FromContext(ctx)
-	log.Info("Waiting for ConfigMap", "name", name, "timeout", timeout)
-
-	var found *corev1.ConfigMap
-	err := wait.PollUntilContextTimeout(ctx, 2*time.Second, timeout, true, func(ctx context.Context) (bool, error) {
-		cm := &corev1.ConfigMap{}
-		if err := c.Get(ctx, types.NamespacedName{Name: name, Namespace: namespace}, cm); err != nil {
-			if client.IgnoreNotFound(err) == nil {
-				return false, nil
-			}
-			return false, fmt.Errorf("%s %q: %w", ErrGetConfigMap, name, err)
-		}
-		found = cm
-		return true, nil
-	})
-	if err != nil {
-		if wait.Interrupted(err) {
-			return fmt.Errorf("%s %q after %s: %w", ErrWaitConfigMap, name, timeout, err)
-		}
-		return err
+// TryLoad attempts a single read of the named ConfigMap and invokes the
+// handler if found. Returns an error if the ConfigMap does not exist or
+// the handler fails. Used at startup to eagerly populate caches on
+// operator restart without blocking if the ConfigMap is not yet available.
+func TryLoad(ctx context.Context, c client.Reader, namespace, name string, h Handler) error {
+	cm := &corev1.ConfigMap{}
+	if err := c.Get(ctx, types.NamespacedName{Name: name, Namespace: namespace}, cm); err != nil {
+		return fmt.Errorf("%s %q: %w", errGetConfigMap, name, err)
 	}
-
-	log.Info("ConfigMap found", "name", name)
-	return h(ctx, found)
+	logf.FromContext(ctx).Info("ConfigMap found at startup", "name", name)
+	return h(ctx, cm)
 }

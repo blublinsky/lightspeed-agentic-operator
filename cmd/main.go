@@ -13,6 +13,8 @@ import (
 
 	uberzap "go.uber.org/zap"
 	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
@@ -22,12 +24,13 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/log/zap"
 	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
 	"sigs.k8s.io/controller-runtime/pkg/webhook"
+	"sigs.k8s.io/controller-runtime/pkg/webhook/admission"
 
 	agenticv1alpha1 "github.com/openshift/lightspeed-agentic-operator/api/v1alpha1"
-	agenticcontroller "github.com/openshift/lightspeed-agentic-operator/controller"
+	"github.com/openshift/lightspeed-agentic-operator/controller/agenticolsconfig"
 	"github.com/openshift/lightspeed-agentic-operator/controller/agenticrun"
+	"github.com/openshift/lightspeed-agentic-operator/pkg/configuration"
 	"github.com/openshift/lightspeed-agentic-operator/pkg/configwatch"
-	"github.com/openshift/lightspeed-agentic-operator/pkg/telemetry"
 )
 
 var scheme = runtime.NewScheme()
@@ -37,35 +40,20 @@ func init() {
 	utilruntime.Must(agenticv1alpha1.AddToScheme(scheme))
 }
 
-const telemetryStartupTimeout = 5 * time.Minute
-
 func main() {
 	var (
-		metricsAddr         string
-		healthAddr          string
-		namespace           string
-		agenticSandboxImage string
-		sandboxMode         string
-		imagePullPolicy     string
+		metricsAddr string
+		healthAddr  string
+		namespace   string
 	)
 
 	flag.StringVar(&metricsAddr, "metrics-bind-address", ":8080", "The address the metric endpoint binds to.")
 	flag.StringVar(&healthAddr, "health-probe-bind-address", ":8081", "The address the health probe endpoint binds to.")
 	flag.StringVar(&namespace, "namespace", "", "The namespace where the operator runs (required).")
-	flag.StringVar(&agenticSandboxImage, "agentic-sandbox-image", "", "The image of the agentic sandbox container.")
-	flag.StringVar(&sandboxMode, "sandbox-mode", "bare-pod", "Sandbox mode: bare-pod (default) or sandbox-claim.")
-	flag.StringVar(&imagePullPolicy, "image-pull-policy", "", "Image pull policy for sandbox pods (Always, IfNotPresent, Never). Empty uses Kubernetes default.")
 	flag.Parse()
 
 	ctrl.SetLogger(zap.New(zap.UseDevMode(true)))
 	log := ctrl.Log.WithName("setup")
-
-	switch corev1.PullPolicy(imagePullPolicy) {
-	case "", corev1.PullAlways, corev1.PullIfNotPresent, corev1.PullNever:
-	default:
-		log.Error(nil, "invalid --image-pull-policy", "value", imagePullPolicy, "allowed", "Always|IfNotPresent|Never")
-		os.Exit(1)
-	}
 
 	if namespace == "" {
 		ns := os.Getenv("POD_NAMESPACE")
@@ -96,8 +84,8 @@ func main() {
 		os.Exit(1)
 	}
 
-	// Initialize telemetry provider from Collector ConfigMap
-	telemetryProvider := telemetry.NewProvider(&agenticrun.AgenticRunIDGenerator{})
+	// Initialize configuration cache and OTEL provider
+	telemetryProvider := configuration.NewProvider(&agenticrun.AgenticRunIDGenerator{})
 	telemetryProvider.SetSecretSource(mgr.GetAPIReader(), namespace)
 	defer func() {
 		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -107,19 +95,21 @@ func main() {
 		}
 	}()
 
-	// Block until Collector ConfigMap is available (fatal after timeout)
-	if err := configwatch.WaitFor(
+	cfgCache := &configuration.Cache{}
+	cfgCache.SetOTELProvider(telemetryProvider)
+
+	// Eagerly read ConfigMap if it already exists (operator restart).
+	// Non-fatal if missing — the watcher will pick it up when it appears.
+	if err := configwatch.TryLoad(
 		context.Background(), mgr.GetAPIReader(), namespace,
-		telemetry.ConfigMapName, telemetryStartupTimeout,
-		telemetryProvider.OnConfigMapChange,
+		configuration.ConfigMapName, cfgCache.OnConfigMapChange,
 	); err != nil {
-		log.Error(err, "telemetry configuration failed")
-		os.Exit(1)
+		log.Info("ConfigMap not available at startup, telemetry disabled until it appears", "name", configuration.ConfigMapName, "reason", err.Error())
 	}
 
-	// Register ConfigMap watcher for runtime reconfiguration
+	// Watch for ConfigMap changes at runtime
 	cmWatcher := configwatch.New(mgr.GetClient(), namespace,
-		configwatch.Registration{Name: telemetry.ConfigMapName, Handler: telemetryProvider.OnConfigMapChange},
+		configwatch.Registration{Name: configuration.ConfigMapName, Handler: cfgCache.OnConfigMapChange},
 	)
 	if err := cmWatcher.SetupWithManager(mgr); err != nil {
 		log.Error(err, "unable to set up ConfigMap watcher")
@@ -139,17 +129,52 @@ func main() {
 	}()
 	auditLogger := agenticrun.NewProductionAuditLogger(zapLogger, telemetryProvider)
 
-	if err := agenticcontroller.Setup(mgr, agenticcontroller.Options{
-		Namespace:           namespace,
-		AgenticSandboxImage: agenticSandboxImage,
-		SandboxMode:         sandboxMode,
-		ImagePullPolicy:     imagePullPolicy,
-		Audit:               auditLogger,
-		TempLog:             telemetryProvider,
-	}); err != nil {
-		log.Error(err, "unable to set up agentic controllers")
+	// --- Create sandbox manager and agent caller ---
+	sandboxMgr := agenticrun.NewSandboxManager(mgr.GetClient(), cfgCache, namespace)
+	agentCaller := &agenticrun.SandboxAgentCaller{
+		Sandbox:       sandboxMgr,
+		K8sClient:     mgr.GetClient(),
+		ClientFactory: agenticrun.NewAgentHTTPClient,
+		Namespace:     namespace,
+		Audit:         auditLogger,
+	}
+
+	// --- Register controllers ---
+	if err := (&agenticrun.AgenticRunReconciler{
+		Client:    mgr.GetClient(),
+		Agent:     agentCaller,
+		Config:    cfgCache,
+		Namespace: namespace,
+		Audit:     auditLogger,
+		TempLog:   telemetryProvider,
+	}).SetupWithManager(mgr); err != nil {
+		log.Error(err, "unable to set up AgenticRun controller")
 		os.Exit(1)
 	}
+
+	if err := (&agenticolsconfig.Reconciler{
+		Client:        mgr.GetClient(),
+		EventRecorder: mgr.GetEventRecorderFor("agenticolsconfig-controller"),
+	}).SetupWithManager(mgr); err != nil {
+		log.Error(err, "unable to set up AgenticOLSConfig controller")
+		os.Exit(1)
+	}
+
+	// Ensure the default sandbox ServiceAccount exists (idempotent).
+	sa := &corev1.ServiceAccount{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "lightspeed-agent",
+			Namespace: namespace,
+		},
+	}
+	if err := mgr.GetClient().Create(context.Background(), sa); err != nil && !apierrors.IsAlreadyExists(err) {
+		log.Error(err, "unable to ensure lightspeed-agent ServiceAccount")
+		os.Exit(1)
+	}
+
+	mgr.GetWebhookServer().Register("/mutate-agenticrunapproval", &admission.Webhook{
+		Handler: &agenticrun.AgenticRunApprovalMutator{},
+	})
 
 	if err := mgr.AddHealthzCheck("healthz", healthz.Ping); err != nil {
 		log.Error(err, "unable to set up health check")
