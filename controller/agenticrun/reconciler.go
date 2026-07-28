@@ -114,8 +114,21 @@ func (r *AgenticRunReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 			return ctrl.Result{}, nil
 		}
 
-	case agenticv1alpha1.AgenticRunPhaseCompleted,
-		agenticv1alpha1.AgenticRunPhaseDenied,
+	case agenticv1alpha1.AgenticRunPhaseCompleted:
+		if !(run.Spec.Execution.IsZero() && needsRevision(&run)) {
+			if hasSandboxClaims(&run) {
+				if err := r.Agent.ReleaseSandboxes(ctx, &run); err != nil {
+					log.Error(err, "sandbox cleanup failed at terminal phase")
+				}
+			}
+			if r.Audit != nil {
+				r.Audit.EmitTerminalSpan(ctx, &run, string(phase), terminalReason(&run))
+				r.Audit.Cleanup(&run)
+			}
+			return ctrl.Result{}, nil
+		}
+
+	case agenticv1alpha1.AgenticRunPhaseDenied,
 		agenticv1alpha1.AgenticRunPhaseEscalated,
 		agenticv1alpha1.AgenticRunPhaseEmergencyStopped:
 		if hasSandboxClaims(&run) {
@@ -130,10 +143,12 @@ func (r *AgenticRunReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 		return ctrl.Result{}, nil
 
 	case agenticv1alpha1.AgenticRunPhaseFailed:
-		return r.handleFailed(ctx, &run)
+		if !(run.Spec.Execution.IsZero() && needsRevision(&run)) {
+			return r.handleFailed(ctx, &run)
+		}
 	}
 
-	// --- Suspension guard (only non-terminal runs reach here) ---
+	// --- Suspension guard (non-terminal runs and advisory-only Completed runs needing revision reach here) ---
 	suspended, err := isSuspended(ctx, r.Client)
 	if err != nil {
 		return ctrl.Result{}, err
@@ -199,6 +214,13 @@ func (r *AgenticRunReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 
 	case agenticv1alpha1.AgenticRunPhaseNoActionRequired:
 		if needsRevision(&run) {
+			return r.handleRevision(ctx, &run, resolved)
+		}
+		return ctrl.Result{}, nil
+
+	case agenticv1alpha1.AgenticRunPhaseCompleted,
+		agenticv1alpha1.AgenticRunPhaseFailed:
+		if run.Spec.Execution.IsZero() && needsRevision(&run) {
 			return r.handleRevision(ctx, &run, resolved)
 		}
 		return ctrl.Result{}, nil
