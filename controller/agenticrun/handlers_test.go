@@ -205,6 +205,56 @@ func TestReconcile_HappyPath_FullLifecycle(t *testing.T) {
 	assertResultConditions(t, verifyResult.Status.Conditions, "Succeeded")
 }
 
+func TestReconcile_VerificationWithLongSource_Succeeds(t *testing.T) {
+	agent := newTestAgentCaller()
+	// Source longer than the old 256-byte limit (OLS-3735).
+	longSource := "oc get pod -n payments-processing-system-production-us-east-1 -l app.kubernetes.io/name=payment-gateway-service,app.kubernetes.io/component=transaction-processor -o jsonpath='{.items[?(@.status.containerStatuses[0].state.waiting.reason==\"CrashLoopBackOff\")].metadata.name}'"
+	if len(longSource) <= 256 {
+		t.Fatalf("test source must exceed 256 bytes, got %d", len(longSource))
+	}
+	agent.verifyResult = &VerificationOutput{
+		Success: true,
+		Checks: []agenticv1alpha1.VerifyCheck{{
+			Name:   "pod-running",
+			Source: longSource,
+			Value:  "Running",
+			Result: agenticv1alpha1.CheckResultPassed,
+		}},
+		Summary: "All checks passed",
+	}
+
+	scheme := testScheme()
+	run := testAgenticRun()
+	objs := append([]client.Object{run}, defaultObjects()...)
+	fc := fake.NewClientBuilder().WithScheme(scheme).WithObjects(objs...).
+		WithStatusSubresource(run, &agenticv1alpha1.AnalysisResult{}, &agenticv1alpha1.ExecutionResult{}, &agenticv1alpha1.VerificationResult{}, &agenticv1alpha1.EscalationResult{}).Build()
+
+	r := &AgenticRunReconciler{Client: fc, Agent: agent, Namespace: "default"}
+
+	// Analysis → approve → execution → verification
+	reconcileOnce(r, "fix-crash")
+	approveAgenticRun(t, fc, "fix-crash")
+	reconcileOnce(r, "fix-crash")
+
+	_, err := reconcileOnce(r, "fix-crash")
+	if err != nil {
+		t.Fatalf("verification reconcile: %v", err)
+	}
+
+	p, _ := getAgenticRun(r, "fix-crash")
+	if agenticv1alpha1.DerivePhase(p.Status.Conditions) != agenticv1alpha1.AgenticRunPhaseCompleted {
+		t.Fatalf("expected Completed, got %s", agenticv1alpha1.DerivePhase(p.Status.Conditions))
+	}
+
+	var verifyResult agenticv1alpha1.VerificationResult
+	if err := fc.Get(context.Background(), types.NamespacedName{Name: p.Status.Steps.Verification.Results[0].Name, Namespace: "default"}, &verifyResult); err != nil {
+		t.Fatalf("get VerificationResult: %v", err)
+	}
+	if verifyResult.Status.Checks[0].Source != longSource {
+		t.Fatalf("source was truncated: got %d bytes, want %d", len(verifyResult.Status.Checks[0].Source), len(longSource))
+	}
+}
+
 func TestReconcile_AnalysisSystemFailure_Terminal(t *testing.T) {
 	agent := newTestAgentCaller()
 	agent.analyzeErr = fmt.Errorf("LLM timeout")
