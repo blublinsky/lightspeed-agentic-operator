@@ -107,8 +107,8 @@ func TestCreate_BarePod(t *testing.T) {
 	if name == "" {
 		t.Fatal("expected non-empty name")
 	}
-	if name[0:2] != "p-" {
-		t.Fatalf("bare-pod name should start with 'p-', got %q", name)
+	if name[0:3] != "ls-" {
+		t.Fatalf("bare-pod name should start with 'ls-', got %q", name)
 	}
 
 	var pod corev1.Pod
@@ -132,8 +132,8 @@ func TestCreate_SandboxClaim(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Create failed: %v", err)
 	}
-	if name[0:2] != "s-" {
-		t.Fatalf("sandbox-claim name should start with 's-', got %q", name)
+	if name[0:3] != "ls-" {
+		t.Fatalf("sandbox-claim name should start with 'ls-', got %q", name)
 	}
 
 	tmpl := &unstructured.Unstructured{}
@@ -292,8 +292,8 @@ func TestCreate_OTELEnvVars_SandboxClaim(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Create failed: %v", err)
 	}
-	if name[0:2] != "s-" {
-		t.Fatalf("expected sandbox-claim prefix 's-', got %q", name)
+	if name[0:3] != "ls-" {
+		t.Fatalf("expected 'ls-' prefix, got %q", name)
 	}
 
 	tmpl := &unstructured.Unstructured{}
@@ -430,21 +430,12 @@ func TestRelease_SandboxClaim_Idempotent(t *testing.T) {
 	}
 }
 
-// --- Name prefix encoding ---
+// --- Name prefix ---
 
-func TestNamePrefix_ModeEncodedInName(t *testing.T) {
-	tests := []struct {
-		mode       string
-		wantPrefix string
-	}{
-		{"bare-pod", "p-"},
-		{"sandbox-claim", "s-"},
-		{"", "p-"}, // default mode is bare-pod
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.mode, func(t *testing.T) {
-			cache := testCache(t, tt.mode)
+func TestNamePrefix_LSPrefix(t *testing.T) {
+	for _, mode := range []string{"bare-pod", "sandbox-claim", ""} {
+		t.Run(mode, func(t *testing.T) {
+			cache := testCache(t, mode)
 			fc := fake.NewClientBuilder().WithScheme(testScheme()).Build()
 			mgr := newTestSandboxManager(fc, cache)
 
@@ -452,8 +443,8 @@ func TestNamePrefix_ModeEncodedInName(t *testing.T) {
 			if err != nil {
 				t.Fatalf("Create failed: %v", err)
 			}
-			if name[:2] != tt.wantPrefix {
-				t.Fatalf("expected prefix %q, got %q (full name: %q)", tt.wantPrefix, name[:2], name)
+			if name[:3] != "ls-" {
+				t.Fatalf("expected 'ls-' prefix, got %q (full name: %q)", name[:3], name)
 			}
 		})
 	}
@@ -465,7 +456,7 @@ func TestNamePrefix_LongNameTruncated(t *testing.T) {
 	mgr := newTestSandboxManager(fc, cache)
 
 	longRun := testSMRun()
-	longRun.Name = "a]very-long-run-name-that-exceeds-sixty-three-characters-in-total-length"
+	longRun.Name = "a-very-long-run-name-that-exceeds-sixty-three-characters-in-total-length"
 
 	name, err := mgr.Create(context.Background(), longRun, "analysis", testSMAgent(), testLLMForManager(), nil, "test-sa")
 	if err != nil {
@@ -474,7 +465,7 @@ func TestNamePrefix_LongNameTruncated(t *testing.T) {
 	if len(name) > 63 {
 		t.Fatalf("name exceeds 63 chars: len=%d, name=%q", len(name), name)
 	}
-	if name[:2] != "p-" {
+	if name[:3] != "ls-" {
 		t.Fatalf("prefix lost after truncation: %q", name)
 	}
 }

@@ -4,7 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"strings"
+
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
@@ -36,7 +36,6 @@ const (
 	errExtractServiceFQDN       = "extract serviceFQDN from sandbox"
 
 	sandboxDeletionTimeout = 2 * time.Minute
-	sandboxNamePrefixLen   = 2 // "p-" or "s-"
 )
 
 // +kubebuilder:rbac:groups="",resources=pods,verbs=get;list;watch;create;delete
@@ -97,11 +96,11 @@ func (m *SandboxManager) Create(
 		return "", fmt.Errorf("%s: %w", errBuildPodSpec, err)
 	}
 
-	body := truncateK8sNameWithBudget(fmt.Sprintf("%s-%s", step, run.Name), sandboxNamePrefixLen)
+	name := truncateK8sName(fmt.Sprintf("ls-%s-%s", step, run.Name))
 	if cfg.Sandbox.Mode == sandboxModeSandboxClaim {
-		return m.createSandboxClaim(ctx, run, "s-"+body, step, podSpec)
+		return m.createSandboxClaim(ctx, run, name, step, podSpec)
 	}
-	return m.createBarePod(ctx, run, "p-"+body, step, podSpec)
+	return m.createBarePod(ctx, run, name, step, podSpec)
 }
 
 func (m *SandboxManager) createBarePod(
@@ -261,7 +260,8 @@ func podSpecToUnstructured(podSpec *corev1.PodSpec) (map[string]any, error) {
 // WaitReady polls until the sandbox is ready and returns its endpoint.
 // For bare pods this is the PodIP; for sandbox claims it's the serviceFQDN.
 func (m *SandboxManager) WaitReady(ctx context.Context, name string, timeout time.Duration) (string, error) {
-	if strings.HasPrefix(name, "s-") {
+	cfg := m.config.Get()
+	if cfg != nil && cfg.Sandbox.Mode == sandboxModeSandboxClaim {
 		return m.waitSandboxClaimReady(ctx, name, timeout)
 	}
 	return m.waitPodReady(ctx, name, timeout)
@@ -400,7 +400,8 @@ func (m *SandboxManager) waitSandboxClaimReady(ctx context.Context, claimName st
 // Release deletes the sandbox resource (Pod or SandboxClaim).
 // Idempotent: returns nil if already gone.
 func (m *SandboxManager) Release(ctx context.Context, name string) error {
-	if strings.HasPrefix(name, "s-") {
+	cfg := m.config.Get()
+	if cfg != nil && cfg.Sandbox.Mode == sandboxModeSandboxClaim {
 		return m.releaseSandboxClaim(ctx, name)
 	}
 	return m.releaseBarePod(ctx, name)
