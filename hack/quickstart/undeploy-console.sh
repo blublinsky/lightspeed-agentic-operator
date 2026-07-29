@@ -5,10 +5,6 @@
 #
 # Usage:
 #   bash hack/quickstart/undeploy-console.sh
-#
-# Environment variables:
-#   NAMESPACE  (default: openshift-lightspeed)
-
 set -euo pipefail
 
 NAMESPACE="${NAMESPACE:-openshift-lightspeed}"
