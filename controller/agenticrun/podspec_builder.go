@@ -11,68 +11,85 @@ import (
 	"k8s.io/utils/ptr"
 
 	agenticv1alpha1 "github.com/openshift/lightspeed-agentic-operator/api/v1alpha1"
+	"github.com/openshift/lightspeed-agentic-operator/pkg/configuration"
 )
 
 const (
+	ErrBuildBasePodSpec       = "base PodSpec with at least one container is required"
+	ErrBuildAgentRequired     = "agent is required"
+	ErrBuildLLMRequired       = "LLMProvider is required"
+	ErrBuildSARequired        = "serviceAccount is required"
 	ErrBuildMCPServers        = "build MCP servers"
 	ErrMarshalMCPServerConfig = "marshal MCP server config"
+
+	llmCredsMountPath   = "/var/run/secrets/llm-credentials"
+	llmCredsVolumeName  = "llm-credentials"
+	mcpHeadersMountRoot = "/var/secrets/mcp"
+	mcpServersEnvVar    = "LIGHTSPEED_MCP_SERVERS"
+
+	LabelManaged      = "agentic.openshift.io/managed"
+	LabelBaseTemplate = "agentic.openshift.io/base-template"
+	LabelStep         = "agentic.openshift.io/step"
+	LabelAgent        = "agentic.openshift.io/agent"
+	LabelRun          = "agentic.openshift.io/run"
+	LabelComponent    = "agentic.openshift.io/component"
 )
 
-type PodSpecBuilder struct {
-	Image           string
-	ImagePullPolicy string
+type mcpServerEnvEntry struct {
+	Name    string              `json:"name"`
+	URL     string              `json:"url"`
+	Timeout int32               `json:"timeout,omitempty"`
+	Headers []mcpHeaderEnvEntry `json:"headers,omitempty"`
 }
 
+type mcpHeaderEnvEntry struct {
+	Name       string `json:"name"`
+	Source     string `json:"source"`
+	SecretName string `json:"secretName,omitempty"`
+}
+
+// PodSpecBuilder overlays agent-specific configuration (env vars, volumes,
+// probes) onto a base PodSpec provided by the configuration cache.
+type PodSpecBuilder struct{}
+
+// Build takes a base PodSpec (from the configuration cache) and overlays
+// agent, LLM, tools, and OTEL configuration for the given step.
+// The base PodSpec must contain at least one container (the agent container).
 func (b *PodSpecBuilder) Build(
+	base *corev1.PodSpec,
 	agent *agenticv1alpha1.Agent,
 	llm *agenticv1alpha1.LLMProvider,
 	tools *agenticv1alpha1.ToolsSpec,
+	otelCfg *configuration.OTELConfig,
 	step string,
+	runUID string,
 	serviceAccount string,
 ) (*corev1.PodSpec, error) {
+	if base == nil || len(base.Containers) == 0 {
+		return nil, fmt.Errorf("%s", ErrBuildBasePodSpec)
+	}
 	if agent == nil {
-		return nil, fmt.Errorf("agent is required")
+		return nil, fmt.Errorf("%s", ErrBuildAgentRequired)
 	}
 	if llm == nil {
-		return nil, fmt.Errorf("LLMProvider is required")
+		return nil, fmt.Errorf("%s", ErrBuildLLMRequired)
 	}
 	if serviceAccount == "" {
-		return nil, fmt.Errorf("serviceAccount is required")
+		return nil, fmt.Errorf("%s", ErrBuildSARequired)
 	}
 
-	container := corev1.Container{
-		Name:            "agent",
-		Image:           b.Image,
-		ImagePullPolicy: corev1.PullPolicy(b.ImagePullPolicy),
-		Ports: []corev1.ContainerPort{{
-			Name:          "http",
-			ContainerPort: 8080,
-			Protocol:      corev1.ProtocolTCP,
-		}},
-		SecurityContext: &corev1.SecurityContext{
-			AllowPrivilegeEscalation: ptr.To(false),
-			RunAsNonRoot:             ptr.To(true),
-			Capabilities:             &corev1.Capabilities{Drop: []corev1.Capability{"ALL"}},
-			SeccompProfile:           &corev1.SeccompProfile{Type: corev1.SeccompProfileTypeRuntimeDefault},
-		},
-	}
+	podSpec := base.DeepCopy()
+	podSpec.ServiceAccountName = serviceAccount
+	podSpec.AutomountServiceAccountToken = ptr.To(true)
 
+	container := &podSpec.Containers[0]
 	var volumes []corev1.Volume
-
-	volumes = append(volumes, corev1.Volume{
-		Name:         "home",
-		VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{}},
-	})
-	container.VolumeMounts = append(container.VolumeMounts, corev1.VolumeMount{
-		Name:      "home",
-		MountPath: "/home/agent",
-	})
 
 	container.Env = append(container.Env,
 		corev1.EnvVar{Name: "LIGHTSPEED_PROVIDER", Value: providerTypeString(llm.Spec.Type)},
 		corev1.EnvVar{Name: "LIGHTSPEED_MODEL", Value: agent.Spec.Model},
 	)
-	b.addProviderSpecificEnv(&container, llm)
+	b.addProviderSpecificEnv(container, llm)
 
 	if len(agent.Spec.ReasoningConfig) > 0 {
 		rcJSON, err := json.Marshal(agent.Spec.ReasoningConfig)
@@ -143,20 +160,51 @@ func (b *PodSpecBuilder) Build(
 		container.Env = append(container.Env, secEnv...)
 	}
 
-	return &corev1.PodSpec{
-		ServiceAccountName:           serviceAccount,
-		AutomountServiceAccountToken: ptr.To(true),
-		SecurityContext: &corev1.PodSecurityContext{
-			RunAsNonRoot:   ptr.To(true),
-			SeccompProfile: &corev1.SeccompProfile{Type: corev1.SeccompProfileTypeRuntimeDefault},
-		},
-		Containers: []corev1.Container{container},
-		Volumes:    volumes,
-	}, nil
+	appendOTELEnvVars(container, &volumes, otelCfg, runUID, step)
+
+	podSpec.Volumes = append(podSpec.Volumes, volumes...)
+
+	appendAuditEnvVars(container)
+
+	return podSpec, nil
 }
 
 func appendAuditEnvVars(container *corev1.Container) {
 	container.Env = append(container.Env, corev1.EnvVar{Name: "LIGHTSPEED_AUDIT_ENABLED", Value: "true"})
+}
+
+const (
+	otelCAVolumeName = "otel-ca"
+	otelCAMountPath  = "/var/run/secrets/otel-ca"
+	otelCASecretKey  = "otel-ca.crt"
+)
+
+func appendOTELEnvVars(container *corev1.Container, volumes *[]corev1.Volume, otelCfg *configuration.OTELConfig, runUID, step string) {
+	if otelCfg == nil || otelCfg.CollectorEndpoint == "" {
+		return
+	}
+	container.Env = append(container.Env,
+		corev1.EnvVar{Name: "OTEL_EXPORTER_OTLP_ENDPOINT", Value: otelCfg.CollectorEndpoint},
+		corev1.EnvVar{Name: "LIGHTSPEED_AGENTICRUN_UID", Value: runUID},
+		corev1.EnvVar{Name: "LIGHTSPEED_AGENTICRUN_STEP", Value: step},
+	)
+
+	if otelCfg.CASecretName != "" {
+		container.Env = append(container.Env,
+			corev1.EnvVar{Name: "OTEL_EXPORTER_OTLP_CERTIFICATE", Value: otelCAMountPath + "/" + otelCASecretKey},
+		)
+		*volumes = append(*volumes, corev1.Volume{
+			Name: otelCAVolumeName,
+			VolumeSource: corev1.VolumeSource{
+				Secret: &corev1.SecretVolumeSource{SecretName: otelCfg.CASecretName},
+			},
+		})
+		container.VolumeMounts = append(container.VolumeMounts, corev1.VolumeMount{
+			Name:      otelCAVolumeName,
+			MountPath: otelCAMountPath,
+			ReadOnly:  true,
+		})
+	}
 }
 
 func (b *PodSpecBuilder) addProviderSpecificEnv(container *corev1.Container, llm *agenticv1alpha1.LLMProvider) {
@@ -319,4 +367,55 @@ func (b *PodSpecBuilder) buildRequiredSecrets(secrets []agenticv1alpha1.SecretRe
 		}
 	}
 	return volumes, mounts, envs
+}
+
+func credentialsSecretName(llm *agenticv1alpha1.LLMProvider) string {
+	switch llm.Spec.Type {
+	case agenticv1alpha1.LLMProviderAnthropic:
+		return llm.Spec.Anthropic.CredentialsSecret.Name
+	case agenticv1alpha1.LLMProviderGoogleCloudVertex:
+		return llm.Spec.GoogleCloudVertex.CredentialsSecret.Name
+	case agenticv1alpha1.LLMProviderOpenAI:
+		return llm.Spec.OpenAI.CredentialsSecret.Name
+	case agenticv1alpha1.LLMProviderAzureOpenAI:
+		return llm.Spec.AzureOpenAI.CredentialsSecret.Name
+	case agenticv1alpha1.LLMProviderAWSBedrock:
+		return llm.Spec.AWSBedrock.CredentialsSecret.Name
+	default:
+		return ""
+	}
+}
+
+func providerURL(llm *agenticv1alpha1.LLMProvider) string {
+	switch llm.Spec.Type {
+	case agenticv1alpha1.LLMProviderAnthropic:
+		return llm.Spec.Anthropic.URL
+	case agenticv1alpha1.LLMProviderGoogleCloudVertex:
+		return llm.Spec.GoogleCloudVertex.URL
+	case agenticv1alpha1.LLMProviderOpenAI:
+		return llm.Spec.OpenAI.URL
+	case agenticv1alpha1.LLMProviderAzureOpenAI:
+		return llm.Spec.AzureOpenAI.URL
+	case agenticv1alpha1.LLMProviderAWSBedrock:
+		return llm.Spec.AWSBedrock.URL
+	default:
+		return ""
+	}
+}
+
+func providerTypeString(t agenticv1alpha1.LLMProviderType) string {
+	switch t {
+	case agenticv1alpha1.LLMProviderAnthropic:
+		return "anthropic"
+	case agenticv1alpha1.LLMProviderGoogleCloudVertex:
+		return "vertex"
+	case agenticv1alpha1.LLMProviderOpenAI:
+		return "openai"
+	case agenticv1alpha1.LLMProviderAzureOpenAI:
+		return "azure"
+	case agenticv1alpha1.LLMProviderAWSBedrock:
+		return "bedrock"
+	default:
+		return strings.ToLower(string(t))
+	}
 }

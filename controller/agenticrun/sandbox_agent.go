@@ -15,8 +15,7 @@ import (
 )
 
 const (
-	defaultSandboxTimeout   = 5 * time.Minute
-	defaultBaseTemplateName = "lightspeed-agent"
+	defaultSandboxTimeout = 5 * time.Minute
 
 	ErrAnalysisAgentCall         = "analysis agent call"
 	ErrParseAnalysisResponse     = "parse analysis response"
@@ -49,32 +48,22 @@ type verificationResponse struct {
 	Summary string                        `json:"summary"`
 }
 
-// SandboxAgentCaller implements AgentCaller by claiming a sandbox pod,
-// calling the agent HTTP service, and releasing the sandbox on completion.
+// SandboxLifecycle is the interface for sandbox create/wait/release.
+type SandboxLifecycle interface {
+	Create(ctx context.Context, run *agenticv1alpha1.AgenticRun, step string, agent *agenticv1alpha1.Agent, llm *agenticv1alpha1.LLMProvider, tools *agenticv1alpha1.ToolsSpec, serviceAccount string) (string, error)
+	WaitReady(ctx context.Context, name string, timeout time.Duration) (endpoint string, err error)
+	Release(ctx context.Context, name string) error
+}
+
+// SandboxAgentCaller implements AgentCaller by creating a sandbox (bare pod
+// or sandbox claim), calling the agent HTTP service, and releasing it.
 type SandboxAgentCaller struct {
-	Sandbox       SandboxProvider
+	Sandbox       SandboxLifecycle
 	K8sClient     client.Client
 	ClientFactory func(endpoint string) AgentHTTPClientInterface
 	Namespace     string
 	Timeout       time.Duration
 	Audit         AuditLogger
-}
-
-func NewSandboxAgentCaller(
-	sandbox SandboxProvider,
-	k8sClient client.Client,
-	clientFactory func(endpoint string) AgentHTTPClientInterface,
-	namespace string,
-	audit AuditLogger,
-) *SandboxAgentCaller {
-	return &SandboxAgentCaller{
-		Sandbox:       sandbox,
-		K8sClient:     k8sClient,
-		ClientFactory: clientFactory,
-		Namespace:     namespace,
-		Timeout:       defaultSandboxTimeout,
-		Audit:         audit,
-	}
 }
 
 func stepString(step agenticv1alpha1.SandboxStep) string {
@@ -204,23 +193,19 @@ func (s *SandboxAgentCaller) callWithSandbox(
 	agentCtx *agentContext,
 	serviceAccount string,
 ) (json.RawMessage, error) {
-	s.Sandbox.SetStep(step.Agent, step.LLM, step.Tools, serviceAccount)
-
-	claimName, err := s.Sandbox.Claim(ctx, run, stepName, "")
+	name, err := s.Sandbox.Create(ctx, run, stepName, step.Agent, step.LLM, step.Tools, serviceAccount)
 	if err != nil {
 		return nil, fmt.Errorf("%s: %w", ErrClaimSandbox, err)
 	}
 
-	// Write sandbox info immediately so the console can stream logs
-	// while the sandbox is still starting up
-	s.patchSandboxInfo(ctx, run, stepName, claimName)
+	s.patchSandboxInfo(ctx, run, stepName, name)
 
 	timeout := s.Timeout
 	if timeout == 0 {
 		timeout = defaultSandboxTimeout
 	}
 
-	endpoint, err := s.Sandbox.WaitReady(ctx, claimName, timeout)
+	endpoint, err := s.Sandbox.WaitReady(ctx, name, timeout)
 	if err != nil {
 		return nil, fmt.Errorf("%s: %w", ErrWaitForSandbox, err)
 	}

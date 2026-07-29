@@ -1,4 +1,4 @@
-package telemetry
+package configuration
 
 import (
 	"context"
@@ -100,19 +100,37 @@ func TestProvider_Reconfigure(t *testing.T) {
 	}
 }
 
-func TestProvider_OnConfigMapChange_Valid(t *testing.T) {
+func newTestCache(p *Provider) *Cache {
+	c := &Cache{}
+	c.SetOTELProvider(p)
+	return c
+}
+
+const testCASecretName = "test-otel-ca"
+
+func testCASecret(t *testing.T, ns string) *corev1.Secret {
+	t.Helper()
+	return &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{Name: testCASecretName, Namespace: ns},
+		Data:       map[string][]byte{"otel-ca.crt": testCACertPEM(t)},
+	}
+}
+
+func TestCache_OnConfigMapChange_Valid(t *testing.T) {
+	fc := fake.NewClientBuilder().WithScheme(testScheme()).WithObjects(testCASecret(t, "test-ns")).Build()
 	p := NewProvider(&testIDGen{})
-	ca := string(testCACertPEM(t))
+	p.SetSecretSource(fc, "test-ns")
+	cache := newTestCache(p)
 
 	cm := &corev1.ConfigMap{
-		ObjectMeta: metav1.ObjectMeta{Name: ConfigMapName},
+		ObjectMeta: metav1.ObjectMeta{Name: ConfigMapName, Namespace: "test-ns"},
 		Data: map[string]string{
-			"collector-endpoint": "collector:4317",
-			"admin-endpoint":     "https://collector:8080",
-			"ca.crt":             ca,
+			KeyOtelCollectorEndpoint: "collector:4317",
+			KeyOtelAdminEndpoint:     "https://collector:8080",
+			KeyOtelCASecret:          testCASecretName,
 		},
 	}
-	if err := p.OnConfigMapChange(context.Background(), cm); err != nil {
+	if err := cache.OnConfigMapChange(context.Background(), cm); err != nil {
 		t.Fatalf("OnConfigMapChange: %v", err)
 	}
 
@@ -122,10 +140,14 @@ func TestProvider_OnConfigMapChange_Valid(t *testing.T) {
 	if p.Config().CollectorEndpoint != "collector:4317" {
 		t.Errorf("endpoint = %q", p.Config().CollectorEndpoint)
 	}
+	if !cache.Available() {
+		t.Error("cache should be available after OnConfigMapChange")
+	}
 }
 
-func TestProvider_OnConfigMapChange_EmptyDisables(t *testing.T) {
+func TestCache_OnConfigMapChange_EmptyDisables(t *testing.T) {
 	p := NewProvider(&testIDGen{})
+	cache := newTestCache(p)
 	if err := p.Configure(context.Background(), validTestConfig(t, "collector:4317")); err != nil {
 		t.Fatalf("Configure: %v", err)
 	}
@@ -134,7 +156,7 @@ func TestProvider_OnConfigMapChange_EmptyDisables(t *testing.T) {
 		ObjectMeta: metav1.ObjectMeta{Name: ConfigMapName},
 		Data:       map[string]string{},
 	}
-	if err := p.OnConfigMapChange(context.Background(), cm); err != nil {
+	if err := cache.OnConfigMapChange(context.Background(), cm); err != nil {
 		t.Fatalf("empty ConfigMap should succeed: %v", err)
 	}
 	if p.Config() != nil {
@@ -142,21 +164,24 @@ func TestProvider_OnConfigMapChange_EmptyDisables(t *testing.T) {
 	}
 }
 
-func TestProvider_OnConfigMapChange_InvalidDisablesAndErrors(t *testing.T) {
+func TestCache_OnConfigMapChange_InvalidDisablesAndErrors(t *testing.T) {
+	fc := fake.NewClientBuilder().WithScheme(testScheme()).WithObjects(testCASecret(t, "test-ns")).Build()
 	p := NewProvider(&testIDGen{})
+	p.SetSecretSource(fc, "test-ns")
+	cache := newTestCache(p)
 	if err := p.Configure(context.Background(), validTestConfig(t, "collector:4317")); err != nil {
 		t.Fatalf("Configure: %v", err)
 	}
 
 	cm := &corev1.ConfigMap{
-		ObjectMeta: metav1.ObjectMeta{Name: ConfigMapName},
+		ObjectMeta: metav1.ObjectMeta{Name: ConfigMapName, Namespace: "test-ns"},
 		Data: map[string]string{
-			"collector-endpoint": "collector:4317",
-			"admin-endpoint":     "http://collector:8080",
-			"ca.crt":             string(testCACertPEM(t)),
+			KeyOtelCollectorEndpoint: "collector:4317",
+			KeyOtelAdminEndpoint:     "http://collector:8080",
+			KeyOtelCASecret:          testCASecretName,
 		},
 	}
-	err := p.OnConfigMapChange(context.Background(), cm)
+	err := cache.OnConfigMapChange(context.Background(), cm)
 	if err == nil {
 		t.Fatal("expected error for invalid ConfigMap")
 	}
@@ -165,40 +190,46 @@ func TestProvider_OnConfigMapChange_InvalidDisablesAndErrors(t *testing.T) {
 	}
 }
 
-func TestProvider_OnConfigMapChange_Nil(t *testing.T) {
+func TestCache_OnConfigMapChange_Nil(t *testing.T) {
 	p := NewProvider(&testIDGen{})
+	cache := newTestCache(p)
 
 	if err := p.Configure(context.Background(), validTestConfig(t, "x:4317")); err != nil {
 		t.Fatalf("Configure: %v", err)
 	}
 
-	if err := p.OnConfigMapChange(context.Background(), nil); err != nil {
+	if err := cache.OnConfigMapChange(context.Background(), nil); err != nil {
 		t.Fatalf("OnConfigMapChange(nil): %v", err)
 	}
 
 	if p.Config() != nil {
 		t.Error("config should be nil after nil ConfigMap change")
 	}
+	if cache.Available() {
+		t.Error("cache should not be available after nil ConfigMap")
+	}
 }
 
-func TestProvider_OnConfigMapChange_UnchangedSkipsReconfigure(t *testing.T) {
+func TestCache_OnConfigMapChange_UnchangedSkipsReconfigure(t *testing.T) {
+	fc := fake.NewClientBuilder().WithScheme(testScheme()).WithObjects(testCASecret(t, "test-ns")).Build()
 	p := NewProvider(&testIDGen{})
-	ca := string(testCACertPEM(t))
+	p.SetSecretSource(fc, "test-ns")
+	cache := newTestCache(p)
 
 	cm := &corev1.ConfigMap{
-		ObjectMeta: metav1.ObjectMeta{Name: ConfigMapName},
+		ObjectMeta: metav1.ObjectMeta{Name: ConfigMapName, Namespace: "test-ns"},
 		Data: map[string]string{
-			"collector-endpoint": "collector:4317",
-			"admin-endpoint":     "https://collector:8080",
-			"ca.crt":             ca,
+			KeyOtelCollectorEndpoint: "collector:4317",
+			KeyOtelAdminEndpoint:     "https://collector:8080",
+			KeyOtelCASecret:          testCASecretName,
 		},
 	}
-	if err := p.OnConfigMapChange(context.Background(), cm); err != nil {
+	if err := cache.OnConfigMapChange(context.Background(), cm); err != nil {
 		t.Fatalf("first change: %v", err)
 	}
 	tpAfterFirst := p.tp
 
-	if err := p.OnConfigMapChange(context.Background(), cm); err != nil {
+	if err := cache.OnConfigMapChange(context.Background(), cm); err != nil {
 		t.Fatalf("second change: %v", err)
 	}
 	if p.tp != tpAfterFirst {
@@ -214,63 +245,28 @@ func TestProvider_DeleteLogs_NilConfig(t *testing.T) {
 	}
 }
 
-func TestProvider_OnConfigMapChange_LoadsClientCredentials(t *testing.T) {
-	certPEM, keyPEM := testTLSCertKeyPEM(t, "client", false)
-	secret := &corev1.Secret{
-		ObjectMeta: metav1.ObjectMeta{Name: "mtls-secret", Namespace: "test-ns"},
-		Type:       corev1.SecretTypeTLS,
-		Data: map[string][]byte{
-			corev1.TLSCertKey:       certPEM,
-			corev1.TLSPrivateKeyKey: keyPEM,
-		},
-	}
-	fc := fake.NewClientBuilder().WithScheme(testScheme()).WithObjects(secret).Build()
-
+func TestCache_OnConfigMapChange_MissingCASecretDisables(t *testing.T) {
+	fc := fake.NewClientBuilder().WithScheme(testScheme()).Build()
 	p := NewProvider(&testIDGen{})
 	p.SetSecretSource(fc, "test-ns")
-
-	cm := &corev1.ConfigMap{
-		ObjectMeta: metav1.ObjectMeta{Name: ConfigMapName, Namespace: "test-ns"},
-		Data: map[string]string{
-			"collector-endpoint": "collector:4317",
-			"admin-endpoint":     "https://collector:8080",
-			"ca.crt":             string(testCACertPEM(t)),
-			"credentials-secret": "mtls-secret",
-		},
-	}
-	if err := p.OnConfigMapChange(context.Background(), cm); err != nil {
-		t.Fatalf("OnConfigMapChange: %v", err)
-	}
-	cfg := p.Config()
-	if cfg == nil {
-		t.Fatal("expected config")
-	}
-	if len(cfg.ClientCert) == 0 || len(cfg.ClientKey) == 0 {
-		t.Fatal("client cert/key should be loaded from Secret")
-	}
-}
-
-func TestProvider_OnConfigMapChange_MissingCredentialsSecretDisables(t *testing.T) {
-	p := NewProvider(&testIDGen{})
-	p.SetSecretSource(fake.NewClientBuilder().WithScheme(testScheme()).Build(), "test-ns")
+	cache := newTestCache(p)
 	if err := p.Configure(context.Background(), validTestConfig(t, "collector:4317")); err != nil {
 		t.Fatalf("Configure: %v", err)
 	}
 
 	cm := &corev1.ConfigMap{
-		ObjectMeta: metav1.ObjectMeta{Name: ConfigMapName},
+		ObjectMeta: metav1.ObjectMeta{Name: ConfigMapName, Namespace: "test-ns"},
 		Data: map[string]string{
-			"collector-endpoint": "collector:4317",
-			"admin-endpoint":     "https://collector:8080",
-			"ca.crt":             string(testCACertPEM(t)),
-			"credentials-secret": "missing-secret",
+			KeyOtelCollectorEndpoint: "collector:4317",
+			KeyOtelAdminEndpoint:     "https://collector:8080",
+			KeyOtelCASecret:          "missing-secret",
 		},
 	}
-	if err := p.OnConfigMapChange(context.Background(), cm); err == nil {
-		t.Fatal("expected error when credentials Secret is missing")
+	if err := cache.OnConfigMapChange(context.Background(), cm); err == nil {
+		t.Fatal("expected error when CA Secret is missing")
 	}
 	if p.Config() != nil {
-		t.Error("missing credentials Secret should disable export")
+		t.Error("missing CA Secret should disable export")
 	}
 }
 

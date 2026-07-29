@@ -111,10 +111,8 @@ ifndef ignore-not-found
   ignore-not-found = false
 endif
 
-# Sandbox mode: "bare-pod" (default) or "sandbox-claim".
+# Sandbox mode: "bare-pod" (default) or "sandbox-claim". Used by validate-agent-sandbox.
 SANDBOX_MODE ?= bare-pod
-# Agent sandbox image used by bare-pod mode (the container the operator creates per step).
-SANDBOX_IMAGE ?= quay.io/openshift-lightspeed/ols-qe:lightspeed-mock-agent
 
 # kubernetes-sigs/agent-sandbox release reference (used only for documentation links).
 AGENT_SANDBOX_VERSION ?= v0.4.5
@@ -162,8 +160,6 @@ deploy: manifests validate-agent-sandbox kustomize ## Pre-built image: apply CRD
 	cp -a config "$$tmpdir/"; \
 	for f in "$$tmpdir/config/manager/manager.yaml" "$$tmpdir/config/rbac/role_binding.yaml" "$$tmpdir/config/rbac/service_account.yaml" "$$tmpdir/config/default/kustomization.yaml" "$$tmpdir/config/webhook/manifests.yaml" "$$tmpdir/config/webhook/service.yaml" "$$tmpdir/config/webhook/networkpolicy.yaml"; do \
 		sed -e 's|__OPERATOR_NAMESPACE__|$(OPERATOR_NAMESPACE)|g' \
-		    -e 's|__SANDBOX_MODE__|$(SANDBOX_MODE)|g' \
-		    -e 's|__SANDBOX_IMAGE__|$(SANDBOX_IMAGE)|g' \
 		    "$$f" > "$$f.tmp" && mv "$$f.tmp" "$$f"; \
 	done; \
 	cd "$$tmpdir/config/manager" && $(KUSTOMIZE) edit set image controller=$(IMG); \
@@ -255,8 +251,6 @@ undeploy: kustomize ## Remove in-cluster operator (CRDs + RBAC + Deployment). Us
 run: install validate-agent-sandbox vet ## install + validate-agent-sandbox (no-op if bare-pod) + vet, then run the controller locally.
 	go run ./cmd/main.go \
 		--namespace=$(OPERATOR_NAMESPACE) \
-		--sandbox-mode=$(SANDBOX_MODE) \
-		--agentic-sandbox-image=$(SANDBOX_IMAGE) \
 		--metrics-bind-address=$(METRICS_BIND_ADDRESS) \
 		--health-probe-bind-address=$(HEALTH_PROBE_BIND_ADDRESS)
 

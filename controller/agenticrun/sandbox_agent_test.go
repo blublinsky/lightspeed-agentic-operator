@@ -28,9 +28,7 @@ type mockSandboxProvider struct {
 	releaseCalls int
 }
 
-func (m *mockSandboxProvider) SetStep(_ *agenticv1alpha1.Agent, _ *agenticv1alpha1.LLMProvider, _ *agenticv1alpha1.ToolsSpec, _ string) {
-}
-func (m *mockSandboxProvider) Claim(_ context.Context, _ *agenticv1alpha1.AgenticRun, _, _ string) (string, error) {
+func (m *mockSandboxProvider) Create(_ context.Context, _ *agenticv1alpha1.AgenticRun, _ string, _ *agenticv1alpha1.Agent, _ *agenticv1alpha1.LLMProvider, _ *agenticv1alpha1.ToolsSpec, _ string) (string, error) {
 	m.claimCalls++
 	return m.claimName, m.claimErr
 }
@@ -770,9 +768,7 @@ type trackingMockSandbox struct {
 	errOnClaim string
 }
 
-func (m *trackingMockSandbox) SetStep(_ *agenticv1alpha1.Agent, _ *agenticv1alpha1.LLMProvider, _ *agenticv1alpha1.ToolsSpec, _ string) {
-}
-func (m *trackingMockSandbox) Claim(_ context.Context, _ *agenticv1alpha1.AgenticRun, _, _ string) (string, error) {
+func (m *trackingMockSandbox) Create(_ context.Context, _ *agenticv1alpha1.AgenticRun, _ string, _ *agenticv1alpha1.Agent, _ *agenticv1alpha1.LLMProvider, _ *agenticv1alpha1.ToolsSpec, _ string) (string, error) {
 	return "", nil
 }
 func (m *trackingMockSandbox) WaitReady(_ context.Context, _ string, _ time.Duration) (string, error) {

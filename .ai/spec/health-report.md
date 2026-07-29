@@ -1,20 +1,18 @@
 # Spec health report
 
-Last evaluated: 2026-05-30
-Trigger: post-milestone: spec-first:init alignment
+Last evaluated: 2026-07-27
+Trigger: post OLS-3685/OLS-3686 implementation (SandboxManager unification, config cache)
 Layout: software (.ai/spec/)
 
 ## Stale
 
-1. **how/reconciler.md line 61** — Console integration note says `EnsureAgenticConsole` is "not registered in `cmd/main.go` in this repo snapshot; another binary or future setup is expected to call it." This is stale: `controller/setup.go` registers it as a `manager.RunnableFunc` called from `cmd/main.go` via `controller.Setup()`. The note should be updated to reflect the current wiring.
-
-2. **what/crd-api.md rule 18** — States "Agent — `status.conditions`: Observed readiness; `Ready` condition documents whether referenced provider resources are accessible (see operator reconcile behavior)." No Agent reconciler exists in the codebase; the operator only reconciles `AgenticRun` CRs. Rule 18 should be marked `[PLANNED]` or reworded to clarify this is aspirational rather than implemented behavior.
+1. **what/crd-api.md rule 18** — States "Agent — `status.conditions`: Observed readiness; `Ready` condition documents whether referenced provider resources are accessible (see operator reconcile behavior)." No Agent reconciler exists in the codebase; the operator only reconciles `AgenticRun` CRs. Rule 18 should be marked `[PLANNED]` or reworded to clarify this is aspirational rather than implemented behavior.
 
 ## Missing
 
 1. **Console plugin behavioral rules** — `controller/console/` deploys a console plugin (Deployment, Service, ConfigMap, ConsolePlugin CR, Console activation), but no what/ file defines behavioral rules for this component. It is only documented in how/reconciler.md as implementation detail. Consider adding a `what/console-plugin.md` if the console deployment has rules worth specifying (idempotency, image absence handling, activation semantics).
 
-2. **how/reconciler.md `cmd/main.go` section** — References outdated flag set. The spec lists `template-name` as a flag; the actual code has `--agentic-console-image` and `--agentic-sandbox-image` instead. The `SandboxAgentCaller` constructor description also mentions `BaseTemplateName` which is no longer a constructor parameter in the current code.
+2. **`pkg/configuration/` spec** — The new configuration cache package (`Config`, `Cache`, `OnConfigMapChange`) has no dedicated spec file. Covered in `docs/inter-operator-handoff-design.md` but not in `.ai/spec/`. Consider adding `how/configuration.md` if the package grows.
 
 ## Structural concerns
 
@@ -28,8 +26,8 @@ None. The cross-reference table in README.md provides clear mapping between what
 
 ## No issues
 
-- All 9 spec files have real content (no empty templates or placeholders).
-- All `controller/agenticrun/` source files listed in how/reconciler.md module map exist on disk.
+- All spec files have real content (no empty templates or placeholders).
+- All `controller/agenticrun/` source files listed in how/reconciler.md module map exist on disk. Deleted files (`sandbox.go`, `bare_pod_manager.go`, `sandbox_templates.go`) removed from map.
 - All `cli/run/` source files listed in how/cli.md module map exist on disk.
 - All template files (`*.tmpl`) listed in how/reconciler.md exist.
 - All CRD types in `api/v1alpha1/*_types.go` are covered by what/crd-api.md.

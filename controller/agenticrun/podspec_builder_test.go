@@ -6,12 +6,60 @@ import (
 
 	corev1 "k8s.io/api/core/v1"
 	apiextensionsv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
-	"k8s.io/apimachinery/pkg/util/intstr"
 
 	agenticv1alpha1 "github.com/openshift/lightspeed-agentic-operator/api/v1alpha1"
 )
 
-// envToMap converts []corev1.EnvVar to map[string]string for easy assertion
+func testBasePodSpec() *corev1.PodSpec {
+	return &corev1.PodSpec{
+		Containers: []corev1.Container{{Name: "agent", Image: "quay.io/test/agent:latest"}},
+	}
+}
+
+func testLLMProvider(providerType agenticv1alpha1.LLMProviderType) *agenticv1alpha1.LLMProvider {
+	creds := agenticv1alpha1.SecretReference{Name: "my-llm-secret"}
+	spec := agenticv1alpha1.LLMProviderSpec{Type: providerType}
+	switch providerType {
+	case agenticv1alpha1.LLMProviderAnthropic:
+		spec.Anthropic = agenticv1alpha1.AnthropicConfig{CredentialsSecret: creds}
+	case agenticv1alpha1.LLMProviderGoogleCloudVertex:
+		spec.GoogleCloudVertex = agenticv1alpha1.GoogleCloudVertexConfig{
+			CredentialsSecret: creds,
+			ProjectID:         "test-project",
+			Region:            "us-central1",
+			ModelProvider:     agenticv1alpha1.GoogleCloudVertexModelProviderAnthropic,
+		}
+	case agenticv1alpha1.LLMProviderOpenAI:
+		spec.OpenAI = agenticv1alpha1.OpenAIConfig{CredentialsSecret: creds}
+	case agenticv1alpha1.LLMProviderAzureOpenAI:
+		spec.AzureOpenAI = agenticv1alpha1.AzureOpenAIConfig{
+			CredentialsSecret: creds,
+			Endpoint:          "https://test.openai.azure.com",
+			APIVersion:        "2024-02-01",
+		}
+	case agenticv1alpha1.LLMProviderAWSBedrock:
+		spec.AWSBedrock = agenticv1alpha1.AWSBedrockConfig{CredentialsSecret: creds, Region: "us-east-1"}
+	}
+	return &agenticv1alpha1.LLMProvider{Spec: spec}
+}
+
+func testLLMProviderWithURL(providerType agenticv1alpha1.LLMProviderType, u string) *agenticv1alpha1.LLMProvider {
+	p := testLLMProvider(providerType)
+	switch providerType {
+	case agenticv1alpha1.LLMProviderAnthropic:
+		p.Spec.Anthropic.URL = u
+	case agenticv1alpha1.LLMProviderGoogleCloudVertex:
+		p.Spec.GoogleCloudVertex.URL = u
+	case agenticv1alpha1.LLMProviderOpenAI:
+		p.Spec.OpenAI.URL = u
+	case agenticv1alpha1.LLMProviderAzureOpenAI:
+		p.Spec.AzureOpenAI.URL = u
+	case agenticv1alpha1.LLMProviderAWSBedrock:
+		p.Spec.AWSBedrock.URL = u
+	}
+	return p
+}
+
 func envToMap(envVars []corev1.EnvVar) map[string]string {
 	result := make(map[string]string)
 	for _, ev := range envVars {
@@ -20,612 +68,485 @@ func envToMap(envVars []corev1.EnvVar) map[string]string {
 	return result
 }
 
-func intstr8080() intstr.IntOrString {
-	return intstr.FromInt32(8080)
+func TestBuildSkills_Empty(t *testing.T) {
+	b := &PodSpecBuilder{}
+	vols, mounts := b.buildSkills(nil)
+	if vols != nil || mounts != nil {
+		t.Fatal("nil skills should return nil")
+	}
+	vols, mounts = b.buildSkills([]agenticv1alpha1.SkillsSource{})
+	if vols != nil || mounts != nil {
+		t.Fatal("empty skills should return nil")
+	}
+	vols, mounts = b.buildSkills([]agenticv1alpha1.SkillsSource{{Image: ""}})
+	if vols != nil || mounts != nil {
+		t.Fatal("skills with empty image should return nil")
+	}
 }
 
-func TestPodSpecBuilder_Anthropic(t *testing.T) {
-	builder := PodSpecBuilder{Image: "quay.io/lightspeed/agent:latest"}
-	agent := &agenticv1alpha1.Agent{
-		Spec: agenticv1alpha1.AgentSpec{
-			Model: "claude-opus-4-6",
+func TestBuildSkills_WithPaths(t *testing.T) {
+	b := &PodSpecBuilder{}
+	skills := []agenticv1alpha1.SkillsSource{{
+		Image: "registry.example.com/skills:latest",
+		Paths: []string{"/troubleshooting/network", "/analysis/logs"},
+	}}
+
+	vols, mounts := b.buildSkills(skills)
+	if len(vols) != 2 {
+		t.Fatalf("expected 2 volumes (image + workdir), got %d", len(vols))
+	}
+	if vols[0].Image == nil || vols[0].Image.Reference != "registry.example.com/skills:latest" {
+		t.Errorf("first volume should be image volume, got %+v", vols[0])
+	}
+	if vols[1].EmptyDir == nil {
+		t.Error("second volume should be emptyDir workdir")
+	}
+
+	// workdir mount + 2 path mounts
+	if len(mounts) != 3 {
+		t.Fatalf("expected 3 mounts, got %d", len(mounts))
+	}
+	if mounts[0].MountPath != "/app/skills/.agents" {
+		t.Errorf("workdir mount path = %q", mounts[0].MountPath)
+	}
+	if mounts[1].MountPath != "/app/skills/network" || mounts[1].SubPath != "troubleshooting/network" {
+		t.Errorf("skill mount[1] = %q subpath=%q", mounts[1].MountPath, mounts[1].SubPath)
+	}
+	if mounts[2].MountPath != "/app/skills/logs" || mounts[2].SubPath != "analysis/logs" {
+		t.Errorf("skill mount[2] = %q subpath=%q", mounts[2].MountPath, mounts[2].SubPath)
+	}
+}
+
+func TestBuildSkills_NoPaths(t *testing.T) {
+	b := &PodSpecBuilder{}
+	skills := []agenticv1alpha1.SkillsSource{{
+		Image: "registry.example.com/skills:latest",
+	}}
+
+	vols, mounts := b.buildSkills(skills)
+	if len(vols) != 2 {
+		t.Fatalf("expected 2 volumes, got %d", len(vols))
+	}
+	if len(mounts) != 1 {
+		t.Fatalf("expected 1 mount (workdir only), got %d", len(mounts))
+	}
+}
+
+func TestBuildMCPServers_Empty(t *testing.T) {
+	b := &PodSpecBuilder{}
+	vols, mounts, envs, err := b.buildMCPServers(nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	// Even nil input produces the env var with an empty JSON array
+	if len(envs) != 1 || envs[0].Name != mcpServersEnvVar {
+		t.Fatal("expected LIGHTSPEED_MCP_SERVERS env var")
+	}
+	if len(vols) != 0 || len(mounts) != 0 {
+		t.Error("no volumes or mounts expected for empty servers")
+	}
+}
+
+func TestBuildMCPServers_WithSecretHeaders(t *testing.T) {
+	b := &PodSpecBuilder{}
+	servers := []agenticv1alpha1.MCPServerConfig{
+		{
+			Name:           "github",
+			URL:            "https://mcp.github.com",
+			TimeoutSeconds: 30,
+			Headers: []agenticv1alpha1.MCPHeader{
+				{
+					Name: "Authorization",
+					ValueFrom: agenticv1alpha1.MCPHeaderValueSource{
+						Type:   agenticv1alpha1.MCPHeaderSourceTypeSecret,
+						Secret: agenticv1alpha1.SecretReference{Name: "gh-token"},
+					},
+				},
+			},
+		},
+		{
+			Name: "internal",
+			URL:  "https://internal.svc:8443",
+			Headers: []agenticv1alpha1.MCPHeader{
+				{
+					Name: "X-Auth",
+					ValueFrom: agenticv1alpha1.MCPHeaderValueSource{
+						Type: agenticv1alpha1.MCPHeaderSourceTypeServiceAccountToken,
+					},
+				},
+			},
 		},
 	}
+
+	vols, mounts, envs, err := b.buildMCPServers(servers)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// Only the Secret header produces a volume
+	if len(vols) != 1 {
+		t.Fatalf("expected 1 volume for secret header, got %d", len(vols))
+	}
+	if vols[0].Secret == nil || vols[0].Secret.SecretName != "gh-token" {
+		t.Errorf("volume secret = %+v", vols[0])
+	}
+	if len(mounts) != 1 || mounts[0].MountPath != mcpHeadersMountRoot+"/gh-token" {
+		t.Errorf("mount = %+v", mounts)
+	}
+
+	if len(envs) != 1 || envs[0].Name != mcpServersEnvVar {
+		t.Fatal("expected LIGHTSPEED_MCP_SERVERS env")
+	}
+
+	var entries []mcpServerEnvEntry
+	if err := json.Unmarshal([]byte(envs[0].Value), &entries); err != nil {
+		t.Fatalf("unmarshal env: %v", err)
+	}
+	if len(entries) != 2 {
+		t.Fatalf("expected 2 entries, got %d", len(entries))
+	}
+
+	gh := entries[0]
+	if gh.Name != "github" || gh.URL != "https://mcp.github.com" || gh.Timeout != 30 {
+		t.Errorf("github entry = %+v", gh)
+	}
+	if len(gh.Headers) != 1 || gh.Headers[0].Source != "Secret" || gh.Headers[0].SecretName != "gh-token" {
+		t.Errorf("github headers = %+v", gh.Headers)
+	}
+
+	internal := entries[1]
+	if internal.Name != "internal" || internal.Timeout != 0 {
+		t.Errorf("internal entry = %+v", internal)
+	}
+	if len(internal.Headers) != 1 || internal.Headers[0].Source != "ServiceAccountToken" {
+		t.Errorf("internal headers = %+v", internal.Headers)
+	}
+}
+
+func TestBuildRequiredSecrets_FilePath(t *testing.T) {
+	b := &PodSpecBuilder{}
+	secrets := []agenticv1alpha1.SecretRequirement{
+		{
+			Name: "tls-cert",
+			MountAs: agenticv1alpha1.SecretMountSpec{
+				Type: agenticv1alpha1.SecretMountFilePath,
+				FilePath: agenticv1alpha1.SecretMountFilePathConfig{
+					Path: "/etc/tls/server.crt",
+				},
+			},
+		},
+	}
+
+	vols, mounts, envs := b.buildRequiredSecrets(secrets)
+	if len(vols) != 1 || vols[0].Name != "req-tls-cert" {
+		t.Fatalf("expected 1 volume named req-tls-cert, got %+v", vols)
+	}
+	if vols[0].Secret == nil || vols[0].Secret.SecretName != "tls-cert" {
+		t.Errorf("volume secret = %+v", vols[0])
+	}
+	if len(mounts) != 1 || mounts[0].MountPath != "/etc/tls/server.crt" || !mounts[0].ReadOnly {
+		t.Errorf("mount = %+v", mounts)
+	}
+	if len(envs) != 0 {
+		t.Error("file path mount should produce no env vars")
+	}
+}
+
+func TestBuildRequiredSecrets_EnvVar(t *testing.T) {
+	b := &PodSpecBuilder{}
+	secrets := []agenticv1alpha1.SecretRequirement{
+		{
+			Name: "api-key",
+			MountAs: agenticv1alpha1.SecretMountSpec{
+				Type: agenticv1alpha1.SecretMountEnvVar,
+				EnvVar: agenticv1alpha1.SecretMountEnvVarConfig{
+					Name: "API_KEY",
+				},
+			},
+		},
+	}
+
+	vols, mounts, envs := b.buildRequiredSecrets(secrets)
+	if len(vols) != 0 || len(mounts) != 0 {
+		t.Error("env var mount should produce no volumes/mounts")
+	}
+	if len(envs) != 1 {
+		t.Fatalf("expected 1 env var, got %d", len(envs))
+	}
+	if envs[0].Name != "API_KEY" {
+		t.Errorf("env name = %q", envs[0].Name)
+	}
+	ref := envs[0].ValueFrom.SecretKeyRef
+	if ref == nil || ref.Name != "api-key" || ref.Key != "token" {
+		t.Errorf("env ref = %+v", ref)
+	}
+	if ref.Optional == nil || !*ref.Optional {
+		t.Error("secret key ref should be optional")
+	}
+}
+
+func TestBuildRequiredSecrets_Mixed(t *testing.T) {
+	b := &PodSpecBuilder{}
+	secrets := []agenticv1alpha1.SecretRequirement{
+		{
+			Name: "cert",
+			MountAs: agenticv1alpha1.SecretMountSpec{
+				Type:     agenticv1alpha1.SecretMountFilePath,
+				FilePath: agenticv1alpha1.SecretMountFilePathConfig{Path: "/certs/ca.pem"},
+			},
+		},
+		{
+			Name: "token",
+			MountAs: agenticv1alpha1.SecretMountSpec{
+				Type:   agenticv1alpha1.SecretMountEnvVar,
+				EnvVar: agenticv1alpha1.SecretMountEnvVarConfig{Name: "MY_TOKEN"},
+			},
+		},
+	}
+
+	vols, mounts, envs := b.buildRequiredSecrets(secrets)
+	if len(vols) != 1 {
+		t.Fatalf("expected 1 volume (file path only), got %d", len(vols))
+	}
+	if len(mounts) != 1 {
+		t.Fatalf("expected 1 mount, got %d", len(mounts))
+	}
+	if len(envs) != 1 {
+		t.Fatalf("expected 1 env, got %d", len(envs))
+	}
+}
+
+func TestBuildRequiredSecrets_Empty(t *testing.T) {
+	b := &PodSpecBuilder{}
+	vols, mounts, envs := b.buildRequiredSecrets(nil)
+	if len(vols) != 0 || len(mounts) != 0 || len(envs) != 0 {
+		t.Error("nil secrets should return empty slices")
+	}
+}
+
+// --- Build integration tests ---
+
+func TestBuild_NilBase(t *testing.T) {
+	b := &PodSpecBuilder{}
+	agent := &agenticv1alpha1.Agent{Spec: agenticv1alpha1.AgentSpec{Model: "m"}}
+	llm := testLLMProvider(agenticv1alpha1.LLMProviderAnthropic)
+	_, err := b.Build(nil, agent, llm, nil, nil, "analysis", "uid", "sa")
+	if err == nil {
+		t.Fatal("expected error for nil base")
+	}
+}
+
+func TestBuild_NilAgent(t *testing.T) {
+	b := &PodSpecBuilder{}
+	llm := testLLMProvider(agenticv1alpha1.LLMProviderAnthropic)
+	_, err := b.Build(testBasePodSpec(), nil, llm, nil, nil, "analysis", "uid", "sa")
+	if err == nil {
+		t.Fatal("expected error for nil agent")
+	}
+}
+
+func TestBuild_NilLLM(t *testing.T) {
+	b := &PodSpecBuilder{}
+	agent := &agenticv1alpha1.Agent{Spec: agenticv1alpha1.AgentSpec{Model: "m"}}
+	_, err := b.Build(testBasePodSpec(), agent, nil, nil, nil, "analysis", "uid", "sa")
+	if err == nil {
+		t.Fatal("expected error for nil LLM")
+	}
+}
+
+func TestBuild_EmptySA(t *testing.T) {
+	b := &PodSpecBuilder{}
+	agent := &agenticv1alpha1.Agent{Spec: agenticv1alpha1.AgentSpec{Model: "m"}}
+	llm := testLLMProvider(agenticv1alpha1.LLMProviderAnthropic)
+	_, err := b.Build(testBasePodSpec(), agent, llm, nil, nil, "analysis", "uid", "")
+	if err == nil {
+		t.Fatal("expected error for empty serviceAccount")
+	}
+}
+
+func TestBuild_Anthropic(t *testing.T) {
+	b := &PodSpecBuilder{}
+	agent := &agenticv1alpha1.Agent{Spec: agenticv1alpha1.AgentSpec{Model: "claude-opus-4-6"}}
 	llm := testLLMProviderWithURL(agenticv1alpha1.LLMProviderAnthropic, "https://custom.api")
 
-	podSpec, err := builder.Build(agent, llm, nil, "analysis", defaultSandboxSA)
+	ps, err := b.Build(testBasePodSpec(), agent, llm, nil, nil, "analysis", "uid-123", "my-sa")
 	if err != nil {
-		t.Fatalf("Build failed: %v", err)
+		t.Fatalf("Build: %v", err)
 	}
-
-	// Verify container basics
-	if len(podSpec.Containers) != 1 {
-		t.Fatalf("expected 1 container, got %d", len(podSpec.Containers))
+	if ps.ServiceAccountName != "my-sa" {
+		t.Errorf("SA = %q", ps.ServiceAccountName)
 	}
-	container := podSpec.Containers[0]
-	if container.Name != "agent" {
-		t.Errorf("container name = %q, want agent", container.Name)
+	env := envToMap(ps.Containers[0].Env)
+	if env["LIGHTSPEED_PROVIDER"] != "anthropic" {
+		t.Errorf("PROVIDER = %q", env["LIGHTSPEED_PROVIDER"])
 	}
-	if container.Image != "quay.io/lightspeed/agent:latest" {
-		t.Errorf("container image = %q", container.Image)
+	if env["LIGHTSPEED_MODEL"] != "claude-opus-4-6" {
+		t.Errorf("MODEL = %q", env["LIGHTSPEED_MODEL"])
 	}
-
-	// Verify port
-	if len(container.Ports) != 1 {
-		t.Fatalf("expected 1 port, got %d", len(container.Ports))
+	if env["LIGHTSPEED_PROVIDER_URL"] != "https://custom.api" {
+		t.Errorf("URL = %q", env["LIGHTSPEED_PROVIDER_URL"])
 	}
-	if container.Ports[0].Name != "http" {
-		t.Errorf("port name = %q, want http", container.Ports[0].Name)
-	}
-	if container.Ports[0].ContainerPort != 8080 {
-		t.Errorf("port = %d, want 8080", container.Ports[0].ContainerPort)
-	}
-	if container.Ports[0].Protocol != corev1.ProtocolTCP {
-		t.Errorf("protocol = %q, want TCP", container.Ports[0].Protocol)
-	}
-
-	// Verify env vars
-	envMap := envToMap(container.Env)
-	if envMap["LIGHTSPEED_PROVIDER"] != "anthropic" {
-		t.Errorf("LIGHTSPEED_PROVIDER = %q, want anthropic", envMap["LIGHTSPEED_PROVIDER"])
-	}
-	if envMap["LIGHTSPEED_MODEL"] != "claude-opus-4-6" {
-		t.Errorf("LIGHTSPEED_MODEL = %q", envMap["LIGHTSPEED_MODEL"])
-	}
-	if envMap["LIGHTSPEED_PROVIDER_URL"] != "https://custom.api" {
-		t.Errorf("LIGHTSPEED_PROVIDER_URL = %q", envMap["LIGHTSPEED_PROVIDER_URL"])
-	}
-
-	// Verify envFrom
-	if len(container.EnvFrom) != 1 {
-		t.Fatalf("expected 1 envFrom, got %d", len(container.EnvFrom))
-	}
-	if container.EnvFrom[0].SecretRef == nil {
-		t.Fatal("envFrom secretRef is nil")
-	}
-	if container.EnvFrom[0].SecretRef.Name != "my-llm-secret" {
-		t.Errorf("secretRef name = %q, want my-llm-secret", container.EnvFrom[0].SecretRef.Name)
-	}
-
-	// Verify volume mount
-	foundMount := false
-	for _, m := range container.VolumeMounts {
-		if m.Name == llmCredsVolumeName && m.MountPath == llmCredsMountPath {
-			foundMount = true
-			if !m.ReadOnly {
-				t.Error("credential volume mount should be readOnly")
-			}
-			break
-		}
-	}
-	if !foundMount {
-		t.Errorf("missing credential volume mount at %s", llmCredsMountPath)
-	}
-
-	// Verify home volume mount
-	foundHomeMount := false
-	for _, m := range container.VolumeMounts {
-		if m.Name == "home" && m.MountPath == "/home/agent" {
-			foundHomeMount = true
-			break
-		}
-	}
-	if !foundHomeMount {
-		t.Error("missing home volume mount at /home/agent")
-	}
-
-	// Verify volume
-	foundVolume := false
-	for _, v := range podSpec.Volumes {
-		if v.Name == llmCredsVolumeName {
-			foundVolume = true
-			if v.Secret == nil {
-				t.Fatal("volume secret source is nil")
-			}
-			if v.Secret.SecretName != "my-llm-secret" {
-				t.Errorf("secret name = %q, want my-llm-secret", v.Secret.SecretName)
-			}
-			break
-		}
-	}
-	if !foundVolume {
-		t.Error("missing llm-credentials volume")
-	}
-
-	// Verify home volume
-	foundHomeVolume := false
-	for _, v := range podSpec.Volumes {
-		if v.Name == "home" {
-			foundHomeVolume = true
-			if v.EmptyDir == nil {
-				t.Fatal("home volume should be emptyDir")
-			}
-			break
-		}
-	}
-	if !foundHomeVolume {
-		t.Error("missing home emptyDir volume")
-	}
-
-	// Verify readiness probe
-	if container.ReadinessProbe == nil {
-		t.Fatal("readinessProbe is nil")
-	}
-	if container.ReadinessProbe.HTTPGet == nil {
-		t.Fatal("readinessProbe.HTTPGet is nil")
-	}
-	if container.ReadinessProbe.HTTPGet.Path != "/ready" {
-		t.Errorf("readinessProbe path = %q, want /ready", container.ReadinessProbe.HTTPGet.Path)
-	}
-	if container.ReadinessProbe.HTTPGet.Port != intstr8080() {
-		t.Errorf("readinessProbe port = %v, want 8080", container.ReadinessProbe.HTTPGet.Port)
-	}
-	if container.ReadinessProbe.InitialDelaySeconds != 3 {
-		t.Errorf("readinessProbe initialDelay = %d, want 3", container.ReadinessProbe.InitialDelaySeconds)
-	}
-	if container.ReadinessProbe.PeriodSeconds != 10 {
-		t.Errorf("readinessProbe period = %d, want 10", container.ReadinessProbe.PeriodSeconds)
-	}
-	if container.ReadinessProbe.FailureThreshold != 3 {
-		t.Errorf("readinessProbe failure = %d, want 3", container.ReadinessProbe.FailureThreshold)
-	}
-
-	// Verify liveness probe
-	if container.LivenessProbe == nil {
-		t.Fatal("livenessProbe is nil")
-	}
-	if container.LivenessProbe.HTTPGet == nil {
-		t.Fatal("livenessProbe.HTTPGet is nil")
-	}
-	if container.LivenessProbe.HTTPGet.Path != "/health" {
-		t.Errorf("livenessProbe path = %q, want /health", container.LivenessProbe.HTTPGet.Path)
-	}
-	if container.LivenessProbe.HTTPGet.Port != intstr8080() {
-		t.Errorf("livenessProbe port = %v, want 8080", container.LivenessProbe.HTTPGet.Port)
-	}
-	if container.LivenessProbe.InitialDelaySeconds != 10 {
-		t.Errorf("livenessProbe initialDelay = %d, want 10", container.LivenessProbe.InitialDelaySeconds)
-	}
-	if container.LivenessProbe.PeriodSeconds != 30 {
-		t.Errorf("livenessProbe period = %d, want 30", container.LivenessProbe.PeriodSeconds)
-	}
-	if container.LivenessProbe.FailureThreshold != 3 {
-		t.Errorf("livenessProbe failure = %d, want 3", container.LivenessProbe.FailureThreshold)
-	}
-
-	// Verify security context
-	if container.SecurityContext == nil {
-		t.Fatal("securityContext is nil")
-	}
-	if container.SecurityContext.AllowPrivilegeEscalation == nil || *container.SecurityContext.AllowPrivilegeEscalation {
-		t.Error("allowPrivilegeEscalation should be false")
-	}
-	if container.SecurityContext.Capabilities == nil {
-		t.Fatal("capabilities is nil")
-	}
-	if len(container.SecurityContext.Capabilities.Drop) != 1 || container.SecurityContext.Capabilities.Drop[0] != "ALL" {
-		t.Errorf("capabilities.drop = %v, want [ALL]", container.SecurityContext.Capabilities.Drop)
-	}
-	if container.SecurityContext.RunAsNonRoot == nil || !*container.SecurityContext.RunAsNonRoot {
-		t.Error("runAsNonRoot should be true")
-	}
-	if container.SecurityContext.SeccompProfile == nil || container.SecurityContext.SeccompProfile.Type != corev1.SeccompProfileTypeRuntimeDefault {
-		t.Error("seccompProfile.type should be RuntimeDefault")
-	}
-
-	// Verify service account
-	if podSpec.ServiceAccountName != defaultSandboxSA {
-		t.Errorf("serviceAccountName = %q, want %q", podSpec.ServiceAccountName, defaultSandboxSA)
-	}
-	if podSpec.AutomountServiceAccountToken == nil || !*podSpec.AutomountServiceAccountToken {
-		t.Error("automountServiceAccountToken should be true")
+	if ps.Containers[0].ReadinessProbe == nil || ps.Containers[0].LivenessProbe == nil {
+		t.Error("probes should be set")
 	}
 }
 
-func TestPodSpecBuilder_Vertex(t *testing.T) {
-	builder := PodSpecBuilder{Image: "quay.io/lightspeed/agent:latest"}
-	agent := &agenticv1alpha1.Agent{Spec: agenticv1alpha1.AgentSpec{Model: "gemini-2.0-flash-exp"}}
+func TestBuild_Vertex(t *testing.T) {
+	b := &PodSpecBuilder{}
+	agent := &agenticv1alpha1.Agent{Spec: agenticv1alpha1.AgentSpec{Model: "gemini-2.0"}}
 	llm := testLLMProvider(agenticv1alpha1.LLMProviderGoogleCloudVertex)
 
-	podSpec, err := builder.Build(agent, llm, nil, "analysis", defaultSandboxSA)
+	ps, err := b.Build(testBasePodSpec(), agent, llm, nil, nil, "analysis", "uid", "sa")
 	if err != nil {
-		t.Fatalf("Build failed: %v", err)
+		t.Fatalf("Build: %v", err)
 	}
-
-	container := podSpec.Containers[0]
-	envMap := envToMap(container.Env)
-	if envMap["LIGHTSPEED_PROVIDER"] != "vertex" {
-		t.Errorf("LIGHTSPEED_PROVIDER = %q, want vertex", envMap["LIGHTSPEED_PROVIDER"])
+	env := envToMap(ps.Containers[0].Env)
+	if env["LIGHTSPEED_PROVIDER"] != "vertex" {
+		t.Errorf("PROVIDER = %q", env["LIGHTSPEED_PROVIDER"])
 	}
-	if envMap["LIGHTSPEED_MODEL"] != "gemini-2.0-flash-exp" {
-		t.Errorf("LIGHTSPEED_MODEL = %q", envMap["LIGHTSPEED_MODEL"])
+	if env["LIGHTSPEED_MODEL_PROVIDER"] != "anthropic" {
+		t.Errorf("MODEL_PROVIDER = %q", env["LIGHTSPEED_MODEL_PROVIDER"])
 	}
-	if envMap["LIGHTSPEED_MODEL_PROVIDER"] != "anthropic" {
-		t.Errorf("LIGHTSPEED_MODEL_PROVIDER = %q, want anthropic", envMap["LIGHTSPEED_MODEL_PROVIDER"])
+	if env["LIGHTSPEED_PROVIDER_PROJECT"] != "test-project" {
+		t.Errorf("PROJECT = %q", env["LIGHTSPEED_PROVIDER_PROJECT"])
 	}
-	if envMap["LIGHTSPEED_PROVIDER_PROJECT"] != "test-project" {
-		t.Errorf("LIGHTSPEED_PROVIDER_PROJECT = %q, want test-project", envMap["LIGHTSPEED_PROVIDER_PROJECT"])
-	}
-	if envMap["LIGHTSPEED_PROVIDER_REGION"] != "us-central1" {
-		t.Errorf("LIGHTSPEED_PROVIDER_REGION = %q, want us-central1", envMap["LIGHTSPEED_PROVIDER_REGION"])
+	if env["LIGHTSPEED_PROVIDER_REGION"] != "us-central1" {
+		t.Errorf("REGION = %q", env["LIGHTSPEED_PROVIDER_REGION"])
 	}
 }
 
-func TestPodSpecBuilder_Azure(t *testing.T) {
-	builder := PodSpecBuilder{Image: "quay.io/lightspeed/agent:latest"}
+func TestBuild_Azure(t *testing.T) {
+	b := &PodSpecBuilder{}
 	agent := &agenticv1alpha1.Agent{Spec: agenticv1alpha1.AgentSpec{Model: "gpt-4o"}}
 	llm := testLLMProvider(agenticv1alpha1.LLMProviderAzureOpenAI)
 
-	podSpec, err := builder.Build(agent, llm, nil, "analysis", defaultSandboxSA)
+	ps, err := b.Build(testBasePodSpec(), agent, llm, nil, nil, "analysis", "uid", "sa")
 	if err != nil {
-		t.Fatalf("Build failed: %v", err)
+		t.Fatalf("Build: %v", err)
 	}
-
-	container := podSpec.Containers[0]
-	envMap := envToMap(container.Env)
-	if envMap["LIGHTSPEED_PROVIDER"] != "azure" {
-		t.Errorf("LIGHTSPEED_PROVIDER = %q, want azure", envMap["LIGHTSPEED_PROVIDER"])
+	env := envToMap(ps.Containers[0].Env)
+	if env["LIGHTSPEED_PROVIDER"] != "azure" {
+		t.Errorf("PROVIDER = %q", env["LIGHTSPEED_PROVIDER"])
 	}
-	if envMap["LIGHTSPEED_PROVIDER_URL"] != "https://test.openai.azure.com" {
-		t.Errorf("LIGHTSPEED_PROVIDER_URL = %q", envMap["LIGHTSPEED_PROVIDER_URL"])
+	if env["LIGHTSPEED_PROVIDER_URL"] != "https://test.openai.azure.com" {
+		t.Errorf("URL = %q", env["LIGHTSPEED_PROVIDER_URL"])
 	}
-	if envMap["LIGHTSPEED_PROVIDER_API_VERSION"] != "2024-02-01" {
-		t.Errorf("LIGHTSPEED_PROVIDER_API_VERSION = %q", envMap["LIGHTSPEED_PROVIDER_API_VERSION"])
+	if env["LIGHTSPEED_PROVIDER_API_VERSION"] != "2024-02-01" {
+		t.Errorf("API_VERSION = %q", env["LIGHTSPEED_PROVIDER_API_VERSION"])
 	}
 }
 
-func TestPodSpecBuilder_Bedrock(t *testing.T) {
-	builder := PodSpecBuilder{Image: "quay.io/lightspeed/agent:latest"}
-	agent := &agenticv1alpha1.Agent{Spec: agenticv1alpha1.AgentSpec{Model: "anthropic.claude-3-opus-20240229-v1:0"}}
+func TestBuild_Bedrock(t *testing.T) {
+	b := &PodSpecBuilder{}
+	agent := &agenticv1alpha1.Agent{Spec: agenticv1alpha1.AgentSpec{Model: "claude-v3"}}
 	llm := testLLMProvider(agenticv1alpha1.LLMProviderAWSBedrock)
 
-	podSpec, err := builder.Build(agent, llm, nil, "analysis", defaultSandboxSA)
+	ps, err := b.Build(testBasePodSpec(), agent, llm, nil, nil, "analysis", "uid", "sa")
 	if err != nil {
-		t.Fatalf("Build failed: %v", err)
+		t.Fatalf("Build: %v", err)
 	}
-
-	container := podSpec.Containers[0]
-	envMap := envToMap(container.Env)
-	if envMap["LIGHTSPEED_PROVIDER"] != "bedrock" {
-		t.Errorf("LIGHTSPEED_PROVIDER = %q, want bedrock", envMap["LIGHTSPEED_PROVIDER"])
+	env := envToMap(ps.Containers[0].Env)
+	if env["LIGHTSPEED_PROVIDER"] != "bedrock" {
+		t.Errorf("PROVIDER = %q", env["LIGHTSPEED_PROVIDER"])
 	}
-	if envMap["LIGHTSPEED_PROVIDER_REGION"] != "us-east-1" {
-		t.Errorf("LIGHTSPEED_PROVIDER_REGION = %q, want us-east-1", envMap["LIGHTSPEED_PROVIDER_REGION"])
+	if env["LIGHTSPEED_PROVIDER_REGION"] != "us-east-1" {
+		t.Errorf("REGION = %q", env["LIGHTSPEED_PROVIDER_REGION"])
 	}
 }
 
-func TestPodSpecBuilder_OpenAI(t *testing.T) {
-	builder := PodSpecBuilder{Image: "quay.io/lightspeed/agent:latest"}
+func TestBuild_OpenAI(t *testing.T) {
+	b := &PodSpecBuilder{}
 	agent := &agenticv1alpha1.Agent{Spec: agenticv1alpha1.AgentSpec{Model: "gpt-4o"}}
 	llm := testLLMProviderWithURL(agenticv1alpha1.LLMProviderOpenAI, "https://api.example.com")
 
-	podSpec, err := builder.Build(agent, llm, nil, "analysis", defaultSandboxSA)
+	ps, err := b.Build(testBasePodSpec(), agent, llm, nil, nil, "analysis", "uid", "sa")
 	if err != nil {
-		t.Fatalf("Build failed: %v", err)
+		t.Fatalf("Build: %v", err)
 	}
-
-	container := podSpec.Containers[0]
-	envMap := envToMap(container.Env)
-	if envMap["LIGHTSPEED_PROVIDER"] != "openai" {
-		t.Errorf("LIGHTSPEED_PROVIDER = %q, want openai", envMap["LIGHTSPEED_PROVIDER"])
+	env := envToMap(ps.Containers[0].Env)
+	if env["LIGHTSPEED_PROVIDER"] != "openai" {
+		t.Errorf("PROVIDER = %q", env["LIGHTSPEED_PROVIDER"])
 	}
-	if envMap["LIGHTSPEED_PROVIDER_URL"] != "https://api.example.com" {
-		t.Errorf("LIGHTSPEED_PROVIDER_URL = %q", envMap["LIGHTSPEED_PROVIDER_URL"])
+	if env["LIGHTSPEED_PROVIDER_URL"] != "https://api.example.com" {
+		t.Errorf("URL = %q", env["LIGHTSPEED_PROVIDER_URL"])
 	}
 }
 
-func TestPodSpecBuilder_NilAgent(t *testing.T) {
-	builder := PodSpecBuilder{Image: "quay.io/lightspeed/agent:latest"}
-	llm := testLLMProvider(agenticv1alpha1.LLMProviderAnthropic)
-
-	_, err := builder.Build(nil, llm, nil, "analysis", defaultSandboxSA)
-	if err == nil {
-		t.Fatal("expected error when agent is nil")
-	}
-	if err.Error() != "agent is required" {
-		t.Errorf("error = %q, want 'agent is required'", err.Error())
-	}
-}
-
-func TestPodSpecBuilder_NilLLM(t *testing.T) {
-	builder := PodSpecBuilder{Image: "quay.io/lightspeed/agent:latest"}
-	agent := &agenticv1alpha1.Agent{Spec: agenticv1alpha1.AgentSpec{Model: "claude-opus-4-6"}}
-
-	_, err := builder.Build(agent, nil, nil, "analysis", defaultSandboxSA)
-	if err == nil {
-		t.Fatal("expected error when LLM is nil")
-	}
-	if err.Error() != "LLMProvider is required" {
-		t.Errorf("error = %q, want 'LLMProvider is required'", err.Error())
-	}
-}
-
-func TestPodSpecBuilder_Skills(t *testing.T) {
-	builder := PodSpecBuilder{Image: "quay.io/lightspeed/agent:latest"}
-	agent := &agenticv1alpha1.Agent{Spec: agenticv1alpha1.AgentSpec{Model: "claude-opus-4-6"}}
-	llm := testLLMProvider(agenticv1alpha1.LLMProviderAnthropic)
-	tools := &agenticv1alpha1.ToolsSpec{
-		Skills: []agenticv1alpha1.SkillsSource{
-			{Image: "quay.io/lightspeed/skills:latest"},
-		},
-	}
-
-	podSpec, err := builder.Build(agent, llm, tools, "analysis", defaultSandboxSA)
-	if err != nil {
-		t.Fatalf("Build failed: %v", err)
-	}
-
-	foundVolume := false
-	foundWorkdirVolume := false
-	for _, v := range podSpec.Volumes {
-		if v.Name == "skills" {
-			foundVolume = true
-			if v.Image == nil {
-				t.Fatal("skills volume image source is nil")
-			}
-			if v.Image.Reference != "quay.io/lightspeed/skills:latest" {
-				t.Errorf("skills image = %q, want quay.io/lightspeed/skills:latest", v.Image.Reference)
-			}
-			if v.Image.PullPolicy != corev1.PullAlways {
-				t.Errorf("skills pullPolicy = %v, want PullAlways", v.Image.PullPolicy)
-			}
-		}
-		if v.Name == "skills-workdir" {
-			foundWorkdirVolume = true
-			if v.EmptyDir == nil {
-				t.Fatal("skills-workdir volume should be emptyDir")
-			}
-		}
-	}
-	if !foundVolume {
-		t.Error("missing skills volume")
-	}
-	if !foundWorkdirVolume {
-		t.Error("missing skills-workdir volume")
-	}
-
-	container := podSpec.Containers[0]
-	foundWorkdirMount := false
-	for _, m := range container.VolumeMounts {
-		if m.Name == "skills-workdir" && m.MountPath == "/app/skills/.agents" {
-			foundWorkdirMount = true
-			if m.ReadOnly {
-				t.Error("skills-workdir mount should be writable")
-			}
-		}
-	}
-	if !foundWorkdirMount {
-		t.Error("missing skills-workdir mount at /app/skills/.agents")
-	}
-}
-
-func TestPodSpecBuilder_SkillsWithPaths(t *testing.T) {
-	builder := PodSpecBuilder{Image: "quay.io/lightspeed/agent:latest"}
-	agent := &agenticv1alpha1.Agent{Spec: agenticv1alpha1.AgentSpec{Model: "claude-opus-4-6"}}
-	llm := testLLMProvider(agenticv1alpha1.LLMProviderAnthropic)
-	tools := &agenticv1alpha1.ToolsSpec{
-		Skills: []agenticv1alpha1.SkillsSource{
-			{
-				Image: "quay.io/lightspeed/skills:latest",
-				Paths: []string{"/skills/search.md", "/skills/analyze.md"},
-			},
-		},
-	}
-
-	podSpec, err := builder.Build(agent, llm, tools, "analysis", defaultSandboxSA)
-	if err != nil {
-		t.Fatalf("Build failed: %v", err)
-	}
-
-	container := podSpec.Containers[0]
-	if len(container.VolumeMounts) < 2 {
-		t.Fatalf("expected at least 2 volume mounts, got %d", len(container.VolumeMounts))
-	}
-
-	foundSearch := false
-	foundAnalyze := false
-	foundWorkdirMount := false
-	for _, m := range container.VolumeMounts {
-		if m.Name == "skills" {
-			if m.MountPath == "/app/skills/search.md" && m.SubPath == "skills/search.md" {
-				foundSearch = true
-			}
-			if m.MountPath == "/app/skills/analyze.md" && m.SubPath == "skills/analyze.md" {
-				foundAnalyze = true
-			}
-			if !m.ReadOnly {
-				t.Error("skills mount should be readOnly")
-			}
-		}
-		if m.Name == "skills-workdir" && m.MountPath == "/app/skills/.agents" {
-			foundWorkdirMount = true
-			if m.ReadOnly {
-				t.Error("skills-workdir mount should be writable")
-			}
-		}
-	}
-	if !foundSearch {
-		t.Error("missing search.md skill mount")
-	}
-	if !foundAnalyze {
-		t.Error("missing analyze.md skill mount")
-	}
-	if !foundWorkdirMount {
-		t.Error("missing skills-workdir mount at /app/skills/.agents")
-	}
-
-	foundWorkdirVolume := false
-	for _, v := range podSpec.Volumes {
-		if v.Name == "skills-workdir" {
-			foundWorkdirVolume = true
-			if v.EmptyDir == nil {
-				t.Fatal("skills-workdir volume should be emptyDir")
-			}
-		}
-	}
-	if !foundWorkdirVolume {
-		t.Error("missing skills-workdir volume")
-	}
-}
-
-func TestPodSpecBuilder_RequiredSecrets_EnvVar(t *testing.T) {
-	builder := PodSpecBuilder{Image: "quay.io/lightspeed/agent:latest"}
-	agent := &agenticv1alpha1.Agent{Spec: agenticv1alpha1.AgentSpec{Model: "claude-opus-4-6"}}
-	llm := testLLMProvider(agenticv1alpha1.LLMProviderAnthropic)
-	tools := &agenticv1alpha1.ToolsSpec{
-		RequiredSecrets: []agenticv1alpha1.SecretRequirement{
-			{
-				Name: "github-token",
-				MountAs: agenticv1alpha1.SecretMountSpec{
-					Type: agenticv1alpha1.SecretMountEnvVar,
-					EnvVar: agenticv1alpha1.SecretMountEnvVarConfig{
-						Name: "GITHUB_TOKEN",
-					},
-				},
-			},
-		},
-	}
-
-	podSpec, err := builder.Build(agent, llm, tools, "analysis", defaultSandboxSA)
-	if err != nil {
-		t.Fatalf("Build failed: %v", err)
-	}
-
-	container := podSpec.Containers[0]
-	foundEnv := false
-	for _, e := range container.Env {
-		if e.Name == "GITHUB_TOKEN" {
-			foundEnv = true
-			if e.ValueFrom == nil {
-				t.Fatal("env var valueFrom is nil")
-			}
-			if e.ValueFrom.SecretKeyRef == nil {
-				t.Fatal("env var secretKeyRef is nil")
-			}
-			if e.ValueFrom.SecretKeyRef.Name != "github-token" {
-				t.Errorf("secretKeyRef name = %q, want github-token", e.ValueFrom.SecretKeyRef.Name)
-			}
-			if e.ValueFrom.SecretKeyRef.Key != "token" {
-				t.Errorf("secretKeyRef key = %q, want token", e.ValueFrom.SecretKeyRef.Key)
-			}
-			break
-		}
-	}
-	if !foundEnv {
-		t.Error("missing GITHUB_TOKEN env var")
-	}
-}
-
-func TestPodSpecBuilder_RequiredSecrets_FileMount(t *testing.T) {
-	builder := PodSpecBuilder{Image: "quay.io/lightspeed/agent:latest"}
-	agent := &agenticv1alpha1.Agent{Spec: agenticv1alpha1.AgentSpec{Model: "claude-opus-4-6"}}
-	llm := testLLMProvider(agenticv1alpha1.LLMProviderAnthropic)
-	tools := &agenticv1alpha1.ToolsSpec{
-		RequiredSecrets: []agenticv1alpha1.SecretRequirement{
-			{
-				Name: "kubeconfig",
-				MountAs: agenticv1alpha1.SecretMountSpec{
-					Type: agenticv1alpha1.SecretMountFilePath,
-					FilePath: agenticv1alpha1.SecretMountFilePathConfig{
-						Path: "/etc/kubeconfig",
-					},
-				},
-			},
-		},
-	}
-
-	podSpec, err := builder.Build(agent, llm, tools, "analysis", defaultSandboxSA)
-	if err != nil {
-		t.Fatalf("Build failed: %v", err)
-	}
-
-	foundVolume := false
-	for _, v := range podSpec.Volumes {
-		if v.Name == "req-kubeconfig" {
-			foundVolume = true
-			if v.Secret == nil {
-				t.Fatal("volume secret source is nil")
-			}
-			if v.Secret.SecretName != "kubeconfig" {
-				t.Errorf("secret name = %q, want kubeconfig", v.Secret.SecretName)
-			}
-			break
-		}
-	}
-	if !foundVolume {
-		t.Error("missing req-kubeconfig volume")
-	}
-
-	container := podSpec.Containers[0]
-	foundMount := false
-	for _, m := range container.VolumeMounts {
-		if m.Name == "req-kubeconfig" && m.MountPath == "/etc/kubeconfig" {
-			foundMount = true
-			if !m.ReadOnly {
-				t.Error("required secret mount should be readOnly")
-			}
-			break
-		}
-	}
-	if !foundMount {
-		t.Error("missing /etc/kubeconfig mount")
-	}
-}
-
-func TestPodSpecBuilder_ReasoningConfig_Present(t *testing.T) {
-	builder := PodSpecBuilder{Image: "quay.io/lightspeed/agent:latest"}
+func TestBuild_ReasoningConfig(t *testing.T) {
+	b := &PodSpecBuilder{}
 	agent := &agenticv1alpha1.Agent{
 		Spec: agenticv1alpha1.AgentSpec{
 			Model: "claude-opus-4-6",
 			ReasoningConfig: map[string]apiextensionsv1.JSON{
 				"thinking": {Raw: []byte(`"enabled"`)},
-				"effort":   {Raw: []byte(`"high"`)},
+				"budget":   {Raw: []byte(`4096`)},
 			},
 		},
 	}
 	llm := testLLMProvider(agenticv1alpha1.LLMProviderAnthropic)
 
-	podSpec, err := builder.Build(agent, llm, nil, "analysis", defaultSandboxSA)
+	ps, err := b.Build(testBasePodSpec(), agent, llm, nil, nil, "analysis", "uid", "sa")
 	if err != nil {
-		t.Fatalf("Build failed: %v", err)
+		t.Fatalf("Build: %v", err)
 	}
-
-	container := podSpec.Containers[0]
-	envMap := envToMap(container.Env)
-	raw, ok := envMap["LIGHTSPEED_REASONING_CONFIG"]
+	env := envToMap(ps.Containers[0].Env)
+	raw, ok := env["LIGHTSPEED_REASONING_CONFIG"]
 	if !ok {
-		t.Fatal("LIGHTSPEED_REASONING_CONFIG env var not set")
+		t.Fatal("LIGHTSPEED_REASONING_CONFIG not set")
 	}
-
 	var parsed map[string]json.RawMessage
 	if err := json.Unmarshal([]byte(raw), &parsed); err != nil {
-		t.Fatalf("LIGHTSPEED_REASONING_CONFIG is not valid JSON: %v", err)
+		t.Fatalf("not valid JSON: %v", err)
 	}
 	if string(parsed["thinking"]) != `"enabled"` {
-		t.Errorf("thinking = %s, want \"enabled\"", parsed["thinking"])
-	}
-	if string(parsed["effort"]) != `"high"` {
-		t.Errorf("effort = %s, want \"high\"", parsed["effort"])
+		t.Errorf("thinking = %s", parsed["thinking"])
 	}
 }
 
-func TestPodSpecBuilder_ReasoningConfig_Absent(t *testing.T) {
-	builder := PodSpecBuilder{Image: "quay.io/lightspeed/agent:latest"}
-	agent := &agenticv1alpha1.Agent{
-		Spec: agenticv1alpha1.AgentSpec{
-			Model: "claude-opus-4-6",
-		},
-	}
+func TestBuild_NoReasoningConfig(t *testing.T) {
+	b := &PodSpecBuilder{}
+	agent := &agenticv1alpha1.Agent{Spec: agenticv1alpha1.AgentSpec{Model: "m"}}
 	llm := testLLMProvider(agenticv1alpha1.LLMProviderAnthropic)
 
-	podSpec, err := builder.Build(agent, llm, nil, "analysis", defaultSandboxSA)
+	ps, err := b.Build(testBasePodSpec(), agent, llm, nil, nil, "analysis", "uid", "sa")
 	if err != nil {
-		t.Fatalf("Build failed: %v", err)
+		t.Fatalf("Build: %v", err)
+	}
+	env := envToMap(ps.Containers[0].Env)
+	if _, ok := env["LIGHTSPEED_REASONING_CONFIG"]; ok {
+		t.Error("LIGHTSPEED_REASONING_CONFIG should not be set when absent")
+	}
+}
+
+func TestBuild_CredentialsSecretMounted(t *testing.T) {
+	b := &PodSpecBuilder{}
+	agent := &agenticv1alpha1.Agent{Spec: agenticv1alpha1.AgentSpec{Model: "m"}}
+	llm := testLLMProvider(agenticv1alpha1.LLMProviderAnthropic)
+
+	ps, err := b.Build(testBasePodSpec(), agent, llm, nil, nil, "analysis", "uid", "sa")
+	if err != nil {
+		t.Fatalf("Build: %v", err)
 	}
 
-	container := podSpec.Containers[0]
-	envMap := envToMap(container.Env)
-	if _, ok := envMap["LIGHTSPEED_REASONING_CONFIG"]; ok {
-		t.Error("LIGHTSPEED_REASONING_CONFIG should not be set when reasoningConfig is absent")
+	// EnvFrom should reference the credentials secret
+	found := false
+	for _, ef := range ps.Containers[0].EnvFrom {
+		if ef.SecretRef != nil && ef.SecretRef.Name == "my-llm-secret" {
+			found = true
+		}
+	}
+	if !found {
+		t.Error("credentials secret not in envFrom")
+	}
+
+	// Volume mount at llmCredsMountPath
+	foundMount := false
+	for _, m := range ps.Containers[0].VolumeMounts {
+		if m.Name == llmCredsVolumeName && m.MountPath == llmCredsMountPath && m.ReadOnly {
+			foundMount = true
+		}
+	}
+	if !foundMount {
+		t.Errorf("credentials volume not mounted at %s", llmCredsMountPath)
 	}
 }

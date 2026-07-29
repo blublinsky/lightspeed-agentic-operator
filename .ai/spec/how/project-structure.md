@@ -9,10 +9,11 @@
 | `api/v1alpha1/` | `AgenticRun`, `Agent`, `LLMProvider`, `ApprovalPolicy`, `AgenticRunApproval`, result types, `DerivePhase` | CRD type definitions, phase derivation, CEL markers, deepcopy |
 | `cmd/main.go` | `main`, `scheme` | Operator binary entry point |
 | `cmd/oc-agentic/main.go` | `main` | CLI binary entry point |
-| `controller/setup.go` | `Setup`, `Options` | Wires run controller + console plugin into manager |
-| `controller/agenticrun/` | `AgenticRunReconciler`, `SandboxAgentCaller`, `SandboxManager` | AgenticRun reconciler, sandbox management, agent HTTP client, RBAC, results, templates |
+| `controller/agenticrun/` | `AgenticRunReconciler`, `SandboxAgentCaller`, `SandboxManager`, `SandboxLifecycle`, `PodSpecBuilder` | AgenticRun reconciler, unified sandbox management, agent HTTP client, RBAC, results |
 | `controller/console/` | `EnsureAgenticConsole`, `AgenticConsoleConfig` | Console plugin deployment (Deployment, Service, ConfigMap, ConsolePlugin CR) |
-| `controller/sandbox/` | `EnsureBaseSandboxTemplate`, `BaseSandboxConfig` | Bootstrap base SandboxTemplate + ServiceAccount at startup |
+| `controller/sandbox/` | Legacy bootstrap helpers | SA creation inlined into `cmd/main.go` |
+| `pkg/configuration/` | `Config`, `Cache`, `OnConfigMapChange` | ConfigMap-driven config cache (sandbox mode, PodSpec, OTEL, MCP) |
+| `pkg/configwatch/` | `Watcher`, `TryLoad` | Generic ConfigMap watcher utility |
 | `cli/` | `NewRootCmd` | CLI root command |
 | `cli/run/` | `CreateOptions`, `ListOptions`, `GetOptions`, `ApproveOptions`, `DenyOptions`, `WatchOptions`, `LogsOptions`, `DeleteOptions` | CLI subcommands for run lifecycle operations |
 | `config/crd/bases/` | Generated YAML | CRD manifests (regenerate with `make manifests`) |
@@ -28,20 +29,22 @@
 ## Key Entry Points
 
 **Operator binary** (`cmd/main.go`):
-- Parses flags (`--namespace`, `--metrics-bind-address`, `--health-probe-bind-address`, `--agentic-console-image`, `--agentic-sandbox-image`)
-- Builds controller-runtime `Manager` with scheme (core + `agenticv1alpha1` + OpenShift console/operator)
-- Calls `controller.Setup(mgr, opts)` which registers run controller and console runnable
+- Parses flags (`--namespace`, `--metrics-bind-address`, `--health-probe-bind-address`, `--agentic-console-image`)
+- Creates `configuration.Cache` and registers ConfigMap watcher for `lightspeed-agentic-configuration`
+- Wires `SandboxManager` → `SandboxAgentCaller` → `AgenticRunReconciler` directly (no `controller/setup.go`)
+- Ensures `lightspeed-agent` ServiceAccount unconditionally
+- Registers console plugin, health/readiness probes, and webhook
 - Starts manager with signal handler
 
 **CLI binary** (`cmd/oc-agentic/main.go`):
 - Builds `genericclioptions.IOStreams` from stdin/stdout/stderr
 - Executes `cli.NewRootCmd(streams)` (Cobra)
 
-**Controller setup** (`controller/setup.go`):
-- Creates `SandboxManager` and `SandboxAgentCaller` with dependency injection
+**Controller setup** (inlined in `cmd/main.go`):
+- Creates `SandboxManager(client, cfgCache, namespace)` and `SandboxAgentCaller` with dependency injection
 - Registers `AgenticRunReconciler` via `SetupWithManager`
 - Registers `EnsureAgenticConsole` as a `RunnableFunc`
-- Registers `EnsureBaseSandboxTemplate` as a `RunnableFunc`
+- Registers `lightspeed-agent` SA creation as a `RunnableFunc`
 
 ## Naming Conventions
 

@@ -4,8 +4,8 @@ import (
 	"context"
 	"fmt"
 	"strconv"
-	"strings"
 
+	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	ctrl "sigs.k8s.io/controller-runtime"
@@ -16,6 +16,7 @@ import (
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 
 	agenticv1alpha1 "github.com/openshift/lightspeed-agentic-operator/api/v1alpha1"
+	"github.com/openshift/lightspeed-agentic-operator/pkg/configuration"
 )
 
 const (
@@ -36,6 +37,7 @@ type TempLogCleaner interface {
 type AgenticRunReconciler struct {
 	client.Client
 	Agent     AgentCaller
+	Config    *configuration.Cache
 	Namespace string
 	Audit     AuditLogger
 	TempLog   TempLogCleaner
@@ -57,6 +59,8 @@ type AgenticRunReconciler struct {
 // +kubebuilder:rbac:groups=rbac.authorization.k8s.io,resources=roles;rolebindings,verbs=get;create;delete
 // +kubebuilder:rbac:groups=rbac.authorization.k8s.io,resources=clusterroles;clusterrolebindings,verbs=get;list;create;update;delete
 // +kubebuilder:rbac:groups=agentic.openshift.io,resources=agenticolsconfigs,verbs=get;list;watch
+// +kubebuilder:rbac:groups="",resources=configmaps,verbs=get;list;watch
+// +kubebuilder:rbac:groups="",resources=secrets,verbs=get;list;watch
 
 func (r *AgenticRunReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	log := logf.FromContext(ctx)
@@ -146,6 +150,12 @@ func (r *AgenticRunReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 		if !(run.Spec.Execution.IsZero() && needsRevision(&run)) {
 			return r.handleFailed(ctx, &run)
 		}
+	}
+
+	// --- Configuration guard (wait for lightspeed-agentic-configuration ConfigMap) ---
+	if r.Config != nil && !r.Config.Available() {
+		log.Info("operator configuration not yet available, skipping")
+		return ctrl.Result{}, nil
 	}
 
 	// --- Suspension guard (non-terminal runs and advisory-only Completed runs needing revision reach here) ---
@@ -240,6 +250,20 @@ func (r *AgenticRunReconciler) SetupWithManager(mgr ctrl.Manager) error {
 			maxConcurrent = int(ap.Spec.MaxConcurrentRuns)
 		}
 	}
+	fanOutToActiveRuns := func(ctx context.Context, _ client.Object) []ctrl.Request {
+		var runs agenticv1alpha1.AgenticRunList
+		if err := r.List(ctx, &runs); err != nil {
+			return nil
+		}
+		var reqs []ctrl.Request
+		for _, p := range runs.Items {
+			if !isTerminal(agenticv1alpha1.DerivePhase(p.Status.Conditions)) {
+				reqs = append(reqs, ctrl.Request{NamespacedName: client.ObjectKeyFromObject(&p)})
+			}
+		}
+		return reqs
+	}
+
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&agenticv1alpha1.AgenticRun{}).
 		Owns(&agenticv1alpha1.AgenticRunApproval{}).
@@ -247,40 +271,14 @@ func (r *AgenticRunReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		Owns(&agenticv1alpha1.ExecutionResult{}).
 		Owns(&agenticv1alpha1.VerificationResult{}).
 		Owns(&agenticv1alpha1.EscalationResult{}).
-		Watches(&agenticv1alpha1.ApprovalPolicy{}, handler.EnqueueRequestsFromMapFunc(
+		Watches(&agenticv1alpha1.ApprovalPolicy{}, handler.EnqueueRequestsFromMapFunc(fanOutToActiveRuns)).
+		Watches(&agenticv1alpha1.AgenticOLSConfig{}, handler.EnqueueRequestsFromMapFunc(fanOutToActiveRuns)).
+		Watches(&corev1.ConfigMap{}, handler.EnqueueRequestsFromMapFunc(
 			func(ctx context.Context, obj client.Object) []ctrl.Request {
-				var runs agenticv1alpha1.AgenticRunList
-				if err := r.List(ctx, &runs); err != nil {
+				if obj.GetNamespace() != r.Namespace || obj.GetName() != configuration.ConfigMapName {
 					return nil
 				}
-				var reqs []ctrl.Request
-				for _, p := range runs.Items {
-					phase := agenticv1alpha1.DerivePhase(p.Status.Conditions)
-					if !isTerminal(phase) {
-						reqs = append(reqs, ctrl.Request{
-							NamespacedName: client.ObjectKeyFromObject(&p),
-						})
-					}
-				}
-				return reqs
-			},
-		)).
-		Watches(&agenticv1alpha1.AgenticOLSConfig{}, handler.EnqueueRequestsFromMapFunc(
-			func(ctx context.Context, obj client.Object) []ctrl.Request {
-				var runs agenticv1alpha1.AgenticRunList
-				if err := r.List(ctx, &runs); err != nil {
-					return nil
-				}
-				var reqs []ctrl.Request
-				for _, p := range runs.Items {
-					phase := agenticv1alpha1.DerivePhase(p.Status.Conditions)
-					if !isTerminal(phase) {
-						reqs = append(reqs, ctrl.Request{
-							NamespacedName: client.ObjectKeyFromObject(&p),
-						})
-					}
-				}
-				return reqs
+				return fanOutToActiveRuns(ctx, obj)
 			},
 		)).
 		Named("agenticrun").
@@ -307,8 +305,7 @@ func (r *AgenticRunReconciler) handleTemplogCleanup(ctx context.Context, run *ag
 	}
 
 	if r.TempLog != nil && attempts < templogMaxCleanupAttempts {
-		traceID := strings.ReplaceAll(string(run.UID), "-", "")
-		if err := r.TempLog.DeleteLogs(ctx, traceID); err != nil {
+		if err := r.TempLog.DeleteLogs(ctx, string(run.UID)); err != nil {
 			log.Error(err, "templog cleanup failed, will retry", "attempt", attempts+1, "max", templogMaxCleanupAttempts)
 			original := run.DeepCopy()
 			if run.Annotations == nil {
@@ -322,7 +319,7 @@ func (r *AgenticRunReconciler) handleTemplogCleanup(ctx context.Context, run *ag
 		}
 	} else if attempts >= templogMaxCleanupAttempts {
 		log.Info("templog cleanup exhausted retries, removing finalizer with orphaned logs",
-			"traceID", strings.ReplaceAll(string(run.UID), "-", ""))
+			"agenticRunID", string(run.UID))
 	}
 
 	original := run.DeepCopy()
