@@ -88,7 +88,7 @@ Audience: AI agents. Behavioral rules and phase semantics live in **what/** spec
 8. **Shared prelude:** `getApprovalPolicy` (cluster singleton name `cluster`), `ensureAgenticRunApproval`, `resolveAgenticRun`. Resolution failure → set `AgenticRunConditionAnalyzed=False` with `reasonWorkflowFailed`, status patch, return (no requeue).
 9. **Phase switch:** Routes to `handleRevision` (if `needsRevision`) before analysis/execution/escalation arms; otherwise `handleAnalysis`, `handleExecution`, `handleVerification`, `handleEscalation`, or no-op.
 10. **Handlers** set step conditions (`Unknown` → agent call → `True`/`False`), create result CRs, append `Status.Steps.*.Results`, `statusPatch` proposal.
-11. **Agent path:** All agent steps go through `r.Agent.*` which (in production) is `SandboxAgentCaller`: `callWithSandbox` calls `Sandbox.Create` (reads config cache, builds PodSpec via `PodSpecBuilder`, creates bare Pod or SandboxClaim+Template based on mode, encodes mode in name prefix `p-`/`s-`) → `patchSandboxInfo` on proposal → `Sandbox.WaitReady` (routes by name prefix) → normalize URL → `outputSchemaForStep` → `ClientFactory(endpoint).Run` → JSON unmarshal into outputs.
+11. **Agent path:** All agent steps go through `r.Agent.*` which (in production) is `SandboxAgentCaller`: `callWithSandbox` calls `Sandbox.Create` (reads config cache, builds PodSpec via `PodSpecBuilder`, creates bare Pod or SandboxClaim+Template based on mode, name pattern `ls-{step}-{run}`) → `patchSandboxInfo` on proposal → `Sandbox.WaitReady` (routes by `cfg.Sandbox.Mode`) → normalize URL → `outputSchemaForStep` → `ClientFactory(endpoint).Run` → JSON unmarshal into outputs.
 
 ---
 
@@ -105,9 +105,9 @@ Audience: AI agents. Behavioral rules and phase semantics live in **what/** spec
 
 Unified sandbox lifecycle manager. Decides bare-pod vs sandbox-claim mode based on the configuration cache.
 
-- **`Create`:** Reads base PodSpec from config cache, overlays agent config via `PodSpecBuilder.Build`, then creates either a bare Pod (`p-` prefix) or SandboxClaim+SandboxTemplate (`s-` prefix). Mode is encoded in the resource name prefix to prevent TOCTOU races. Name pattern `{prefix}{step}-{run}` truncated to 63 chars (body truncated to 61 to leave room for prefix). Both paths set OwnerReferences to the AgenticRun. Idempotent via `AlreadyExists`.
-- **`WaitReady`:** Routes by name prefix. For `p-`: polls Pod conditions until `Ready=True`, returns `status.podIP`. For `s-`: polls claim → `status.sandbox.name` → Sandbox `Ready=True` → `status.serviceFQDN`. Treats NotFound/terminating as terminal errors.
-- **`Release`:** Routes by name prefix. For `p-`: deletes Pod. For `s-`: deletes both SandboxClaim and SandboxTemplate (same name). Idempotent (NotFound ignored).
+- **`Create`:** Reads base PodSpec from config cache, overlays agent config via `PodSpecBuilder.Build`, then creates either a bare Pod or SandboxClaim+SandboxTemplate. Name pattern `ls-{step}-{run}` truncated to 63 chars — both modes use the same `ls-` prefix. Both paths set OwnerReferences to the AgenticRun. Idempotent via `AlreadyExists`.
+- **`WaitReady`:** Routes by `cfg.Sandbox.Mode`. For bare-pod: polls Pod conditions until `Ready=True`, returns `status.podIP`. For sandbox-claim: polls claim → `status.sandbox.name` → Sandbox `Ready=True` → `status.serviceFQDN`. Treats NotFound/terminating as terminal errors.
+- **`Release`:** Routes by `cfg.Sandbox.Mode`. For bare-pod: deletes Pod. For sandbox-claim: deletes both SandboxClaim and SandboxTemplate (same name). Idempotent (NotFound ignored).
 
 ### `PodSpecBuilder` (internal to `SandboxManager`)
 
@@ -167,7 +167,7 @@ Unified sandbox lifecycle manager. Decides bare-pod vs sandbox-claim mode based 
 ## Key abstractions
 
 - **`AgentCaller`:** Boundary between reconciler and runtime (stub vs sandbox+HTTP). Methods mirror workflow steps plus `ReleaseSandboxes`.
-- **`SandboxLifecycle`:** Interface (`Create`/`WaitReady`/`Release`) for swappable sandbox management (tests can fake). Production implementation: `SandboxManager`. Mode is encoded in the resource name prefix (`p-`/`s-`), so `WaitReady` and `Release` never consult the config — no TOCTOU race.
+- **`SandboxLifecycle`:** Interface (`Create`/`WaitReady`/`Release`) for swappable sandbox management (tests can fake). Production implementation: `SandboxManager`. All resources use the `ls-` name prefix; `WaitReady` and `Release` dispatch by reading `cfg.Sandbox.Mode` from the config cache.
 - **`PodSpecBuilder`:** Internal to `SandboxManager`. Takes base `*corev1.PodSpec` from config cache and overlays agent config. Produces typed `corev1.PodSpec`; the mode then determines delivery (bare Pod or SandboxTemplate conversion).
 - **`resolveAgenticRun`:** Produces `resolvedWorkflow` with cached `Agent` + `LLMProvider` per name; applies per-stage agent overrides from `AgenticRunApproval` via `getStageOverrideAgent`; `Execution`/`Verification` steps nil when corresponding spec sections are zero.
 
@@ -190,9 +190,9 @@ AgenticRunReconciler.Reconcile
   ├─ approval.go, resolve.go
   ├─ handlers.go → results.go, rbac.go, helpers.go (status, option trim)
   └─ Agent (SandboxAgentCaller)
-        └─ Sandbox.Create → config cache → PodSpecBuilder.Build → bare Pod / SandboxClaim+Template
-        └─ Sandbox.WaitReady (routes by name prefix p-/s-)
-        └─ Sandbox.Release (routes by name prefix)
+        └─ Sandbox.Create → config cache → PodSpecBuilder.Build → bare Pod / SandboxClaim+Template (ls- prefix)
+        └─ Sandbox.WaitReady (routes by cfg.Sandbox.Mode)
+        └─ Sandbox.Release (routes by cfg.Sandbox.Mode)
         └─ helpers.go (query templates), schemas.go (outputSchemaForStep)
         └─ client.go (HTTP Run)
 ```
