@@ -5,19 +5,27 @@
 #
 # Usage:
 #   bash hack/quickstart/deploy-console.sh
+#   bash hack/quickstart/deploy-console.sh --image=quay.io/my-org/my-console:tag
 #
 # Prerequisites:
 #   - oc CLI on PATH, logged into an OpenShift 4.22+ cluster
-#   - Namespace exists (NAMESPACE env var, default: openshift-lightspeed)
+#   - Namespace openshift-lightspeed exists
 #
-# Environment variables:
-#   NAMESPACE      (default: openshift-lightspeed)
-#   CONSOLE_IMAGE  (default: quay.io/redhat-user-workloads/crt-nshift-lightspeed-tenant/lightspeed-agentic-console:main)
+# Flags:
+#   --image=IMAGE   Console plugin image (default: Konflux :main)
 
 set -euo pipefail
 
 NAMESPACE="${NAMESPACE:-openshift-lightspeed}"
-CONSOLE_IMAGE="${CONSOLE_IMAGE:-quay.io/redhat-user-workloads/crt-nshift-lightspeed-tenant/lightspeed-agentic-console:main}"
+CONSOLE_IMAGE="quay.io/redhat-user-workloads/crt-nshift-lightspeed-tenant/lightspeed-agentic-console:main"
+
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --image=*) CONSOLE_IMAGE="${1#*=}"; shift ;;
+    --image)   [ $# -lt 2 ] && { echo "Missing value for $1" >&2; exit 1; }; CONSOLE_IMAGE="$2"; shift 2 ;;
+    *) echo "Unknown flag: $1" >&2; exit 1 ;;
+  esac
+done
 
 PLUGIN_NAME="lightspeed-agentic-console-plugin"
 PLUGIN_PORT=9443
@@ -28,11 +36,6 @@ step()  { echo "[console] $*"; }
 
 step "Deploying agentic console plugin to ${NAMESPACE}"
 step "Image: ${CONSOLE_IMAGE}"
-
-if [ -z "${CONSOLE_IMAGE}" ]; then
-  echo "  CONSOLE_IMAGE is empty — skipping console deployment"
-  exit 0
-fi
 
 oc apply -f - <<EOF
 apiVersion: v1
@@ -178,13 +181,11 @@ EOF
 
 info "Console plugin resources applied"
 
-# Activate the plugin on the OpenShift Console
 step "Activating console plugin"
 existing_plugins="$(oc get console.operator.openshift.io cluster -o jsonpath='{.spec.plugins[*]}' 2>/dev/null || echo "")"
 if echo " ${existing_plugins} " | grep -q " ${PLUGIN_NAME} "; then
   info "Plugin already registered — skipping"
 else
-  # Try appending to existing list; fall back to creating the list if spec.plugins is null
   if ! oc patch console.operator.openshift.io cluster --type=json \
     -p "[{\"op\": \"add\", \"path\": \"/spec/plugins/-\", \"value\": \"${PLUGIN_NAME}\"}]" 2>/dev/null; then
     oc patch console.operator.openshift.io cluster --type=json \
@@ -192,6 +193,9 @@ else
   fi
   info "Console plugin activated"
 fi
+
+step "Waiting for rollout..."
+oc rollout status deployment/${PLUGIN_NAME} -n "${NAMESPACE}" --timeout=120s
 
 info "Console plugin deployed successfully"
 info "Note: Console plugin requires OpenShift 4.22+"

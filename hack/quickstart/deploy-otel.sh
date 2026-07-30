@@ -1,0 +1,384 @@
+#!/usr/bin/env bash
+#
+# Deploy the OTEL collector for quickstart.
+#
+# By default, accepts OTLP gRPC/HTTP and drops all data (nop exporter).
+# With --postgres, deploys a Postgres instance and routes agentic logs
+# to it for the console audit UI.
+#
+# The Service uses service-ca for TLS. The generated cert secret
+# (lightspeed-otel-collector-cert) is referenced in the agentic
+# configuration ConfigMap as otel-ca-secret.
+#
+# Usage:
+#   bash hack/quickstart/deploy-otel.sh
+#   bash hack/quickstart/deploy-otel.sh --postgres
+#   bash hack/quickstart/deploy-otel.sh --image=quay.io/my-org/my-collector:tag
+#
+# Prerequisites:
+#   - oc CLI on PATH, logged into an OpenShift cluster
+#   - Namespace openshift-lightspeed exists
+#
+# Flags:
+#   --image=IMAGE   OTEL collector image. If omitted, resolves the latest
+#                   build from Quay automatically.
+#   --postgres      Deploy Postgres and wire the collector to export logs to it.
+
+set -euo pipefail
+
+NAMESPACE="${NAMESPACE:-openshift-lightspeed}"
+OTEL_IMAGE=""
+WITH_POSTGRES=0
+QUAY_REPO="redhat-user-workloads/crt-nshift-lightspeed-tenant/lightspeed-otel-collector"
+
+COLLECTOR_NAME="lightspeed-otel-collector"
+CERT_SECRET="${COLLECTOR_NAME}-cert"
+PG_DSN_SECRET="lightspeed-otel-collector-postgres-dsn"
+
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --image=*)   OTEL_IMAGE="${1#*=}"; shift ;;
+    --image)     [ $# -lt 2 ] && { echo "Missing value for $1" >&2; exit 1; }; OTEL_IMAGE="$2"; shift 2 ;;
+    --postgres)  WITH_POSTGRES=1; shift ;;
+    *) echo "Unknown flag: $1" >&2; exit 1 ;;
+  esac
+done
+
+if [ -z "${OTEL_IMAGE}" ]; then
+  echo "  Resolving latest OTEL collector image from Quay..."
+  TAG="$(curl -fsSL "https://quay.io/api/v1/repository/${QUAY_REPO}/tag/?limit=100&onlyActiveTags=true" \
+    | python3 -c "
+import json,sys,re
+tags = json.load(sys.stdin)['tags']
+pat = re.compile(r'^(on-pr-)?[0-9a-f]{40}$')
+tag = next((t['name'] for t in sorted(tags, key=lambda t: t['start_ts'], reverse=True) if pat.match(t['name'])), None)
+if not tag: sys.exit('No matching tag found in Quay repo')
+print(tag)
+")" || { echo "Failed to resolve image from Quay. Use --image=IMAGE." >&2; exit 1; }
+  OTEL_IMAGE="quay.io/${QUAY_REPO}:${TAG}"
+  echo "  Resolved: ${OTEL_IMAGE}"
+fi
+
+info()  { echo "  ✓ $*"; }
+step()  { echo "[otel] $*"; }
+
+# --- Postgres (optional) -----------------------------------------------------
+
+if [ "${WITH_POSTGRES}" = "1" ]; then
+  SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+  [ -f "${SCRIPT_DIR}/deploy-postgres.sh" ] || { echo "  ✗ Missing deploy-postgres.sh. Run from a repo checkout." >&2; exit 1; }
+  command -v openssl >/dev/null 2>&1 || { echo "  ✗ openssl not found. Required for Postgres password generation." >&2; exit 1; }
+  step "Deploying Postgres backend..."
+  bash "${SCRIPT_DIR}/deploy-postgres.sh"
+
+  step "Creating collector Postgres DSN secret..."
+  PG_PASSWORD="$(oc get secret lightspeed-postgres-secret -n "${NAMESPACE}" -o jsonpath='{.data.password}' | base64 -d)"
+  PG_PASSWORD_ENCODED="$(python3 -c "import urllib.parse; print(urllib.parse.quote('${PG_PASSWORD}', safe=''))")"
+  PG_HOST="lightspeed-postgres-server.${NAMESPACE}.svc"
+  PG_DSN="postgres://postgres:${PG_PASSWORD_ENCODED}@${PG_HOST}:5432/postgres?sslmode=require"
+
+  oc apply -f - <<EOF
+apiVersion: v1
+kind: Secret
+metadata:
+  name: ${PG_DSN_SECRET}
+  namespace: ${NAMESPACE}
+  labels:
+    app: ${COLLECTOR_NAME}
+    app.kubernetes.io/name: ${COLLECTOR_NAME}
+    app.kubernetes.io/component: otel-collector
+type: Opaque
+stringData:
+  connection_string: "${PG_DSN}"
+EOF
+  info "DSN secret created"
+fi
+
+# --- Collector config ---------------------------------------------------------
+
+step "Deploying OTEL collector to ${NAMESPACE}"
+step "Image: ${OTEL_IMAGE}"
+
+if [ "${WITH_POSTGRES}" = "1" ]; then
+COLLECTOR_CONFIG='
+    receivers:
+      otlp:
+        protocols:
+          grpc:
+            endpoint: "0.0.0.0:4317"
+            tls:
+              cert_file: /etc/otel-certs/tls.crt
+              key_file: /etc/otel-certs/tls.key
+          http:
+            endpoint: "0.0.0.0:4318"
+            tls:
+              cert_file: /etc/otel-certs/tls.crt
+              key_file: /etc/otel-certs/tls.key
+    processors:
+      batch:
+        timeout: 1s
+        send_batch_size: 100
+    exporters:
+      nop: {}
+      postgres:
+        connection_string: ${env:POSTGRES_CONNECTION_STRING}
+        schema: templogs
+        logs_table: logs
+        retry_on_failure:
+          enabled: true
+        sending_queue:
+          enabled: true
+          num_consumers: 4
+          queue_size: 1000
+          storage: file_storage
+    connectors:
+      routing/logs:
+        default_pipelines: [logs/unmatched]
+        table:
+        - condition: "attributes[\"service.name\"] == \"lightspeed-agentic\""
+          pipelines: [logs/postgres]
+    extensions:
+      health_check:
+        endpoint: "0.0.0.0:13133"
+      file_storage:
+        directory: /var/lib/otelcol/file-storage
+        create_directory: true
+        compaction:
+          on_start: true
+          directory: /var/lib/otelcol/file-storage/compaction
+      postgres_admin:
+        endpoint: "0.0.0.0:8080"
+        connection_string: ${env:POSTGRES_CONNECTION_STRING}
+        schema: templogs
+        logs_table: logs
+        tls_cert_file: /etc/otel-certs/tls.crt
+        tls_key_file: /etc/otel-certs/tls.key
+    service:
+      extensions: [health_check, file_storage, postgres_admin]
+      pipelines:
+        logs:
+          receivers: [otlp]
+          processors: [batch]
+          exporters: [routing/logs]
+        logs/postgres:
+          receivers: [routing/logs]
+          exporters: [postgres]
+        logs/unmatched:
+          receivers: [routing/logs]
+          exporters: [nop]
+        traces:
+          receivers: [otlp]
+          exporters: [nop]
+      telemetry:
+        logs:
+          level: info'
+else
+COLLECTOR_CONFIG='
+    receivers:
+      otlp:
+        protocols:
+          grpc:
+            endpoint: "0.0.0.0:4317"
+            tls:
+              cert_file: /etc/otel-certs/tls.crt
+              key_file: /etc/otel-certs/tls.key
+          http:
+            endpoint: "0.0.0.0:4318"
+            tls:
+              cert_file: /etc/otel-certs/tls.crt
+              key_file: /etc/otel-certs/tls.key
+    processors:
+      batch:
+        timeout: 1s
+        send_batch_size: 100
+    exporters:
+      nop: {}
+    extensions:
+      health_check:
+        endpoint: "0.0.0.0:13133"
+    service:
+      extensions: [health_check]
+      pipelines:
+        logs:
+          receivers: [otlp]
+          processors: [batch]
+          exporters: [nop]
+        traces:
+          receivers: [otlp]
+          exporters: [nop]
+      telemetry:
+        logs:
+          level: info'
+fi
+
+# --- Deployment env/volumes (conditional on Postgres) -------------------------
+
+if [ "${WITH_POSTGRES}" = "1" ]; then
+EXTRA_ENV="
+        - name: POSTGRES_CONNECTION_STRING
+          valueFrom:
+            secretKeyRef:
+              name: ${PG_DSN_SECRET}
+              key: connection_string"
+EXTRA_VOLUME_MOUNTS="
+        - name: file-storage
+          mountPath: /var/lib/otelcol/file-storage"
+EXTRA_VOLUMES="
+      - name: file-storage
+        emptyDir:
+          sizeLimit: 500Mi"
+else
+EXTRA_ENV=""
+EXTRA_VOLUME_MOUNTS=""
+EXTRA_VOLUMES=""
+fi
+
+# --- Apply resources ----------------------------------------------------------
+
+oc apply -f - <<EOF
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: ${COLLECTOR_NAME}-config
+  namespace: ${NAMESPACE}
+  labels:
+    app: ${COLLECTOR_NAME}
+    app.kubernetes.io/name: ${COLLECTOR_NAME}
+    app.kubernetes.io/component: otel-collector
+data:
+  config.yaml: |${COLLECTOR_CONFIG}
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: ${COLLECTOR_NAME}
+  namespace: ${NAMESPACE}
+  labels:
+    app: ${COLLECTOR_NAME}
+    app.kubernetes.io/name: ${COLLECTOR_NAME}
+    app.kubernetes.io/component: otel-collector
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: ${COLLECTOR_NAME}
+  namespace: ${NAMESPACE}
+  labels:
+    app: ${COLLECTOR_NAME}
+    app.kubernetes.io/name: ${COLLECTOR_NAME}
+    app.kubernetes.io/component: otel-collector
+  annotations:
+    service.beta.openshift.io/serving-cert-secret-name: ${CERT_SECRET}
+spec:
+  selector:
+    app: ${COLLECTOR_NAME}
+  ports:
+  - name: otlp-grpc
+    port: 4317
+    targetPort: 4317
+    protocol: TCP
+  - name: otlp-http
+    port: 4318
+    targetPort: 4318
+    protocol: TCP
+  - name: admin
+    port: 8080
+    targetPort: 8080
+    protocol: TCP
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: ${COLLECTOR_NAME}
+  namespace: ${NAMESPACE}
+  labels:
+    app: ${COLLECTOR_NAME}
+    app.kubernetes.io/name: ${COLLECTOR_NAME}
+    app.kubernetes.io/component: otel-collector
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: ${COLLECTOR_NAME}
+  template:
+    metadata:
+      labels:
+        app: ${COLLECTOR_NAME}
+        app.kubernetes.io/name: ${COLLECTOR_NAME}
+        app.kubernetes.io/component: otel-collector
+    spec:
+      serviceAccountName: ${COLLECTOR_NAME}
+      securityContext:
+        runAsNonRoot: true
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+      - name: collector
+        image: ${OTEL_IMAGE}
+        imagePullPolicy: Always
+        args: ["--config=/etc/otelcol/config.yaml"]
+        ports:
+        - name: otlp-grpc
+          containerPort: 4317
+          protocol: TCP
+        - name: otlp-http
+          containerPort: 4318
+          protocol: TCP
+        - name: admin
+          containerPort: 8080
+          protocol: TCP
+        - name: health
+          containerPort: 13133
+          protocol: TCP
+        env:${EXTRA_ENV}
+        - name: OTEL_PLACEHOLDER
+          value: "true"
+        securityContext:
+          allowPrivilegeEscalation: false
+          capabilities:
+            drop:
+            - ALL
+        resources:
+          requests:
+            cpu: 100m
+            memory: 128Mi
+        livenessProbe:
+          httpGet:
+            path: /
+            port: 13133
+          initialDelaySeconds: 10
+          periodSeconds: 15
+        readinessProbe:
+          httpGet:
+            path: /
+            port: 13133
+          initialDelaySeconds: 5
+          periodSeconds: 10
+        volumeMounts:
+        - name: config
+          mountPath: /etc/otelcol
+          readOnly: true
+        - name: certs
+          mountPath: /etc/otel-certs
+          readOnly: true${EXTRA_VOLUME_MOUNTS}
+      volumes:
+      - name: config
+        configMap:
+          name: ${COLLECTOR_NAME}-config
+      - name: certs
+        secret:
+          secretName: ${CERT_SECRET}${EXTRA_VOLUMES}
+EOF
+
+info "OTEL collector resources applied"
+info "Cert secret: ${CERT_SECRET} (use as otel-ca-secret in agentic ConfigMap)"
+
+step "Waiting for rollout..."
+oc rollout status deployment/${COLLECTOR_NAME} -n "${NAMESPACE}" --timeout=120s
+
+info "OTEL collector deployed successfully"
+if [ "${WITH_POSTGRES}" = "1" ]; then
+  info "Postgres backend: enabled (logs routed to lightspeed-postgres-server)"
+else
+  info "Postgres backend: disabled (logs dropped via nop exporter)"
+fi
