@@ -550,3 +550,131 @@ func TestBuild_CredentialsSecretMounted(t *testing.T) {
 		t.Errorf("credentials volume not mounted at %s", llmCredsMountPath)
 	}
 }
+
+func TestBuild_DeduplicatesVolumes(t *testing.T) {
+	base := &corev1.PodSpec{
+		Containers: []corev1.Container{{
+			Name:  "agent",
+			Image: "quay.io/test/agent:latest",
+			VolumeMounts: []corev1.VolumeMount{
+				{Name: "home", MountPath: "/home/agent"},
+				{Name: "skills-workdir", MountPath: "/app/skills/.agents"},
+			},
+		}},
+		Volumes: []corev1.Volume{
+			{Name: "home", VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{}}},
+			{Name: "skills-workdir", VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{}}},
+		},
+	}
+
+	b := &PodSpecBuilder{}
+	agent := &agenticv1alpha1.Agent{Spec: agenticv1alpha1.AgentSpec{Model: "m"}}
+	llm := testLLMProvider(agenticv1alpha1.LLMProviderOpenAI)
+	tools := &agenticv1alpha1.ToolsSpec{
+		Skills: []agenticv1alpha1.SkillsSource{{
+			Image: "quay.io/test/skills:latest",
+			Paths: []string{"/network-diagnostics"},
+		}},
+	}
+
+	ps, err := b.Build(base, agent, llm, tools, nil, "analysis", "uid", "sa")
+	if err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+
+	// No duplicate volumes by name.
+	volCounts := map[string]int{}
+	for _, v := range ps.Volumes {
+		volCounts[v.Name]++
+	}
+	for name, count := range volCounts {
+		if count > 1 {
+			t.Errorf("duplicate volume %q (count=%d)", name, count)
+		}
+	}
+
+	// No duplicate mounts by mountPath.
+	mountCounts := map[string]int{}
+	for _, m := range ps.Containers[0].VolumeMounts {
+		mountCounts[m.MountPath]++
+	}
+	for mp, count := range mountCounts {
+		if count > 1 {
+			t.Errorf("duplicate mount path %q (count=%d)", mp, count)
+		}
+	}
+
+	// Exactly one home and skills-workdir volume, both emptyDir.
+	for _, name := range []string{"home", "skills-workdir"} {
+		if volCounts[name] != 1 {
+			t.Errorf("expected exactly 1 %q volume, got %d", name, volCounts[name])
+		}
+	}
+
+	// Generated skills image volume present with correct image.
+	if volCounts["skills"] != 1 {
+		t.Fatalf("expected exactly 1 skills volume, got %d", volCounts["skills"])
+	}
+	for _, v := range ps.Volumes {
+		if v.Name == "skills" {
+			if v.VolumeSource.Image == nil || v.VolumeSource.Image.Reference != "quay.io/test/skills:latest" {
+				t.Errorf("skills volume has wrong image: %+v", v.VolumeSource)
+			}
+		}
+	}
+
+	// Generated skill mount with SubPath present.
+	foundSkillMount := false
+	for _, m := range ps.Containers[0].VolumeMounts {
+		if m.Name == "skills" && m.SubPath == "network-diagnostics" {
+			foundSkillMount = true
+		}
+	}
+	if !foundSkillMount {
+		t.Error("expected skills mount with SubPath network-diagnostics")
+	}
+}
+
+func TestBuild_GeneratedVolumeOverridesBase(t *testing.T) {
+	base := &corev1.PodSpec{
+		Containers: []corev1.Container{{
+			Name:  "agent",
+			Image: "quay.io/test/agent:latest",
+			VolumeMounts: []corev1.VolumeMount{
+				{Name: "skills-workdir", MountPath: "/app/skills/.agents"},
+			},
+		}},
+		Volumes: []corev1.Volume{
+			{Name: "skills", VolumeSource: corev1.VolumeSource{
+				Image: &corev1.ImageVolumeSource{Reference: "placeholder:latest"},
+			}},
+			{Name: "skills-workdir", VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{}}},
+		},
+	}
+
+	b := &PodSpecBuilder{}
+	agent := &agenticv1alpha1.Agent{Spec: agenticv1alpha1.AgentSpec{Model: "m"}}
+	llm := testLLMProvider(agenticv1alpha1.LLMProviderOpenAI)
+	tools := &agenticv1alpha1.ToolsSpec{
+		Skills: []agenticv1alpha1.SkillsSource{{Image: "quay.io/real/skills:v1"}},
+	}
+
+	ps, err := b.Build(base, agent, llm, tools, nil, "analysis", "uid", "sa")
+	if err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+
+	// Exactly one skills volume, with the generated image (not placeholder).
+	skillsCount := 0
+	for _, v := range ps.Volumes {
+		if v.Name == "skills" {
+			skillsCount++
+			if v.VolumeSource.Image == nil || v.VolumeSource.Image.Reference != "quay.io/real/skills:v1" {
+				t.Errorf("skills volume should be overridden by generated entry, got: %+v", v.VolumeSource)
+			}
+		}
+	}
+	if skillsCount != 1 {
+		t.Errorf("expected exactly 1 skills volume, got %d", skillsCount)
+	}
+}
