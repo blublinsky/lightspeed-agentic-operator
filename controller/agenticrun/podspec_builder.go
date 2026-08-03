@@ -162,11 +162,49 @@ func (b *PodSpecBuilder) Build(
 
 	appendOTELEnvVars(container, &volumes, otelCfg, runUID, step)
 
-	podSpec.Volumes = append(podSpec.Volumes, volumes...)
+	podSpec.Volumes = mergeVolumes(podSpec.Volumes, volumes)
+	container.VolumeMounts = mergeVolumeMounts(container.VolumeMounts)
 
 	appendAuditEnvVars(container)
 
 	return podSpec, nil
+}
+
+// mergeVolumes combines base and overlay volumes. When both contain a volume
+// with the same name, the overlay entry wins (e.g. a generated skills image
+// volume overrides a placeholder in the base).
+func mergeVolumes(base, overlay []corev1.Volume) []corev1.Volume {
+	byName := make(map[string]int, len(base))
+	merged := make([]corev1.Volume, len(base))
+	copy(merged, base)
+	for i, v := range merged {
+		byName[v.Name] = i
+	}
+	for _, v := range overlay {
+		if idx, exists := byName[v.Name]; exists {
+			merged[idx] = v
+		} else {
+			byName[v.Name] = len(merged)
+			merged = append(merged, v)
+		}
+	}
+	return merged
+}
+
+// mergeVolumeMounts deduplicates mounts by mountPath, keeping the last entry
+// so generated mounts override base entries.
+func mergeVolumeMounts(mounts []corev1.VolumeMount) []corev1.VolumeMount {
+	byPath := make(map[string]int, len(mounts))
+	var out []corev1.VolumeMount
+	for _, m := range mounts {
+		if idx, exists := byPath[m.MountPath]; exists {
+			out[idx] = m
+		} else {
+			byPath[m.MountPath] = len(out)
+			out = append(out, m)
+		}
+	}
+	return out
 }
 
 func appendAuditEnvVars(container *corev1.Container) {
