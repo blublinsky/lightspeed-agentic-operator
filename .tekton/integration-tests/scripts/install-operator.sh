@@ -89,8 +89,18 @@ data:
       "containers": [{
         "name": "agent",
         "image": "${SANDBOX_IMAGE}",
-        "ports": [{"containerPort": 8080}]
-      }]
+        "ports": [{"containerPort": 8080}],
+        "securityContext": {
+          "allowPrivilegeEscalation": false,
+          "runAsNonRoot": true,
+          "capabilities": {"drop": ["ALL"]},
+          "seccompProfile": {"type": "RuntimeDefault"}
+        }
+      }],
+      "securityContext": {
+        "runAsNonRoot": true,
+        "seccompProfile": {"type": "RuntimeDefault"}
+      }
     }
 EOF
 

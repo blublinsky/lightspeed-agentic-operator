@@ -42,7 +42,7 @@ fail()  { echo "  ✗ $*" >&2; exit 1; }
 step "Creating ${CONFIGMAP_NAME} in ${NAMESPACE}"
 step "Sandbox image: ${SANDBOX_IMAGE}"
 
-POD_SPEC="{\"containers\":[{\"name\":\"agent\",\"image\":\"${SANDBOX_IMAGE}\",\"resources\":{\"requests\":{\"cpu\":\"100m\",\"memory\":\"256Mi\"},\"limits\":{\"cpu\":\"1\",\"memory\":\"1Gi\"}}}]}"
+POD_SPEC="{\"containers\":[{\"name\":\"agent\",\"image\":\"${SANDBOX_IMAGE}\",\"resources\":{\"requests\":{\"cpu\":\"100m\",\"memory\":\"256Mi\"},\"limits\":{\"cpu\":\"1\",\"memory\":\"1Gi\"}},\"securityContext\":{\"allowPrivilegeEscalation\":false,\"runAsNonRoot\":true,\"capabilities\":{\"drop\":[\"ALL\"]},\"seccompProfile\":{\"type\":\"RuntimeDefault\"}}}],\"securityContext\":{\"runAsNonRoot\":true,\"seccompProfile\":{\"type\":\"RuntimeDefault\"}}}"
 
 # Detect OTEL collector if deployed.
 OTEL_DATA=""
