@@ -132,6 +132,73 @@ func deleteBarePod(t *testing.T, c client.Client, name string) {
 	_ = c.Delete(context.Background(), pod)
 }
 
+// ensureCrashLoopPod creates a pod in the staging namespace that immediately
+// exits with an error, producing a visible CrashLoopBackOff. This gives real
+// LLM providers something to diagnose when the AgenticRun request says
+// "Pod crash-looping in staging namespace".
+func ensureCrashLoopPod(t *testing.T, c client.Client) {
+	t.Helper()
+	ctx := context.Background()
+
+	pod := &corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "e2e-crasher",
+			Namespace: "staging",
+			Labels:    map[string]string{"app": "e2e-crasher"},
+		},
+		Spec: corev1.PodSpec{
+			RestartPolicy: corev1.RestartPolicyAlways,
+			Containers: []corev1.Container{{
+				Name:    "crasher",
+				Image:   "busybox:latest",
+				Command: []string{"sh", "-c", "exit 1"},
+			}},
+		},
+	}
+
+	if err := c.Delete(ctx, pod); err != nil && !apierrors.IsNotFound(err) {
+		t.Fatalf("delete previous crash-loop pod: %v", err)
+	}
+	if err := wait.PollUntilContextTimeout(ctx, time.Second, 30*time.Second, true, func(ctx context.Context) (bool, error) {
+		var existing corev1.Pod
+		if err := c.Get(ctx, types.NamespacedName{Name: pod.Name, Namespace: pod.Namespace}, &existing); err != nil {
+			if apierrors.IsNotFound(err) {
+				return true, nil
+			}
+			return false, err
+		}
+		return false, nil
+	}); err != nil {
+		t.Fatalf("wait for previous crash-loop pod deletion: %v", err)
+	}
+
+	if err := c.Create(ctx, pod); err != nil {
+		t.Fatalf("create crash-loop pod: %v", err)
+	}
+	t.Cleanup(func() {
+		if err := c.Delete(context.Background(), pod); err != nil && !apierrors.IsNotFound(err) {
+			t.Errorf("cleanup crash-loop pod: %v", err)
+		}
+	})
+
+	err := wait.PollUntilContextTimeout(ctx, 2*time.Second, 2*time.Minute, true, func(ctx context.Context) (bool, error) {
+		var p corev1.Pod
+		if err := c.Get(ctx, types.NamespacedName{Name: pod.Name, Namespace: pod.Namespace}, &p); err != nil {
+			return false, nil
+		}
+		for _, cs := range p.Status.ContainerStatuses {
+			if cs.RestartCount > 0 {
+				return true, nil
+			}
+		}
+		return false, nil
+	})
+	if err != nil {
+		t.Fatalf("crash-loop pod never restarted: %v", err)
+	}
+	t.Log("crash-loop pod is CrashLoopBackOff in staging namespace")
+}
+
 // --- Fixture builders ---
 
 // e2eFixtures holds the prerequisite CRs needed for any run flow.
@@ -192,6 +259,7 @@ func createFixtures(t *testing.T, c client.Client) *e2eFixtures {
 	if err := c.Create(ctx, stagingNS); err != nil && !apierrors.IsAlreadyExists(err) {
 		t.Fatalf("create staging namespace: %v", err)
 	}
+	ensureCrashLoopPod(t, c)
 
 	all := []client.Object{f.LLM, f.Agent, f.Policy, f.LLMSecret}
 	cleanup(t, c, all...)
@@ -304,6 +372,7 @@ func createRealProviderFixtures(t *testing.T, c client.Client) *e2eFixtures {
 	if err := c.Create(ctx, stagingNS); err != nil && !apierrors.IsAlreadyExists(err) {
 		t.Fatalf("create staging namespace: %v", err)
 	}
+	ensureCrashLoopPod(t, c)
 
 	all := []client.Object{f.LLM, f.Agent, f.Policy, f.LLMSecret}
 	cleanup(t, c, all...)

@@ -110,7 +110,7 @@ for provider in $PROVIDERS; do
     provider_rc=$?
     set -e
     results["$provider"]=$provider_rc
-    (( overall_rc = overall_rc || provider_rc ))
+    (( overall_rc = overall_rc || provider_rc )) || true
 done
 
 log_info "=== Results ==="
