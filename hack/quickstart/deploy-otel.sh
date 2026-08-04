@@ -20,16 +20,14 @@
 #   - Namespace openshift-lightspeed exists
 #
 # Flags:
-#   --image=IMAGE   OTEL collector image. If omitted, resolves the latest
-#                   build from Quay automatically.
+#   --image=IMAGE   OTEL collector image (default: Konflux :main).
 #   --postgres      Deploy Postgres and wire the collector to export logs to it.
 
 set -euo pipefail
 
 NAMESPACE="${NAMESPACE:-openshift-lightspeed}"
-OTEL_IMAGE=""
+OTEL_IMAGE="quay.io/redhat-user-workloads/crt-nshift-lightspeed-tenant/lightspeed-otel-collector:main"
 WITH_POSTGRES=0
-QUAY_REPO="redhat-user-workloads/crt-nshift-lightspeed-tenant/lightspeed-otel-collector"
 
 COLLECTOR_NAME="lightspeed-otel-collector"
 CERT_SECRET="${COLLECTOR_NAME}-cert"
@@ -44,20 +42,6 @@ while [ $# -gt 0 ]; do
   esac
 done
 
-if [ -z "${OTEL_IMAGE}" ]; then
-  echo "  Resolving latest OTEL collector image from Quay..."
-  TAG="$(curl -fsSL "https://quay.io/api/v1/repository/${QUAY_REPO}/tag/?limit=100&onlyActiveTags=true" \
-    | python3 -c "
-import json,sys,re
-tags = json.load(sys.stdin)['tags']
-pat = re.compile(r'^(on-pr-)?[0-9a-f]{40}$')
-tag = next((t['name'] for t in sorted(tags, key=lambda t: t['start_ts'], reverse=True) if pat.match(t['name'])), None)
-if not tag: sys.exit('No matching tag found in Quay repo')
-print(tag)
-")" || { echo "Failed to resolve image from Quay. Use --image=IMAGE." >&2; exit 1; }
-  OTEL_IMAGE="quay.io/${QUAY_REPO}:${TAG}"
-  echo "  Resolved: ${OTEL_IMAGE}"
-fi
 
 info()  { echo "  ✓ $*"; }
 step()  { echo "[otel] $*"; }
@@ -135,7 +119,7 @@ COLLECTOR_CONFIG='
       routing/logs:
         default_pipelines: [logs/unmatched]
         table:
-        - condition: "attributes[\"service.name\"] == \"lightspeed-agentic\""
+        - condition: "resource.attributes[\"service.name\"] == \"lightspeed-agentic-sandbox\""
           pipelines: [logs/postgres]
     extensions:
       health_check:

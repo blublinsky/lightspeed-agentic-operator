@@ -8,8 +8,7 @@ directly — no OLM bundle or `operator-sdk` required.
 - A checkout of this repository (scripts reference each other via relative paths)
 - `oc` CLI on PATH, logged into an OpenShift 4.22+ cluster
 - cluster-admin privileges
-- `python3` and `curl` on PATH (for automatic image resolution from Quay)
-- `openssl` on PATH (for Postgres password generation, only with `--postgres`)
+- `python3` and `openssl` on PATH
 
 ## Install
 
@@ -75,8 +74,8 @@ bash hack/quickstart/undeploy-otel.sh
 | `--operator-image=IMAGE` | Agentic operator image (default: Konflux `:main`) |
 | `--sandbox-image=IMAGE` | Sandbox image for the ConfigMap PodSpec (default: Konflux `:main`) |
 | `--console-image=IMAGE` | Console plugin image (default: Konflux `:main`) |
-| `--alerts-adapter-image=IMAGE` | Alerts adapter image (default: resolved from Quay) |
-| `--otel-image=IMAGE` | OTEL collector image (default: resolved from Quay) |
+| `--alerts-adapter-image=IMAGE` | Alerts adapter image (default: Konflux `:main`) |
+| `--otel-image=IMAGE` | OTEL collector image (default: Konflux `:main`) |
 | `--postgres` | Deploy Postgres backend for OTEL audit logs |
 
 ### Individual scripts
@@ -85,23 +84,17 @@ bash hack/quickstart/undeploy-otel.sh
 |--------|------|---------|
 | `deploy-operator.sh` | `--image=IMAGE` | Konflux `:main` |
 | `deploy-console.sh` | `--image=IMAGE` | Konflux `:main` |
-| `deploy-alerts-adapter.sh` | `--image=IMAGE` | Resolved from Quay (newest git SHA tag) |
-| `deploy-otel.sh` | `--image=IMAGE` | Resolved from Quay (newest `on-pr-*` tag) |
+| `deploy-alerts-adapter.sh` | `--image=IMAGE` | Konflux `:main` |
+| `deploy-otel.sh` | `--image=IMAGE` | Konflux `:main` |
 | `deploy-otel.sh` | `--postgres` | Deploy Postgres backend for audit logs |
 | `deploy-configmap.sh` | `--sandbox-image=IMAGE` | Konflux `:main` |
 
-Images with a Konflux `:main` tag use it directly. Images without a `:main`
-tag (alerts adapter, OTEL collector) are resolved from Quay at runtime by
-finding the most recent build tag.
+All images use the Konflux floating `:main` tag by default.
 
 ## Image resolution
 
-The **operator**, **sandbox**, and **console** images are built by this repo's
-Konflux push pipeline and have a floating `:main` tag.
-
-The **alerts adapter** and **OTEL collector** are built by the same Konflux
-tenant (`crt-nshift-lightspeed-tenant`). They do not have `:main` tags, so the
-deploy scripts query the Quay API to find the latest build automatically.
+All quickstart images are built by the Konflux push pipeline under the same
+tenant (`crt-nshift-lightspeed-tenant`) and have a floating `:main` tag.
 
 To use a specific PR build of the agentic operator:
 
