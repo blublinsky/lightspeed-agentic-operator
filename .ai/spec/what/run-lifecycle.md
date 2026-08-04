@@ -36,7 +36,18 @@ Behavioral specification for the `AgenticRun` resource lifecycle. **Approval gat
 11. **Advisory completion**: If execution is absent and verification is absent, after successful analysis the controller MAY set `Executed` and `Verified` to `True` with skip reasons such that the derived phase is `Completed`.
 12. **Trust mode completion**: If execution is present and verification is absent, after successful execution the controller MUST set `Verified` to `True` with a skip reason such that the derived phase is `Completed`.
 13. **Skipped steps**: `Executed=True` with skip reason and `Verified=True` with skip reason together MUST derive `Completed` when that is the intended advisory outcome per tests and valid condition combinations.
-14. **Step phases (display vocabulary)**: The API defines per-step display phases `PendingApproval`, `Running`, `Completed`, `Failed`, `Skipped` (see `crd-api.md`). A conforming implementation SHOULD map: `Running` ↔ corresponding run-level step condition `Unknown` with in-progress reason; `Completed` ↔ `True` with complete/passed/skipped reason as applicable; `Failed` ↔ `False`; `Skipped` ↔ `True` with skipped reason on execution/verification where applicable; `PendingApproval` ↔ step not yet active while run phase waits on approval for that step (see `approval.md`). The controller in this repo primarily materializes **run-level** `status.conditions`; per-step `status.steps.*.conditions` MAY be empty until populated by future work.
+14. **Step phases (display vocabulary)**: The API defines per-step display phases `PendingApproval`, `Running`, `Completed`, `Failed`, `Skipped` (see `crd-api.md`). A conforming implementation SHOULD map: `Running` ↔ corresponding run-level step condition `Unknown` with in-progress reason; `Completed` ↔ `True` with complete/passed/skipped reason as applicable; `Failed` ↔ `False`; `Skipped` ↔ `True` with skipped reason on execution/verification where applicable; `PendingApproval` ↔ step not yet active while run phase waits on approval for that step (see `approval.md`).
+14a. **[OLS-3066] Step-level conditions**: The controller MUST populate `status.steps.<step>.conditions` for each step. These conditions serve both observability (console/CLI can show step progress) and re-entry logic (controller uses them to determine what to do next in the async reconcile pattern — see `sandbox-execution.md` rules 43–43e). Condition reasons:
+
+| Status | Reason | Meaning |
+|---|---|---|
+| `Unknown` | `WaitingForSandbox` | Pod/SandboxClaim created, waiting for pod to start |
+| `Unknown` | `Running` | Pod is running, agent is working |
+| `True` | `Succeeded` | Result CR exists with `success: true` |
+| `False` | `AgentFailed` | Result CR exists with `success: false` |
+| `False` | `SandboxTimeout` | Per-step timeout fired, pod killed (see `sandbox-execution.md` rule 40) |
+| `False` | `SandboxFailed` | Pod exited without creating Result CR |
+| `False` | `ImagePullFailed` | Pod stuck in ImagePullBackOff |
 15. **Success**: `Verified=True` MUST yield `Completed` once rule 9 reaches the `Verified` branch, unless an earlier branch already returned `Escalated` or `Denied` per rules 9–10.
 16. **Step failure**: Any of `Analyzed`, `Executed`, or `Verified` with status `False` and reasons that are not the dedicated retrying-execution reason MUST yield `Failed` when reached by the derivation order in rule 9 (unless superseded by `Escalated` / `Denied` per rules 9–10).
 17. **Escalation failure**: `Escalated` with status `False` MUST yield `Failed` once rule 9 evaluates the `Escalated` presence branch (non-`True`, non-`Unknown`).
@@ -67,9 +78,9 @@ Behavioral specification for the `AgenticRun` resource lifecycle. **Approval gat
 
 ## Planned Changes
 
-- [PLANNED: OLS-2913] Populate `status.steps.<step>.conditions` consistently for UIs/CLI without inferring only from top-level conditions.
+- ~~[PLANNED: OLS-2913]~~ [PLANNED: OLS-3066] Populate `status.steps.<step>.conditions` for observability and async re-entry. See rule 14a. Subsumes the original OLS-2913 step-conditions intent.
 - [PLANNED: OLS-2894] **Per-run approval overrides** (e.g. annotations) and **namespace-scoped approval policy** if product requires policy resolution beyond cluster singleton `ApprovalPolicy` named `cluster` (current code: cluster singleton only; see `approval.md`).
 - [DONE: OLS-3018] `EmergencyStopped` phase and condition type added to run lifecycle. See `system-config.md` for full kill switch specification.
-- [PLANNED: OLS-3268] `NoActionRequired` terminal phase: when analysis returns `actionRequired=false`, the operator sets `Analyzed=True` with reason `NoActionRequired` and the run auto-completes, bypassing approval/execution/verification.
+- [DONE: OLS-3268] `NoActionRequired` terminal phase: when analysis returns `actionRequired=false`, the operator sets `Analyzed=True` with reason `NoActionRequired` and the run auto-completes, bypassing approval/execution/verification.
 - [DONE: OLS-3295] Renamed `Proposal` CRD kind to `AgenticRun`, `ProposalApproval` to `AgenticRunApproval`, and updated all associated API surface (labels, RBAC resources, CLI commands, audit events, OTEL spans).
 - [DONE: OLS-3558] Execution outcome override — controller no longer hard-fails when `success=false` but all mutating actions succeeded; defers outcome to the verification step. See `sandbox-execution.md` rule 21b.

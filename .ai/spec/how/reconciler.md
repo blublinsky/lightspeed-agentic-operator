@@ -30,9 +30,9 @@ Audience: AI agents. Behavioral rules and phase semantics live in **what/** spec
 | `resolve.go` | `resolvedStep`, `resolvedWorkflow` | `resolveAgenticRun`, `stepAgentName` |
 | `agent.go` | `AgentCaller`, `StubAgentCaller`; `AnalysisOutput`, `ExecutionOutput`, `VerificationOutput`, `EscalationOutput` | Interface methods on `StubAgentCaller` |
 | `sandbox_manager.go` | `SandboxManager` | `NewSandboxManager`, `Create`, `WaitReady`, `Release`, `createBarePod`, `createSandboxClaim`, `releaseBarePod`, `releaseSandboxClaim`, `waitPodReady`, `waitSandboxClaimReady`, `podSpecToUnstructured` |
-| `sandbox_agent.go` | `SandboxLifecycle` interface; `SandboxAgentCaller`; private JSON DTOs for unmarshaling agent responses | `Analyze`, `Execute`, `Verify`, `Escalate`, `ReleaseSandboxes`, `callWithSandbox`, `patchSandboxInfo`, `buildAgentContext`, `collectFailedResults`, `stepString` |
+| `sandbox_agent.go` | `SandboxLifecycle` interface; `SandboxAgentCaller` | `Analyze`, `Execute`, `Verify`, `Escalate`, `ReleaseSandboxes`, `buildInputConfigMap` [OLS-3066], `patchSandboxInfo`, `buildAgentContext`, `collectFailedResults`, `stepString`. [OLS-3066: `callWithSandbox` removed — replaced by ConfigMap creation + async re-entry] |
 | `podspec_builder.go` | `PodSpecBuilder`; label constants (`LabelManaged`, `LabelRun`, etc.); MCP env DTOs (`mcpServerEnvEntry`, `mcpHeaderEnvEntry`) | `Build`, `buildSkills`, `buildMCPServers`, `buildRequiredSecrets`, `addProviderSpecificEnv`, `credentialsSecretName`, `providerURL`, `providerTypeString` |
-| `client.go` | `AgentHTTPClientInterface`, `AgentHTTPClient`; `agentRunRequest`, `agentContext`, `agentExecutionResult`, `agentPreviousAttempt`, `agentRunResponse` | `NewAgentHTTPClient`, `(*AgentHTTPClient).Run`, `executionOutputToAgentResult` |
+| `client.go` | [OLS-3066: removed] ~~`AgentHTTPClientInterface`, `AgentHTTPClient`; HTTP request/response types~~ | ~~HTTP Run~~ — replaced by ConfigMap input + Result CR output |
 | `schemas.go` | Package vars: default/minimal analysis schemas, execution/verification/escalation schemas; `defaultOutputSchemas`, `builtInPropertyJSON` | `init` (precompute property JSON), `injectBuiltInProperty`, `outputSchemaForStep` |
 | `rbac.go` | `readerBindings atomic.Value` (cached CRB names) | `ensureExecutionRBAC`, `cleanupExecutionRBAC`, `resolveReaderBindings`, `addReaderSubject`, `removeReaderSubject`, `addSubjectToBinding`, `removeSubjectFromBinding`, `annotatedRBACNamespaces`, `deleteIfExists`, `rbacTargetNamespaces`, `truncateK8sName`, `executionRoleName`, `clusterRoleName`, `rbacLabels`, `rbacRulesToPolicyRules`, `normalizeCoreAPIGroup` |
 | `results.go` | `statusHolder` interface (defined; no references elsewhere in this package) | `resultCRName`, `agenticRunOwnerRef`, `resultLabels`, `executionRetryIndex`, `resultConditions`, `createAnalysisResult`, `createExecutionResult`, `createVerificationResult`, `createEscalationResult`, `createIdempotent` |
@@ -78,7 +78,7 @@ Audience: AI agents. Behavioral rules and phase semantics live in **what/** spec
 
 ## Data flow: reconcile loop
 
-1. **Watch / enqueue:** controller-runtime delivers `ctrl.Request` for a `AgenticRun` namespaced name. `SetupWithManager` also `Owns` child CRs (`AgenticRunApproval`, `AnalysisResult`, `ExecutionResult`, `VerificationResult`, `EscalationResult`) and **Watches** cluster `ApprovalPolicy` and `AgenticOLSConfig` to enqueue all non-terminal runs when either changes.
+1. **Watch / enqueue:** controller-runtime delivers `ctrl.Request` for a `AgenticRun` namespaced name. `SetupWithManager` `Owns` child CRs (`AgenticRunApproval`, `AnalysisResult`, `ExecutionResult`, `VerificationResult`, `EscalationResult`), `Owns` Pods and ConfigMaps [OLS-3066], and **Watches** cluster `ApprovalPolicy` and `AgenticOLSConfig` to enqueue all non-terminal runs when either changes. [OLS-3066] Pod watches serve **failure detection** (pod `Failed`, `ImagePullBackOff`); Result CR watches serve **completion detection** (CR created with `Completed` condition).
 2. **`Reconcile` load:** `Get` `AgenticRun`; ignore not-found.
 3. **Deletion path:** If `DeletionTimestamp` set and finalizer `agentic.openshift.io/execution-rbac-cleanup` present: `Agent.ReleaseSandboxes`, `cleanupExecutionRBAC`, remove finalizer, return.
 4. **Suspension check:** Fetch `AgenticOLSConfig` singleton via `isSuspended()`. If `spec.suspended == true` and run is non-terminal: `handleSuspension` releases sandboxes (best-effort), cleans up RBAC (best-effort), sets `EmergencyStopped=True` condition, status patch, return. If CR not found, treat as not suspended. See **what/system-config.md**.
@@ -87,8 +87,8 @@ Audience: AI agents. Behavioral rules and phase semantics live in **what/** spec
 7. **Terminal / failed shortcuts:** Completed/Denied/Escalated/EmergencyStopped/NoActionRequired → optional sandbox release via `Agent.ReleaseSandboxes`. `AgenticRunPhaseFailed` → `handleFailed` (RBAC cleanup if annotation set).
 8. **Shared prelude:** `getApprovalPolicy` (cluster singleton name `cluster`), `ensureAgenticRunApproval`, `resolveAgenticRun`. Resolution failure → set `AgenticRunConditionAnalyzed=False` with `reasonWorkflowFailed`, status patch, return (no requeue).
 9. **Phase switch:** Routes to `handleRevision` (if `needsRevision`) before analysis/execution/escalation arms; otherwise `handleAnalysis`, `handleExecution`, `handleVerification`, `handleEscalation`, or no-op.
-10. **Handlers** set step conditions (`Unknown` → agent call → `True`/`False`), create result CRs, append `Status.Steps.*.Results`, `statusPatch` proposal.
-11. **Agent path:** All agent steps go through `r.Agent.*` which (in production) is `SandboxAgentCaller`: `callWithSandbox` calls `Sandbox.Create` (reads config cache, builds PodSpec via `PodSpecBuilder`, creates bare Pod or SandboxClaim+Template based on mode, name pattern `ls-{step}-{run}`) → `patchSandboxInfo` on proposal → `Sandbox.WaitReady` (routes by `cfg.Sandbox.Mode`) → normalize URL → `outputSchemaForStep` → `ClientFactory(endpoint).Run` → JSON unmarshal into outputs.
+10. **Handlers** set step conditions (`Unknown` → check Result CR / pod status → `True`/`False`), process Result CRs created by sandbox, append `Status.Steps.*.Results`, `statusPatch` proposal.
+11. **[OLS-3066] Agent path (batch model):** Handlers use the async re-entry pattern defined in `what/sandbox-execution.md` rules 43–43e. On first entry: create input ConfigMap (query, output-schema, context, result-template) → create Pod/SandboxClaim with ConfigMap mounted at `/input/` → patch sandbox info → set step condition `Unknown` → return `RequeueAfter(30s)`. On re-entry: check Result CR (with `Completed` condition) → process result → update run conditions → cleanup pod + ConfigMap. Pod and Result CR watches (`Owns()`) drive re-entry between reconciles. No synchronous polling, no HTTP calls, no `WaitReady` within a single Reconcile. See `what/sandbox-execution.md` for the full re-entry decision tree, timeout handling, and race condition mitigations.
 
 ---
 
@@ -96,7 +96,7 @@ Audience: AI agents. Behavioral rules and phase semantics live in **what/** spec
 
 - **Single `Reconcile`** dispatches on **derived phase** and **revision predicate** (`needsRevision`: non-empty `Spec.RevisionFeedback` and `Generation > ObservedGeneration` on `AgenticRunConditionAnalyzed`).
 - **Revision** clears downstream conditions and step sandboxes for execution/verification, resets analyzed condition to `Unknown`, appends revision context to request text, re-runs analysis path logic.
-- **In-progress idempotency:** Each handler checks existing condition status (`Unknown` / `True`) to avoid duplicate agent invocations on requeue.
+- **[OLS-3066] In-progress idempotency:** Each handler checks (a) existing run-level condition status — `True` or `False` means step is done, skip; (b) whether a Result CR exists with `Completed` condition — if so, process it; (c) whether a pod exists for this step — if not, create ConfigMap + pod. This replaces the former "check `Unknown` to avoid duplicate agent invocations" pattern. See `what/sandbox-execution.md` rules 43–43e for the full decision tree.
 - **Approval gates:** Handlers call `isStageDenied` / `isStageApproved` before progressing; waiting states return `(Result{}, nil)` without error.
 
 ---
@@ -105,34 +105,30 @@ Audience: AI agents. Behavioral rules and phase semantics live in **what/** spec
 
 Unified sandbox lifecycle manager. Decides bare-pod vs sandbox-claim mode based on the configuration cache.
 
-- **`Create`:** Reads base PodSpec from config cache, overlays agent config via `PodSpecBuilder.Build`, then creates either a bare Pod or SandboxClaim+SandboxTemplate. Name pattern `ls-{step}-{run}` truncated to 63 chars — both modes use the same `ls-` prefix. Both paths set OwnerReferences to the AgenticRun. Idempotent via `AlreadyExists`.
-- **`WaitReady`:** Routes by `cfg.Sandbox.Mode`. For bare-pod: polls Pod conditions until `Ready=True`, returns `status.podIP`. For sandbox-claim: polls claim → `status.sandbox.name` → Sandbox `Ready=True` → `status.serviceFQDN`. Treats NotFound/terminating as terminal errors.
-- **`Release`:** Routes by `cfg.Sandbox.Mode`. For bare-pod: deletes Pod. For sandbox-claim: deletes both SandboxClaim and SandboxTemplate (same name). Idempotent (NotFound ignored).
+- **`Create`:** Reads base PodSpec from config cache, overlays agent config via `PodSpecBuilder.Build` (including input ConfigMap volume mount [OLS-3066]), then creates either a bare Pod or SandboxClaim+SandboxTemplate. Name pattern `ls-{step}-{run}` truncated to 63 chars — both modes use the same `ls-` prefix. Both paths set OwnerReferences to the AgenticRun. Idempotent via `AlreadyExists`.
+- **[OLS-3066] `WaitReady` removed:** The operator no longer polls for pod readiness or extracts endpoints. Pod completion and Result CR creation are detected via `Owns()` watches.
+- **`Release`:** Routes by `cfg.Sandbox.Mode`. For bare-pod: deletes Pod. For sandbox-claim: deletes both SandboxClaim and SandboxTemplate (same name). Idempotent (NotFound ignored). [OLS-3066] Also deletes the input ConfigMap (`ls-input-{step}-{run}`).
 
 ### `PodSpecBuilder` (internal to `SandboxManager`)
 
-- **Build:** Takes base `*corev1.PodSpec` (from config cache) and overlays agent-specific configuration: LLM env vars, credential mounts, skills volumes, MCP config, required secrets, readiness/liveness probes, SA.
+- **Build:** Takes base `*corev1.PodSpec` (from config cache) and overlays agent-specific configuration: LLM env vars, credential mounts, skills volumes, MCP config, required secrets, input ConfigMap volume mount [OLS-3066], SA. [OLS-3066] HTTP readiness/liveness probes are no longer set.
 - Also defines label constants (`LabelManaged`, `LabelRun`, etc.) and shared helpers (`credentialsSecretName`, `providerURL`, `providerTypeString`).
 
-**No log streaming in controller:** logs are cluster-side (`kubectl` / CLI); manager only waits for endpoint.
+**No log streaming in controller:** logs are cluster-side (`kubectl` / CLI); [OLS-3066] manager watches for Result CR creation, not endpoint readiness.
 
 ---
 
-## `SandboxAgentCaller` and HTTP
+## `SandboxAgentCaller` [OLS-3066: batch model]
 
-- **Constructor:** Struct literal with `Sandbox SandboxLifecycle`, `K8sClient`, `ClientFactory`, `Namespace`, `Audit`. `Timeout` defaults to `defaultSandboxTimeout` const.
-- **`callWithSandbox` order:** `Sandbox.Create(ctx, run, step, agent, llm, tools, serviceAccount)` → `patchSandboxInfo` (status subresource merge) → `Sandbox.WaitReady` → normalize URL (`http://{endpoint}:8080` if no scheme) → `outputSchemaForStep` → inject trace headers → `ClientFactory(endpoint).Run(ctx, "", query, schema, agentCtx, headers)`.
-- **`Run` contract:** Empty `systemPrompt`; full payload in POST body per `client.go` (`query`, `outputSchema`, `context`). Path constant `/v1/agent/run`.
-- **`buildAgentContext`:** `TargetNamespaces`, `ApprovedOption` / `ExecutionResult` per step, `PreviousAttempts` from failed `StepResultRef` outcomes across analysis/execution/verification result lists.
-- **`ReleaseSandboxes`:** Iterates `Status.Steps.{Analysis,Execution,Verification,Escalation}.Sandbox.ClaimName` and calls `Sandbox.Release` for each non-empty.
+- **Constructor:** Struct literal with `Sandbox SandboxLifecycle`, `K8sClient`, `Namespace`, `Audit`.
+- **[OLS-3066] Batch flow:** Handlers no longer call `callWithSandbox`. Instead, each handler: (a) creates an input ConfigMap via `buildInputConfigMap` (renders query from templates, computes output schema, serializes context, builds result template), (b) calls `Sandbox.Create` to provision the pod with the ConfigMap mounted at `/input/`, (c) patches sandbox info on the run, (d) returns `RequeueAfter(30s)`. On re-entry, the handler checks for the Result CR and processes it. No `WaitReady`, no HTTP call.
+- **`buildInputConfigMap`:** Constructs a ConfigMap with keys `query`, `output-schema`, `context`, `result-template`. Uses the same query builder functions (`buildAnalysisQuery`, `buildExecutionQuery`, `buildVerificationQuery`, `buildEscalationRequest`) and `outputSchemaForStep` as before. The `result-template` is built from `resultCRName`, `resultLabels`, `agenticRunOwnerRef` — the same metadata functions used by the current `createAnalysisResult` etc.
+- **`buildAgentContext`:** Unchanged — `TargetNamespaces`, `ApprovedOption` / `ExecutionResult` per step, `PreviousAttempts` from failed `StepResultRef` outcomes.
+- **`ReleaseSandboxes`:** Unchanged — iterates `Status.Steps.{Analysis,Execution,Verification,Escalation}.Sandbox.ClaimName` and calls `Sandbox.Release` for each non-empty. Also deletes the corresponding input ConfigMaps.
 
----
+## `AgentHTTPClient` [OLS-3066: removed]
 
-## `AgentHTTPClient` / `AgentHTTPClientInterface`
-
-- **`AgentHTTPClientInterface`:** `Run(ctx, systemPrompt, query, outputSchema, agentCtx) (*agentRunResponse, error)`.
-- **`NewAgentHTTPClient`:** Returns concrete type with long HTTP timeout, TLS `InsecureSkipVerify` for in-cluster calls.
-- **`Run`:** Marshals `agentRunRequest`, POSTs, reads capped body size, non-200 → error with truncated body; 200 → raw JSON in `agentRunResponse.Response` for caller to unmarshal phase-specific structs.
+The `AgentHTTPClient`, `AgentHTTPClientInterface`, `agentRunRequest`, `agentRunResponse`, and `ClientFactory` are removed under OLS-3066. The operator no longer makes HTTP calls to sandbox pods. All I/O is via ConfigMap (input) and Result CR (output).
 
 ---
 
@@ -145,12 +141,13 @@ Unified sandbox lifecycle manager. Decides bare-pod vs sandbox-claim mode based 
 
 ---
 
-## Result CR creation
+## Result CR creation [OLS-3066: moved to sandbox]
 
-- **Naming:** `resultCRName(agenticRunName, step, len(existingResults)+1)` with K8s name truncation.
-- **`createIdempotent`:** `Create` object (API server drops status on create), then `Status().Patch(MergeFrom)` from a deep copy that retained full status — required because status subresource is separate.
-- **Owner:** Controller ref to `AgenticRun`; labels `LabelRun`, `LabelStep`.
-- **Execution/Verification result CRs:** `Spec.RetryIndex` from `executionRetryIndex` ( ties to verification retry semantics in **what/** specs).
+- **[OLS-3066]** Result CRs are created by the **sandbox** via `oc create` + `oc patch --subresource=status`, not by the operator. The operator pre-computes the Result CR template (metadata, labels, ownerRefs, spec) and includes it in the input ConfigMap — see `what/sandbox-execution.md` rules 7a and 8.
+- **Naming:** `resultCRName(agenticRunName, step, len(existingResults)+1)` with K8s name truncation — same function, now used to build the template.
+- **Owner:** Controller ref to `AgenticRun`; labels `LabelRun`, `LabelStep` — set in the template by the operator.
+- **Execution/Verification result CRs:** `Spec.RetryIndex` from `executionRetryIndex` — set in the template by the operator.
+- **`createIdempotent`:** Retained for backward compatibility but primary path is sandbox-driven creation. The operator only reads Result CRs, not creates them.
 
 ---
 
@@ -166,8 +163,8 @@ Unified sandbox lifecycle manager. Decides bare-pod vs sandbox-claim mode based 
 
 ## Key abstractions
 
-- **`AgentCaller`:** Boundary between reconciler and runtime (stub vs sandbox+HTTP). Methods mirror workflow steps plus `ReleaseSandboxes`.
-- **`SandboxLifecycle`:** Interface (`Create`/`WaitReady`/`Release`) for swappable sandbox management (tests can fake). Production implementation: `SandboxManager`. All resources use the `ls-` name prefix; `WaitReady` and `Release` dispatch by reading `cfg.Sandbox.Mode` from the config cache.
+- **`AgentCaller`:** Boundary between reconciler and runtime (stub vs sandbox+batch). Methods mirror workflow steps plus `ReleaseSandboxes`. [OLS-3066] Production implementation no longer makes HTTP calls — it creates input ConfigMaps and pods, then returns. Result processing happens on re-entry when the Result CR appears.
+- **`SandboxLifecycle`:** Interface (`Create`/`Release`) for swappable sandbox management (tests can fake). Production implementation: `SandboxManager`. All resources use the `ls-` name prefix; `Release` dispatches by reading `cfg.Sandbox.Mode` from the config cache. [OLS-3066] `WaitReady` is removed — the operator watches for pod completion and Result CR creation instead of polling.
 - **`PodSpecBuilder`:** Internal to `SandboxManager`. Takes base `*corev1.PodSpec` from config cache and overlays agent config. Produces typed `corev1.PodSpec`; the mode then determines delivery (bare Pod or SandboxTemplate conversion).
 - **`resolveAgenticRun`:** Produces `resolvedWorkflow` with cached `Agent` + `LLMProvider` per name; applies per-stage agent overrides from `AgenticRunApproval` via `getStageOverrideAgent`; `Execution`/`Verification` steps nil when corresponding spec sections are zero.
 
@@ -188,13 +185,14 @@ cmd/main.go
 AgenticRunReconciler.Reconcile
   ├─ config guard: cfgCache.Available() → false: fail with clear error
   ├─ approval.go, resolve.go
-  ├─ handlers.go → results.go, rbac.go, helpers.go (status, option trim)
-  └─ Agent (SandboxAgentCaller)
-        └─ Sandbox.Create → config cache → PodSpecBuilder.Build → bare Pod / SandboxClaim+Template (ls- prefix)
-        └─ Sandbox.WaitReady (routes by cfg.Sandbox.Mode)
-        └─ Sandbox.Release (routes by cfg.Sandbox.Mode)
-        └─ helpers.go (query templates), schemas.go (outputSchemaForStep)
-        └─ client.go (HTTP Run)
+  ├─ handlers.go → results.go (read Result CRs), rbac.go, helpers.go (status, option trim)
+  └─ Agent (SandboxAgentCaller) [OLS-3066: batch model]
+        ├─ First entry: buildInputConfigMap (query templates + schemas + context + result template)
+        │   └─ Create ConfigMap → Sandbox.Create (config cache → PodSpecBuilder → bare Pod / SandboxClaim+Template)
+        │   └─ patchSandboxInfo → return RequeueAfter(30s)
+        ├─ Re-entry: check Result CR (Completed condition) → process result
+        │   └─ Update run conditions, append result ref, cleanup pod + ConfigMap
+        └─ Sandbox.Release (terminal phases, deletion)
 ```
 
 ---
@@ -208,6 +206,6 @@ AgenticRunReconciler.Reconcile
 - **Workflow resolution errors:** Patched onto `AgenticRunConditionAnalyzed` false — see API for exact condition ordering vs `DerivePhase`.
 - **`selectedOption` vs trim:** Verification uses latest analysis result’s **first** option (`Options[0]`) when resolving; execution path uses `trimNonSelectedOptions` which respects `AgenticRunApproval` execution option index when multiple options exist.
 - **`maxAttempts`:** Combines `ApprovalPolicy.Spec.MaxAttempts` ceiling with per-approval execution override (`helpers.go`); retry semantics interact with verification failure branch in `handleVerification` (see **what/run-lifecycle.md**).
-- **Sandbox FQDN:** Agent URL assumes port `8080` unless endpoint already has `http` prefix.
-- **Logs CLI vs status:** CLI `logs` uses `SandboxInfo.ClaimName` as **pod name** in `GetLogs`; ensure cluster layout matches (if claim name ≠ pod name, logs command would need revision — operational detail for agents touching `logs.go`).
+- **[OLS-3066] No sandbox FQDN or endpoint:** With the batch model, the operator does not construct agent URLs or connect to sandbox pods over HTTP. The former `Sandbox FQDN` note is obsolete.
+- **Logs CLI vs status:** CLI `logs` uses `SandboxInfo.ClaimName` as **pod name** in `GetLogs`; ensure cluster layout matches (if claim name ≠ pod name, logs command would need revision — operational detail for agents touching `logs.go`). [OLS-3066] Log tailing is unchanged — sandbox pods still write progress to stdout during execution.
 - **Tests:** `state_machine_test.go` is the primary lifecycle matrix; `testAgentCaller` implements `AgentCaller` with injectable errors/results; fake client uses `WithStatusSubresource` for run and result types.
