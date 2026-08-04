@@ -39,8 +39,8 @@ Options:
   --operator-image=IMAGE          Agentic operator image (default: Konflux :main)
   --sandbox-image=IMAGE           Sandbox image (default: Konflux :main)
   --console-image=IMAGE           Console plugin image (default: Konflux :main)
-  --alerts-adapter-image=IMAGE    Alerts adapter image (default: resolved from Quay)
-  --otel-image=IMAGE              OTEL collector image (default: resolved from Quay)
+  --alerts-adapter-image=IMAGE    Alerts adapter image (default: Konflux :main)
+  --otel-image=IMAGE              OTEL collector image (default: Konflux :main)
   --postgres                      Deploy Postgres backend for OTEL audit logs
   -h, --help                      Show this help and exit
 EOF
@@ -76,11 +76,8 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 step "1/7 Checking prerequisites"
 
 command -v oc >/dev/null 2>&1 || fail "oc CLI not found. Install it first."
-command -v curl >/dev/null 2>&1 || fail "curl not found. Required for image resolution from Quay."
-command -v python3 >/dev/null 2>&1 || fail "python3 not found. Required for image resolution from Quay."
-if [ "${WITH_POSTGRES}" = "1" ]; then
-  command -v openssl >/dev/null 2>&1 || fail "openssl not found. Required for Postgres password generation."
-fi
+command -v python3 >/dev/null 2>&1 || fail "python3 not found. Required by deploy scripts."
+command -v openssl >/dev/null 2>&1 || fail "openssl not found. Required by deploy scripts."
 info "Required CLI tools found"
 
 for script in deploy-otel.sh deploy-alerts-adapter.sh deploy-configmap.sh deploy-operator.sh deploy-console.sh; do

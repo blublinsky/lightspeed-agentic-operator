@@ -15,14 +15,12 @@
 #   - Namespace openshift-lightspeed exists
 #
 # Flags:
-#   --image=IMAGE   Alerts adapter image. If omitted, resolves the latest
-#                   build from Quay automatically.
+#   --image=IMAGE   Alerts adapter image (default: Konflux :main).
 
 set -euo pipefail
 
 NAMESPACE="${NAMESPACE:-openshift-lightspeed}"
-ALERTS_ADAPTER_IMAGE=""
-QUAY_REPO="redhat-user-workloads/crt-nshift-lightspeed-tenant/lightspeed-agentic-alerts-adapter"
+ALERTS_ADAPTER_IMAGE="quay.io/redhat-user-workloads/crt-nshift-lightspeed-tenant/lightspeed-agentic-alerts-adapter:main"
 
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -32,20 +30,6 @@ while [ $# -gt 0 ]; do
   esac
 done
 
-if [ -z "${ALERTS_ADAPTER_IMAGE}" ]; then
-  echo "  Resolving latest alerts adapter image from Quay..."
-  TAG="$(curl -fsSL "https://quay.io/api/v1/repository/${QUAY_REPO}/tag/?limit=100&onlyActiveTags=true" \
-    | python3 -c "
-import json,sys,re
-tags = json.load(sys.stdin)['tags']
-pat = re.compile(r'^(on-pr-)?[0-9a-f]{40}$')
-tag = next((t['name'] for t in sorted(tags, key=lambda t: t['start_ts'], reverse=True) if pat.match(t['name'])), None)
-if not tag: sys.exit('No matching tag found in Quay repo')
-print(tag)
-")" || { echo "Failed to resolve image from Quay. Use --image=IMAGE." >&2; exit 1; }
-  ALERTS_ADAPTER_IMAGE="quay.io/${QUAY_REPO}:${TAG}"
-  echo "  Resolved: ${ALERTS_ADAPTER_IMAGE}"
-fi
 
 ADAPTER_NAME="lightspeed-agentic-alerts-adapter"
 ALERTMANAGER_URL="https://alertmanager-main.openshift-monitoring.svc:9094"
