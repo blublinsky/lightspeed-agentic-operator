@@ -11,6 +11,7 @@ import (
 // backward-compatible with agents that don't emit the field).
 type AnalysisOutput struct {
 	Success        bool
+	Summary        string
 	ActionRequired *bool
 	Options        []agenticv1alpha1.RemediationOption
 	Diagnosis      *agenticv1alpha1.DiagnosisResult
@@ -25,6 +26,7 @@ func (a *AnalysisOutput) IsActionRequired() bool {
 // ExecutionOutput holds the execution agent's output.
 type ExecutionOutput struct {
 	Success      bool
+	Summary      string
 	ActionsTaken []agenticv1alpha1.ExecutionAction
 	Verification agenticv1alpha1.ExecutionVerification
 }

@@ -31,6 +31,7 @@ const (
 
 type analysisResponse struct {
 	Success        bool                                `json:"success"`
+	Summary        string                              `json:"summary,omitempty"`
 	ActionRequired *bool                               `json:"actionRequired,omitempty"`
 	Diagnosis      *agenticv1alpha1.DiagnosisResult    `json:"diagnosis,omitempty"`
 	Options        []agenticv1alpha1.RemediationOption `json:"options"`
@@ -38,6 +39,7 @@ type analysisResponse struct {
 
 type executionResponse struct {
 	Success      bool                                   `json:"success"`
+	Summary      string                                 `json:"summary,omitempty"`
 	ActionsTaken []agenticv1alpha1.ExecutionAction      `json:"actionsTaken"`
 	Verification *agenticv1alpha1.ExecutionVerification `json:"verification,omitempty"`
 }
@@ -103,6 +105,7 @@ func (s *SandboxAgentCaller) Analyze(ctx context.Context, run *agenticv1alpha1.A
 
 	return &AnalysisOutput{
 		Success:        resp.Success,
+		Summary:        resp.Summary,
 		ActionRequired: &actionRequired,
 		Options:        resp.Options,
 		Diagnosis:      resp.Diagnosis,
@@ -128,6 +131,7 @@ func (s *SandboxAgentCaller) Execute(ctx context.Context, run *agenticv1alpha1.A
 
 	out := &ExecutionOutput{
 		Success:      resp.Success,
+		Summary:      resp.Summary,
 		ActionsTaken: resp.ActionsTaken,
 	}
 	if resp.Verification != nil {
