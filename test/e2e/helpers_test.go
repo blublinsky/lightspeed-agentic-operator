@@ -159,7 +159,7 @@ func ensureCrashLoopPod(t *testing.T, c client.Client) {
 	if err := c.Delete(ctx, pod); err != nil && !apierrors.IsNotFound(err) {
 		t.Fatalf("delete previous crash-loop pod: %v", err)
 	}
-	if err := wait.PollUntilContextTimeout(ctx, time.Second, 30*time.Second, true, func(ctx context.Context) (bool, error) {
+	if err := wait.PollUntilContextTimeout(ctx, time.Second, 2*time.Minute, true, func(ctx context.Context) (bool, error) {
 		var existing corev1.Pod
 		if err := c.Get(ctx, types.NamespacedName{Name: pod.Name, Namespace: pod.Namespace}, &existing); err != nil {
 			if apierrors.IsNotFound(err) {
@@ -425,7 +425,19 @@ func createAgenticRun(t *testing.T, c client.Client, name string) *agenticv1alph
 	return prop
 }
 
-// waitForPhase polls until the AgenticRun reaches the target phase or times out.
+// terminalPhases lists phases that will never transition further.
+var terminalPhases = map[agenticv1alpha1.AgenticRunPhase]bool{
+	agenticv1alpha1.AgenticRunPhaseCompleted:        true,
+	agenticv1alpha1.AgenticRunPhaseFailed:           true,
+	agenticv1alpha1.AgenticRunPhaseDenied:           true,
+	agenticv1alpha1.AgenticRunPhaseEscalated:        true,
+	agenticv1alpha1.AgenticRunPhaseEmergencyStopped: true,
+	agenticv1alpha1.AgenticRunPhaseNoActionRequired: true,
+}
+
+// waitForPhase polls until the AgenticRun reaches the target phase. It fails
+// immediately if the run reaches a different terminal phase, since terminal
+// phases never transition further.
 func waitForPhase(t *testing.T, c client.Client, name string, target agenticv1alpha1.AgenticRunPhase) agenticv1alpha1.AgenticRun {
 	t.Helper()
 	ctx := context.Background()
@@ -437,7 +449,13 @@ func waitForPhase(t *testing.T, c client.Client, name string, target agenticv1al
 		}
 		phase := agenticv1alpha1.DerivePhase(updated.Status.Conditions)
 		t.Logf("polling %s: phase=%s conditions=%d", name, phase, len(updated.Status.Conditions))
-		return phase == target, nil
+		if phase == target {
+			return true, nil
+		}
+		if terminalPhases[phase] {
+			return false, fmt.Errorf("reached terminal phase %s while waiting for %s", phase, target)
+		}
+		return false, nil
 	})
 	if err != nil {
 		phase := agenticv1alpha1.DerivePhase(updated.Status.Conditions)
