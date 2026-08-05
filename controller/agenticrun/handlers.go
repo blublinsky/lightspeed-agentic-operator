@@ -104,7 +104,7 @@ func (r *AgenticRunReconciler) handleAnalysis(
 		return r.failStep(spanCtx, run, agenticv1alpha1.AgenticRunConditionAnalyzed, err)
 	}
 	if !analysisResult.Success {
-		return r.failStep(spanCtx, run, agenticv1alpha1.AgenticRunConditionAnalyzed, fmt.Errorf("analysis agent reported failure"))
+		return r.failStep(spanCtx, run, agenticv1alpha1.AgenticRunConditionAnalyzed, fmt.Errorf("%s", analysisFailureMessage(analysisResult)))
 	}
 	base = run.DeepCopy()
 	completedAt := metav1.Now()
@@ -187,7 +187,7 @@ func (r *AgenticRunReconciler) handleRevision(
 		return r.failStep(spanCtx, run, agenticv1alpha1.AgenticRunConditionAnalyzed, err)
 	}
 	if !analysisResult.Success {
-		return r.failStep(spanCtx, run, agenticv1alpha1.AgenticRunConditionAnalyzed, fmt.Errorf("analysis agent reported failure"))
+		return r.failStep(spanCtx, run, agenticv1alpha1.AgenticRunConditionAnalyzed, fmt.Errorf("%s", analysisFailureMessage(analysisResult)))
 	}
 
 	base = run.DeepCopy()
@@ -335,7 +335,7 @@ func (r *AgenticRunReconciler) handleExecution(
 	}
 	if !execResult.Success {
 		if !hasMutationSuccess(execResult.ActionsTaken) {
-			return r.failStep(spanCtx, run, agenticv1alpha1.AgenticRunConditionExecuted, fmt.Errorf("execution agent reported failure"))
+			return r.failStep(spanCtx, run, agenticv1alpha1.AgenticRunConditionExecuted, fmt.Errorf("%s", executionFailureMessage(execResult)))
 		}
 		log.Info("execution agent reported success=false but all mutations succeeded; deferring outcome to verification step")
 		execResult.Success = true
@@ -747,6 +747,45 @@ func (r *AgenticRunReconciler) setNoActionRequired(ctx context.Context, run *age
 	}
 	log.Info("no action required", "message", message)
 	return ctrl.Result{}, nil
+}
+
+// analysisFailureMessage builds a descriptive failure message from the
+// analysis output, preferring the sandbox summary when available.
+func analysisFailureMessage(result *AnalysisOutput) string {
+	if result.Summary != "" {
+		return fmt.Sprintf("Analysis failed: %s", result.Summary)
+	}
+	if result.Diagnosis != nil && result.Diagnosis.Summary != "" {
+		return fmt.Sprintf("Analysis failed: %s", result.Diagnosis.Summary)
+	}
+	for _, opt := range result.Options {
+		if opt.Diagnosis.Summary != "" {
+			return fmt.Sprintf("Analysis failed: %s", opt.Diagnosis.Summary)
+		}
+	}
+	return "Analysis agent reported failure"
+}
+
+// executionFailureMessage builds a descriptive failure message from the
+// execution output, preferring the sandbox summary when available.
+func executionFailureMessage(result *ExecutionOutput) string {
+	if result.Summary != "" {
+		return fmt.Sprintf("Execution failed: %s", result.Summary)
+	}
+	for _, action := range result.ActionsTaken {
+		if action.Outcome == agenticv1alpha1.ActionOutcomeFailed {
+			if action.Error != "" {
+				return fmt.Sprintf("Execution failed: %s — %s", action.Description, action.Error)
+			}
+			if action.Description != "" {
+				return fmt.Sprintf("Execution failed: %s", action.Description)
+			}
+		}
+	}
+	if result.Verification.Summary != "" {
+		return fmt.Sprintf("Execution failed: %s", result.Verification.Summary)
+	}
+	return "Execution agent reported failure"
 }
 
 func conditionTime(conditions []metav1.Condition, condType string) *metav1.Time {

@@ -1526,3 +1526,122 @@ func TestConditionTime(t *testing.T) {
 		t.Errorf("expected nil for missing condition, got %v", *got)
 	}
 }
+
+func TestAnalysisFailureMessage(t *testing.T) {
+	tests := []struct {
+		name   string
+		result *AnalysisOutput
+		want   string
+	}{
+		{
+			name: "summary takes priority",
+			result: &AnalysisOutput{
+				Summary:   "Unable to connect to cluster API",
+				Diagnosis: &agenticv1alpha1.DiagnosisResult{Summary: "should not appear"},
+			},
+			want: "Analysis failed: Unable to connect to cluster API",
+		},
+		{
+			name: "falls back to top-level diagnosis",
+			result: &AnalysisOutput{
+				Diagnosis: &agenticv1alpha1.DiagnosisResult{Summary: "OOMKilled due to memory limit of 256Mi"},
+			},
+			want: "Analysis failed: OOMKilled due to memory limit of 256Mi",
+		},
+		{
+			name: "falls back to per-option diagnosis",
+			result: &AnalysisOutput{
+				Options: []agenticv1alpha1.RemediationOption{
+					{Diagnosis: agenticv1alpha1.DiagnosisResult{Summary: "CrashLoopBackOff caused by missing config"}},
+				},
+			},
+			want: "Analysis failed: CrashLoopBackOff caused by missing config",
+		},
+		{
+			name: "uses JSON summary when no top-level summary property",
+			result: &AnalysisOutput{
+				Summary:   `{"success": false, "options": []}`,
+				Diagnosis: &agenticv1alpha1.DiagnosisResult{Summary: "real diagnosis"},
+			},
+			want: `Analysis failed: {"success": false, "options": []}`,
+		},
+		{
+			name:   "no details available",
+			result: &AnalysisOutput{},
+			want:   "Analysis agent reported failure",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := analysisFailureMessage(tt.result); got != tt.want {
+				t.Errorf("analysisFailureMessage() = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestExecutionFailureMessage(t *testing.T) {
+	tests := []struct {
+		name   string
+		result *ExecutionOutput
+		want   string
+	}{
+		{
+			name: "summary takes priority",
+			result: &ExecutionOutput{
+				Summary: "Timed out waiting for pod readiness",
+				ActionsTaken: []agenticv1alpha1.ExecutionAction{
+					{Description: "should not appear", Outcome: agenticv1alpha1.ActionOutcomeFailed, Error: "also ignored"},
+				},
+			},
+			want: "Execution failed: Timed out waiting for pod readiness",
+		},
+		{
+			name: "falls back to failed action with error",
+			result: &ExecutionOutput{
+				ActionsTaken: []agenticv1alpha1.ExecutionAction{
+					{Description: "Patched deployment/web", Outcome: agenticv1alpha1.ActionOutcomeFailed, Error: "forbidden: insufficient permissions"},
+				},
+			},
+			want: "Execution failed: Patched deployment/web — forbidden: insufficient permissions",
+		},
+		{
+			name: "falls back to failed action without error",
+			result: &ExecutionOutput{
+				ActionsTaken: []agenticv1alpha1.ExecutionAction{
+					{Description: "Scale deployment to 3 replicas", Outcome: agenticv1alpha1.ActionOutcomeFailed},
+				},
+			},
+			want: "Execution failed: Scale deployment to 3 replicas",
+		},
+		{
+			name: "uses JSON summary when no top-level summary property",
+			result: &ExecutionOutput{
+				Summary: `{"success": false, "actionsTaken": []}`,
+				ActionsTaken: []agenticv1alpha1.ExecutionAction{
+					{Description: "Patched deployment", Outcome: agenticv1alpha1.ActionOutcomeFailed},
+				},
+			},
+			want: `Execution failed: {"success": false, "actionsTaken": []}`,
+		},
+		{
+			name: "falls back to verification summary",
+			result: &ExecutionOutput{
+				Verification: agenticv1alpha1.ExecutionVerification{Summary: "Pod still in CrashLoopBackOff"},
+			},
+			want: "Execution failed: Pod still in CrashLoopBackOff",
+		},
+		{
+			name:   "no details available",
+			result: &ExecutionOutput{},
+			want:   "Execution agent reported failure",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := executionFailureMessage(tt.result); got != tt.want {
+				t.Errorf("executionFailureMessage() = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
