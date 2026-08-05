@@ -459,7 +459,7 @@ func waitForPhase(t *testing.T, c client.Client, name string, target agenticv1al
 	})
 	if err != nil {
 		phase := agenticv1alpha1.DerivePhase(updated.Status.Conditions)
-		t.Fatalf("timed out waiting for phase %s; current=%s conditions=%v", target, phase, updated.Status.Conditions)
+		t.Fatalf("waiting for phase %s failed: %v; current=%s conditions=%v", target, err, phase, updated.Status.Conditions)
 	}
 	return updated
 }
