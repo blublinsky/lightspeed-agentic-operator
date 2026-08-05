@@ -112,8 +112,8 @@ resolve_model() {
     fi
     case "$provider" in
         claude) echo "claude-sonnet-4-6" ;;
-        gemini) echo "gemini-2.5-flash" ;;
-        openai) echo "gpt-4.1-mini" ;;
+        gemini) echo "gemini-3.1-flash" ;;
+        openai) echo "gpt-5.4-mini" ;;
         *) log_error "Unknown provider: $provider"; return 1 ;;
     esac
 }
