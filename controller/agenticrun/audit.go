@@ -365,7 +365,6 @@ func (l *ProductionAuditLogger) EmitAnalysisCompleted(ctx context.Context, run *
 		prefix := fmt.Sprintf("option.%d.", i)
 		attrs = append(attrs,
 			attribute.String(prefix+"title", opt.Title),
-			attribute.String(prefix+"risk", string(opt.RemediationPlan.Risk)),
 		)
 	}
 	attrs = append(attrs, attribute.String("agenticrun.cr", serializeCRJSON(result)))

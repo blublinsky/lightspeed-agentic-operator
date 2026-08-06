@@ -93,7 +93,7 @@ func (s *SandboxAgentCaller) Analyze(ctx context.Context, run *agenticv1alpha1.A
 		}
 	}
 
-	if resp.Diagnosis != nil && (resp.Diagnosis.Summary == "" || resp.Diagnosis.RootCause == "" || resp.Diagnosis.Confidence == "") {
+	if resp.Diagnosis != nil && (resp.Diagnosis.Summary == "" || resp.Diagnosis.RootCause == "") {
 		log.Info("ignoring empty top-level diagnosis (per-option diagnoses used instead)", "run", run.Name)
 		resp.Diagnosis = nil
 	}

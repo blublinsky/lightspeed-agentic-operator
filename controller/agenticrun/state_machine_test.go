@@ -1072,9 +1072,8 @@ func TestNoActionRequired_TerminalWithoutExecution(t *testing.T) {
 		Success:        true,
 		ActionRequired: ptr.To(false),
 		Diagnosis: &agenticv1alpha1.DiagnosisResult{
-			Summary:    "Alert is a false alarm — pod restarted once due to a transient OOM but has been stable since",
-			Confidence: "High",
-			RootCause:  "Transient OOM, already self-healed",
+			Summary:   "Alert is a false alarm — pod restarted once due to a transient OOM but has been stable since",
+			RootCause: "Transient OOM, already self-healed",
 		},
 	}
 	r, fc := newReconcilerWithPolicy(t, run, agent, testAutoApprovePolicy())
@@ -1097,10 +1096,6 @@ func TestNoActionRequired_TerminalWithoutExecution(t *testing.T) {
 	if ar.Status.Diagnosis.Summary == "" {
 		t.Fatal("expected Diagnosis to be set")
 	}
-	if ar.Status.Diagnosis.Confidence != "High" {
-		t.Errorf("Diagnosis.Confidence = %q, want High", ar.Status.Diagnosis.Confidence)
-	}
-
 	// Execution and verification should never have run
 	if len(p.Status.Steps.Execution.Results) != 0 {
 		t.Error("execution should not have run")
@@ -1122,9 +1117,8 @@ func TestNoActionRequired_RevisionTriggersReanalysis(t *testing.T) {
 		Success:        true,
 		ActionRequired: ptr.To(false),
 		Diagnosis: &agenticv1alpha1.DiagnosisResult{
-			Summary:    "False alarm",
-			Confidence: "Medium",
-			RootCause:  "Transient issue",
+			Summary:   "False alarm",
+			RootCause: "Transient issue",
 		},
 	}
 	r, fc := newReconcilerWithPolicy(t, run, agent, testAutoApprovePolicy())
@@ -1141,12 +1135,11 @@ func TestNoActionRequired_RevisionTriggersReanalysis(t *testing.T) {
 		Options: []agenticv1alpha1.RemediationOption{{
 			Title: "Increase memory",
 			Diagnosis: agenticv1alpha1.DiagnosisResult{
-				Summary: "OOM", Confidence: "High", RootCause: "Low limit",
+				Summary: "OOM", RootCause: "Low limit",
 			},
 			RemediationPlan: agenticv1alpha1.RemediationPlan{
 				Description: "Increase to 512Mi",
 				Actions:     []agenticv1alpha1.ProposedAction{{Command: "kubectl patch deploy/web -n production -p '{}'", Type: "mutation", Description: "Patch"}},
-				Risk:        "Low",
 				Reversible:  agenticv1alpha1.ReversibilityReversible,
 			},
 		}},
@@ -1173,12 +1166,11 @@ func TestNoActionRequired_NilActionRequiredDefaultsToTrue(t *testing.T) {
 		Options: []agenticv1alpha1.RemediationOption{{
 			Title: "Increase memory",
 			Diagnosis: agenticv1alpha1.DiagnosisResult{
-				Summary: "OOM", Confidence: "High", RootCause: "Low limit",
+				Summary: "OOM", RootCause: "Low limit",
 			},
 			RemediationPlan: agenticv1alpha1.RemediationPlan{
 				Description: "Increase to 512Mi",
 				Actions:     []agenticv1alpha1.ProposedAction{{Command: "kubectl patch deploy/web -n production -p '{}'", Type: "mutation", Description: "Patch"}},
-				Risk:        "Low",
 				Reversible:  agenticv1alpha1.ReversibilityReversible,
 			},
 		}},

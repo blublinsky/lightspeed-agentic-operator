@@ -391,7 +391,7 @@ func TestAnalysisOutputSchema_ActionRequiredAndDiagnosis(t *testing.T) {
 		t.Fatal("schema missing diagnosis property")
 	}
 	diagProps := diag.(map[string]any)["properties"].(map[string]any)
-	for _, key := range []string{"summary", "confidence", "rootCause"} {
+	for _, key := range []string{"summary", "rootCause"} {
 		if _, ok := diagProps[key]; !ok {
 			t.Errorf("diagnosis missing property %q", key)
 		}

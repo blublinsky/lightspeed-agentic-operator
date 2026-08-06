@@ -101,7 +101,7 @@ func TestSandboxAgentCaller_Analyze_HappyPath(t *testing.T) {
 	sandbox := &mockSandboxProvider{claimName: "ls-analysis-fix-crash", endpoint: "http://sandbox:8080"}
 	httpClient := &mockHTTPClient{
 		response: &agentRunResponse{
-			Response: json.RawMessage(`{"success": true, "options": [{"title": "Increase memory", "diagnosis": {"summary": "OOM", "confidence": "High", "rootCause": "memory limit"}, "run": {"description": "Bump memory", "actions": [{"type": "patch", "description": "patch deploy"}], "risk": "Low"}}]}`),
+			Response: json.RawMessage(`{"success": true, "options": [{"title": "Increase memory", "diagnosis": {"summary": "OOM", "rootCause": "memory limit"}, "run": {"description": "Bump memory", "actions": [{"type": "patch", "description": "patch deploy"}]}}]}`),
 		},
 	}
 
@@ -115,9 +115,6 @@ func TestSandboxAgentCaller_Analyze_HappyPath(t *testing.T) {
 	}
 	if result.Options[0].Title != "Increase memory" {
 		t.Errorf("title = %q", result.Options[0].Title)
-	}
-	if result.Options[0].Diagnosis.Confidence != "High" {
-		t.Errorf("confidence = %q", result.Options[0].Diagnosis.Confidence)
 	}
 }
 
@@ -411,10 +408,9 @@ func TestSandboxAgentCaller_Analyze_EmptyTopLevelDiagnosis(t *testing.T) {
 		name      string
 		diagnosis string
 	}{
-		{"both empty", `{"confidence": "Low", "rootCause": "", "summary": ""}`},
-		{"summary only empty", `{"confidence": "Low", "rootCause": "some cause", "summary": ""}`},
-		{"rootCause only empty", `{"confidence": "Low", "rootCause": "", "summary": "some summary"}`},
-		{"confidence empty", `{"confidence": "", "rootCause": "some cause", "summary": "some summary"}`},
+		{"both empty", `{"rootCause": "", "summary": ""}`},
+		{"summary only empty", `{"rootCause": "some cause", "summary": ""}`},
+		{"rootCause only empty", `{"rootCause": "", "summary": "some summary"}`},
 	}
 
 	for _, tc := range cases {
@@ -428,8 +424,8 @@ func TestSandboxAgentCaller_Analyze_EmptyTopLevelDiagnosis(t *testing.T) {
 						"diagnosis": %s,
 						"options": [{
 							"title": "Increase connection pool limits",
-							"diagnosis": {"confidence": "High", "rootCause": "reporting-service opens too many connections", "summary": "PostgresqlTooManyConnections firing"},
-							"remediationPlan": {"description": "Increase limits", "actions": [{"command": "kubectl patch", "type": "patch", "description": "patch configmap"}], "risk": "Low"}
+							"diagnosis": {"rootCause": "reporting-service opens too many connections", "summary": "PostgresqlTooManyConnections firing"},
+							"remediationPlan": {"description": "Increase limits", "actions": [{"command": "kubectl patch", "type": "patch", "description": "patch configmap"}]}
 						}]
 					}`, tc.diagnosis)),
 				},
@@ -489,7 +485,6 @@ func TestSandboxAgentCaller_ExecutionQueryFraming(t *testing.T) {
 		RemediationPlan: agenticv1alpha1.RemediationPlan{
 			Description: "Patch deployment memory",
 			Actions:     []agenticv1alpha1.ProposedAction{{Command: "kubectl set resources deployment/web -n production --limits=memory=512Mi", Type: "mutation", Description: "Set memory to 512Mi"}},
-			Risk:        "Low",
 		},
 	}
 	run := testSandboxAgenticRun()
@@ -565,7 +560,7 @@ func TestSandboxAgentCaller_Analyze_PatchesSandboxInfo(t *testing.T) {
 	sandbox := &mockSandboxProvider{claimName: "ls-analysis-fix-crash", endpoint: "http://sandbox:8080"}
 	httpClient := &mockHTTPClient{
 		response: &agentRunResponse{
-			Response: json.RawMessage(`{"success": true, "options": [{"title": "Fix it", "diagnosis": {"summary": "broken", "confidence": "High", "rootCause": "bug"}, "run": {"description": "fix", "actions": [{"type": "patch", "description": "patch"}], "risk": "Low"}}]}`),
+			Response: json.RawMessage(`{"success": true, "options": [{"title": "Fix it", "diagnosis": {"summary": "broken", "rootCause": "bug"}, "run": {"description": "fix", "actions": [{"type": "patch", "description": "patch"}]}}]}`),
 		},
 	}
 
