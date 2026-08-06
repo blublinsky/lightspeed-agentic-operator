@@ -755,10 +755,6 @@ func TestCopyResultStatus_AnalysisResult(t *testing.T) {
 func TestCopyResultStatus_ExecutionResult(t *testing.T) {
 	src := &agenticv1alpha1.ExecutionResult{}
 	src.Status.ActionsTaken = []agenticv1alpha1.ExecutionAction{{Description: "scaled up"}}
-	src.Status.Verification = agenticv1alpha1.ExecutionVerification{
-		ConditionOutcome: agenticv1alpha1.ConditionOutcomeImproved,
-		Summary:          "pod running",
-	}
 	src.Status.FailureReason = "rbac denied"
 	src.Status.Sandbox = agenticv1alpha1.SandboxInfo{ClaimName: "claim-e"}
 
@@ -767,12 +763,6 @@ func TestCopyResultStatus_ExecutionResult(t *testing.T) {
 
 	if len(dst.Status.ActionsTaken) != 1 || dst.Status.ActionsTaken[0].Description != "scaled up" {
 		t.Errorf("ActionsTaken = %v", dst.Status.ActionsTaken)
-	}
-	if dst.Status.Verification.ConditionOutcome != agenticv1alpha1.ConditionOutcomeImproved {
-		t.Errorf("Verification.ConditionOutcome = %q", dst.Status.Verification.ConditionOutcome)
-	}
-	if dst.Status.Verification.Summary != "pod running" {
-		t.Errorf("Verification.Summary = %q", dst.Status.Verification.Summary)
 	}
 	if dst.Status.FailureReason != "rbac denied" {
 		t.Errorf("FailureReason = %q", dst.Status.FailureReason)

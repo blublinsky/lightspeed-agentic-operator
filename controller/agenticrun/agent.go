@@ -28,7 +28,6 @@ type ExecutionOutput struct {
 	Success      bool
 	Summary      string
 	ActionsTaken []agenticv1alpha1.ExecutionAction
-	Verification agenticv1alpha1.ExecutionVerification
 }
 
 // VerificationOutput holds the verification agent's output.
@@ -93,10 +92,6 @@ func (s *StubAgentCaller) Execute(_ context.Context, _ *agenticv1alpha1.AgenticR
 			Description: "Stub execution action",
 			Outcome:     agenticv1alpha1.ActionOutcomeSucceeded,
 		}},
-		Verification: agenticv1alpha1.ExecutionVerification{
-			ConditionOutcome: agenticv1alpha1.ConditionOutcomeImproved,
-			Summary:          "Stub inline verification passed",
-		},
 	}, nil
 }
 

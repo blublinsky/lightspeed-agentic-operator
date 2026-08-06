@@ -455,7 +455,6 @@ func (r *AgenticRunReconciler) handleVerification(
 			execOutput = &ExecutionOutput{
 				Success:      latestRef.Outcome == agenticv1alpha1.ActionOutcomeSucceeded,
 				ActionsTaken: execCR.Status.ActionsTaken,
-				Verification: execCR.Status.Verification,
 			}
 		}
 	}
@@ -781,9 +780,6 @@ func executionFailureMessage(result *ExecutionOutput) string {
 				return fmt.Sprintf("Execution failed: %s", action.Description)
 			}
 		}
-	}
-	if result.Verification.Summary != "" {
-		return fmt.Sprintf("Execution failed: %s", result.Verification.Summary)
 	}
 	return "Execution agent reported failure"
 }

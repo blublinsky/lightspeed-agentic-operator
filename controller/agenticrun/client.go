@@ -40,23 +40,18 @@ type agentContext struct {
 }
 
 type agentExecutionResult struct {
-	Success      bool                                   `json:"success"`
-	ActionsTaken []agenticv1alpha1.ExecutionAction      `json:"actionsTaken"`
-	Verification *agenticv1alpha1.ExecutionVerification `json:"verification,omitempty"`
+	Success      bool                              `json:"success"`
+	ActionsTaken []agenticv1alpha1.ExecutionAction `json:"actionsTaken"`
 }
 
 func executionOutputToAgentResult(exec *ExecutionOutput) *agentExecutionResult {
 	if exec == nil {
 		return nil
 	}
-	r := &agentExecutionResult{
+	return &agentExecutionResult{
 		Success:      exec.Success,
 		ActionsTaken: exec.ActionsTaken,
 	}
-	if exec.Verification.Summary != "" || exec.Verification.ConditionOutcome != "" {
-		r.Verification = &exec.Verification
-	}
-	return r
 }
 
 type agentPreviousAttempt struct {

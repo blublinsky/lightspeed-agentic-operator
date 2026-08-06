@@ -228,32 +228,6 @@ spec:
                 - claimName
                 - namespace
                 type: object
-              verification:
-                description: |-
-                  verification is the lightweight inline verification the execution
-                  agent performs immediately after completing its actions.
-                properties:
-                  conditionOutcome:
-                    description: |-
-                      conditionOutcome indicates whether the target condition improved
-                      after the remediation (e.g., pod is no longer CrashLoopBackOff).
-                      Must be one of: Improved, Unchanged, Degraded.
-                    enum:
-                    - Improved
-                    - Unchanged
-                    - Degraded
-                    type: string
-                  summary:
-                    description: |-
-                      summary is a Markdown-formatted summary of the inline verification.
-                      Maximum 4096 characters.
-                    maxLength: 4096
-                    minLength: 1
-                    type: string
-                required:
-                - conditionOutcome
-                - summary
-                type: object
             type: object
         required:
         - spec
