@@ -472,7 +472,7 @@ func TestSandboxAgentCaller_AnalysisQueryFraming(t *testing.T) {
 	if !strings.Contains(httpClient.lastQuery, "Pod crashing with OOMKilled") {
 		t.Error("analysis query should contain the original request")
 	}
-	if !strings.Contains(httpClient.lastQuery, "Do NOT run any commands that mutate cluster state") {
+	if !strings.Contains(httpClient.lastQuery, "Do NOT run commands that change the cluster state") {
 		t.Error("analysis query should instruct agent not to mutate")
 	}
 }
