@@ -28,7 +28,7 @@ type mockSandboxProvider struct {
 	releaseCalls int
 }
 
-func (m *mockSandboxProvider) Create(_ context.Context, _ *agenticv1alpha1.AgenticRun, _ string, _ *agenticv1alpha1.Agent, _ *agenticv1alpha1.LLMProvider, _ *agenticv1alpha1.ToolsSpec, _ string) (string, error) {
+func (m *mockSandboxProvider) Create(_ context.Context, _ *agenticv1alpha1.AgenticRun, _ string, _ *agenticv1alpha1.Agent, _ *agenticv1alpha1.LLMProvider, _ *agenticv1alpha1.ToolsSpec, _ string, _ time.Duration) (string, error) {
 	m.claimCalls++
 	return m.claimName, m.claimErr
 }
@@ -48,7 +48,7 @@ type mockHTTPClient struct {
 	lastCtx    *agentContext
 }
 
-func (m *mockHTTPClient) Run(_ context.Context, systemPrompt, query string, _ json.RawMessage, agentCtx *agentContext, _ http.Header) (*agentRunResponse, error) {
+func (m *mockHTTPClient) Run(_ context.Context, systemPrompt, query string, _ json.RawMessage, agentCtx *agentContext, _ http.Header, _ time.Duration) (*agentRunResponse, error) {
 	m.lastQuery = query
 	m.lastPrompt = systemPrompt
 	m.lastCtx = agentCtx
@@ -61,9 +61,8 @@ func newTestSandboxAgentCaller(sandbox *mockSandboxProvider, httpClient *mockHTT
 	return &SandboxAgentCaller{
 		Sandbox:       sandbox,
 		K8sClient:     fc,
-		ClientFactory: func(_ string) AgentHTTPClientInterface { return httpClient },
+		ClientFactory: func(_ string, _ time.Duration) AgentHTTPClientInterface { return httpClient },
 		Namespace:     "test-ns",
-		Timeout:       5 * time.Minute,
 	}
 }
 
@@ -76,9 +75,8 @@ func newTestSandboxAgentCallerWithAgenticRun(sandbox *mockSandboxProvider, httpC
 	return &SandboxAgentCaller{
 		Sandbox:       sandbox,
 		K8sClient:     fc,
-		ClientFactory: func(_ string) AgentHTTPClientInterface { return httpClient },
+		ClientFactory: func(_ string, _ time.Duration) AgentHTTPClientInterface { return httpClient },
 		Namespace:     "test-ns",
-		Timeout:       5 * time.Minute,
 	}
 }
 
@@ -540,6 +538,12 @@ func TestSandboxAgentCaller_VerificationQueryFraming(t *testing.T) {
 	if strings.Contains(httpClient.lastQuery, "Pod crashing with OOMKilled") {
 		t.Error("verification query should NOT contain the original request")
 	}
+	if !strings.Contains(httpClient.lastQuery, "Convergence-dependent checks") {
+		t.Error("verification query should contain convergence retry guidance")
+	}
+	if !strings.Contains(httpClient.lastQuery, "before you are permitted to report Failed") {
+		t.Error("verification query should instruct agent to retry convergence checks")
+	}
 }
 
 func TestSandboxAgentCaller_ExecutionQueryNilOption(t *testing.T) {
@@ -768,7 +772,7 @@ type trackingMockSandbox struct {
 	errOnClaim string
 }
 
-func (m *trackingMockSandbox) Create(_ context.Context, _ *agenticv1alpha1.AgenticRun, _ string, _ *agenticv1alpha1.Agent, _ *agenticv1alpha1.LLMProvider, _ *agenticv1alpha1.ToolsSpec, _ string) (string, error) {
+func (m *trackingMockSandbox) Create(_ context.Context, _ *agenticv1alpha1.AgenticRun, _ string, _ *agenticv1alpha1.Agent, _ *agenticv1alpha1.LLMProvider, _ *agenticv1alpha1.ToolsSpec, _ string, _ time.Duration) (string, error) {
 	return "", nil
 }
 func (m *trackingMockSandbox) WaitReady(_ context.Context, _ string, _ time.Duration) (string, error) {

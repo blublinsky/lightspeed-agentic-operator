@@ -85,6 +85,7 @@ func (m *SandboxManager) Create(
 	llm *agenticv1alpha1.LLMProvider,
 	tools *agenticv1alpha1.ToolsSpec,
 	serviceAccount string,
+	deadline time.Duration,
 ) (string, error) {
 	cfg := m.config.Get()
 	if cfg == nil {
@@ -94,6 +95,11 @@ func (m *SandboxManager) Create(
 	podSpec, err := m.builder.Build(cfg.Sandbox.PodSpec, agent, llm, tools, &cfg.OTEL, step, string(run.UID), serviceAccount)
 	if err != nil {
 		return "", fmt.Errorf("%s: %w", errBuildPodSpec, err)
+	}
+
+	if deadline > 0 {
+		secs := int64(deadline.Seconds())
+		podSpec.ActiveDeadlineSeconds = &secs
 	}
 
 	name := truncateK8sName(fmt.Sprintf("ls-%s-%s", step, run.Name))

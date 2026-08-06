@@ -70,7 +70,7 @@ type agentRunResponse struct {
 
 // AgentHTTPClientInterface abstracts HTTP calls to the agent service for testability.
 type AgentHTTPClientInterface interface {
-	Run(ctx context.Context, systemPrompt, query string, outputSchema json.RawMessage, agentCtx *agentContext, extraHeaders http.Header) (*agentRunResponse, error)
+	Run(ctx context.Context, systemPrompt, query string, outputSchema json.RawMessage, agentCtx *agentContext, extraHeaders http.Header, timeout time.Duration) (*agentRunResponse, error)
 }
 
 // AgentHTTPClient communicates with the agentic-sandbox REST API.
@@ -79,10 +79,10 @@ type AgentHTTPClient struct {
 	endpoint   string
 }
 
-func NewAgentHTTPClient(endpoint string) AgentHTTPClientInterface {
+func NewAgentHTTPClient(endpoint string, timeout time.Duration) AgentHTTPClientInterface {
 	return &AgentHTTPClient{
 		httpClient: &http.Client{
-			Timeout: 5 * time.Minute,
+			Timeout: timeout,
 			Transport: &http.Transport{
 				TLSClientConfig: &tls.Config{InsecureSkipVerify: true}, //nolint:gosec // internal cluster traffic
 			},
@@ -91,12 +91,18 @@ func NewAgentHTTPClient(endpoint string) AgentHTTPClientInterface {
 	}
 }
 
-func (c *AgentHTTPClient) Run(ctx context.Context, systemPrompt, query string, outputSchema json.RawMessage, agentCtx *agentContext, extraHeaders http.Header) (*agentRunResponse, error) {
+func (c *AgentHTTPClient) Run(ctx context.Context, systemPrompt, query string, outputSchema json.RawMessage, agentCtx *agentContext, extraHeaders http.Header, timeout time.Duration) (*agentRunResponse, error) {
+	var timeoutMs *int64
+	if timeout > 0 {
+		ms := timeout.Milliseconds()
+		timeoutMs = &ms
+	}
 	req := agentRunRequest{
 		Query:        query,
 		SystemPrompt: systemPrompt,
 		OutputSchema: outputSchema,
 		Context:      agentCtx,
+		TimeoutMs:    timeoutMs,
 	}
 
 	body, err := json.Marshal(req)
