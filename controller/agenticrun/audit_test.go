@@ -431,8 +431,8 @@ func TestEmitAnalysisCompleted_EventAttributes(t *testing.T) {
 		},
 		Status: agenticv1alpha1.AnalysisResultStatus{
 			Options: []agenticv1alpha1.RemediationOption{
-				{Title: "Increase memory", RemediationPlan: agenticv1alpha1.RemediationPlan{Risk: agenticv1alpha1.RiskLevelLow}},
-				{Title: "Restart pod", RemediationPlan: agenticv1alpha1.RemediationPlan{Risk: agenticv1alpha1.RiskLevelMedium}},
+				{Title: "Increase memory"},
+				{Title: "Restart pod"},
 			},
 		},
 	}
@@ -474,15 +474,18 @@ func TestEmitAnalysisCompleted_EventAttributes(t *testing.T) {
 		"result.name":     "test-analysis",
 		"options.count":   "2",
 		"option.0.title":  "Increase memory",
-		"option.0.risk":   "Low",
 		"option.1.title":  "Restart pod",
-		"option.1.risk":   "Medium",
 	}
 	for key, want := range checks {
 		if got, ok := attrMap[key]; !ok {
 			t.Errorf("missing attribute %q", key)
 		} else if got != want {
 			t.Errorf("attribute %q = %q, want %q", key, got, want)
+		}
+	}
+	for _, key := range []string{"option.0.risk", "option.1.risk"} {
+		if _, ok := attrMap[key]; ok {
+			t.Errorf("unexpected attribute %q", key)
 		}
 	}
 }

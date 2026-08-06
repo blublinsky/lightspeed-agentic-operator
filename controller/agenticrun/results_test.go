@@ -199,10 +199,9 @@ func TestCreateAnalysisResult_EmptyTopLevelDiagnosis(t *testing.T) {
 		name      string
 		diagnosis *agenticv1alpha1.DiagnosisResult
 	}{
-		{"both empty", &agenticv1alpha1.DiagnosisResult{Confidence: agenticv1alpha1.ConfidenceLevelLow, RootCause: "", Summary: ""}},
-		{"summary only empty", &agenticv1alpha1.DiagnosisResult{Confidence: agenticv1alpha1.ConfidenceLevelLow, RootCause: "some cause", Summary: ""}},
-		{"rootCause only empty", &agenticv1alpha1.DiagnosisResult{Confidence: agenticv1alpha1.ConfidenceLevelLow, RootCause: "", Summary: "some summary"}},
-		{"confidence empty", &agenticv1alpha1.DiagnosisResult{Confidence: "", RootCause: "some cause", Summary: "some summary"}},
+		{"both empty", &agenticv1alpha1.DiagnosisResult{RootCause: "", Summary: ""}},
+		{"summary only empty", &agenticv1alpha1.DiagnosisResult{RootCause: "some cause", Summary: ""}},
+		{"rootCause only empty", &agenticv1alpha1.DiagnosisResult{RootCause: "", Summary: "some summary"}},
 	}
 
 	for _, tc := range cases {
@@ -222,14 +221,12 @@ func TestCreateAnalysisResult_EmptyTopLevelDiagnosis(t *testing.T) {
 				Options: []agenticv1alpha1.RemediationOption{{
 					Title: "Increase connection pool limits",
 					Diagnosis: agenticv1alpha1.DiagnosisResult{
-						Confidence: agenticv1alpha1.ConfidenceLevelHigh,
-						RootCause:  "reporting-service v1.0.2 opens a new PostgreSQL transaction every 10s",
-						Summary:    "PostgresqlTooManyConnections is firing in payments",
+						RootCause: "reporting-service v1.0.2 opens a new PostgreSQL transaction every 10s",
+						Summary:   "PostgresqlTooManyConnections is firing in payments",
 					},
 					RemediationPlan: agenticv1alpha1.RemediationPlan{
 						Description: "Increase max_connections",
 						Actions:     []agenticv1alpha1.ProposedAction{{Command: "kubectl patch", Type: "patch", Description: "Patch configmap"}},
-						Risk:        agenticv1alpha1.RiskLevelLow,
 					},
 				}},
 			}
@@ -246,9 +243,8 @@ func TestCreateAnalysisResult_EmptyTopLevelDiagnosis(t *testing.T) {
 				t.Fatalf("createAnalysisResult: %v", err)
 			}
 
-			if snapshot.Status.Diagnosis.Summary != "" || snapshot.Status.Diagnosis.RootCause != "" || snapshot.Status.Diagnosis.Confidence != "" {
-				t.Errorf("expected zero-value diagnosis in status, got confidence=%q summary=%q rootCause=%q",
-					snapshot.Status.Diagnosis.Confidence,
+			if snapshot.Status.Diagnosis.Summary != "" || snapshot.Status.Diagnosis.RootCause != "" {
+				t.Errorf("expected zero-value diagnosis in status, got summary=%q rootCause=%q",
 					snapshot.Status.Diagnosis.Summary,
 					snapshot.Status.Diagnosis.RootCause)
 			}

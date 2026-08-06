@@ -23,10 +23,9 @@ var AnalysisOutputSchema = json.RawMessage(`{
       "description": "Top-level root cause analysis. Required when actionRequired is false. When actionRequired is true, diagnosis is provided per-option instead.",
       "properties": {
         "summary": { "type": "string", "description": "Markdown-formatted diagnosis summary explaining the problem, symptoms, and findings" },
-        "confidence": { "type": "string", "enum": ["Low", "Medium", "High"], "description": "Your confidence in this diagnosis" },
         "rootCause": { "type": "string", "description": "Concise one-line root cause" }
       },
-      "required": ["summary", "confidence", "rootCause"]
+      "required": ["summary", "rootCause"]
     },
     "options": {
       "type": "array",
@@ -41,10 +40,9 @@ var AnalysisOutputSchema = json.RawMessage(`{
             "type": "object",
             "properties": {
               "summary": { "type": "string", "description": "Markdown-formatted root cause analysis explaining the problem, symptoms, and findings" },
-              "confidence": { "type": "string", "enum": ["Low", "Medium", "High"], "description": "Your confidence in this diagnosis. Low: ambiguous symptoms. Medium: likely cause identified. High: clear, deterministic root cause" },
               "rootCause": { "type": "string", "description": "Concise one-line root cause (e.g., 'OOMKilled due to memory limit of 256Mi')" }
             },
-            "required": ["summary", "confidence", "rootCause"]
+            "required": ["summary", "rootCause"]
           },
           "remediationPlan": {
             "type": "object",
@@ -63,7 +61,6 @@ var AnalysisOutputSchema = json.RawMessage(`{
                   "required": ["command", "type", "description"]
                 }
               },
-              "risk": { "type": "string", "enum": ["Low", "Medium", "High", "Critical"], "description": "Risk assessment. Low: safe to apply. Medium: review recommended. High: careful review required. Critical: manual approval strongly recommended" },
               "reversible": { "type": "string", "enum": ["Reversible", "Irreversible", "Partial"], "description": "Whether this remediation can be rolled back. Reversible: fully undoable. Irreversible: cannot undo. Partial: some actions undoable" },
               "rollbackPlan": {
                 "type": "object",
@@ -75,7 +72,7 @@ var AnalysisOutputSchema = json.RawMessage(`{
                 "required": ["description", "command"]
               }
             },
-            "required": ["description", "actions", "risk", "reversible"]
+            "required": ["description", "actions", "reversible"]
           },
           "verification": {
             "type": "object",
@@ -159,10 +156,9 @@ var MinimalAnalysisOutputSchema = json.RawMessage(`{
       "description": "Top-level root cause analysis. Required when actionRequired is false.",
       "properties": {
         "summary": { "type": "string", "description": "Markdown-formatted diagnosis summary" },
-        "confidence": { "type": "string", "enum": ["Low", "Medium", "High"], "description": "Your confidence in this diagnosis" },
         "rootCause": { "type": "string", "description": "Concise one-line root cause" }
       },
-      "required": ["summary", "confidence", "rootCause"]
+      "required": ["summary", "rootCause"]
     },
     "options": {
       "type": "array",

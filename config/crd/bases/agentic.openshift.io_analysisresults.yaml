@@ -171,7 +171,6 @@ spec:
                     minLength: 1
                     type: string
                 required:
-                - confidence
                 - rootCause
                 - summary
                 type: object
@@ -237,7 +236,6 @@ spec:
                           minLength: 1
                           type: string
                       required:
-                      - confidence
                       - rootCause
                       - summary
                       type: object
@@ -543,7 +541,6 @@ spec:
                       required:
                       - actions
                       - description
-                      - risk
                       type: object
                     summary:
                       description: |-

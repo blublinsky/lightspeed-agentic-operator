@@ -73,14 +73,12 @@ func (s *StubAgentCaller) Analyze(_ context.Context, _ *agenticv1alpha1.AgenticR
 		Options: []agenticv1alpha1.RemediationOption{{
 			Title: "Stub remediation",
 			Diagnosis: agenticv1alpha1.DiagnosisResult{
-				Summary:    "Stub diagnosis",
-				Confidence: "Medium",
-				RootCause:  "Stub root cause",
+				Summary:   "Stub diagnosis",
+				RootCause: "Stub root cause",
 			},
 			RemediationPlan: agenticv1alpha1.RemediationPlan{
 				Description: "Stub remediation plan",
 				Actions:     []agenticv1alpha1.ProposedAction{{Command: "kubectl get pods -n default", Type: "pre-check", Description: "Stub action"}},
-				Risk:        "Low",
 				Reversible:  agenticv1alpha1.ReversibilityReversible,
 			},
 		}},

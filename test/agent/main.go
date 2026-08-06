@@ -246,7 +246,6 @@ func cannedResponse(phase, targetNS string) []byte {
       "summary": "mock option summary",
       "diagnosis": {
         "summary": "mock diagnosis",
-        "confidence": "High",
         "rootCause": "mock root cause"
       },
       "remediationPlan": {
@@ -256,7 +255,6 @@ func cannedResponse(phase, targetNS string) []byte {
           { "command": "kubectl patch configmap mock-cm -n %s -p '{\"data\":{\"key\":\"value\"}}'", "type": "mutation", "description": "Patch configmap with fix" },
           { "command": "kubectl get configmap mock-cm -n %s -o jsonpath='{.data.key}'", "type": "post-check", "description": "Verify configmap was patched" }
         ],
-        "risk": "Low",
         "reversible": "Reversible"
       },
       "verification": {

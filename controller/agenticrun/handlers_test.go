@@ -844,12 +844,11 @@ func TestReconcile_ExecutionRBACCreatedOnApproval(t *testing.T) {
 		Options: []agenticv1alpha1.RemediationOption{{
 			Title: "Increase memory",
 			Diagnosis: agenticv1alpha1.DiagnosisResult{
-				Summary: "OOM", Confidence: "High", RootCause: "Low limit",
+				Summary: "OOM", RootCause: "Low limit",
 			},
 			RemediationPlan: agenticv1alpha1.RemediationPlan{
 				Description: "Increase to 512Mi",
 				Actions:     []agenticv1alpha1.ProposedAction{{Command: "kubectl patch deployment/web -n production -p '{}'", Type: "mutation", Description: "Patch deploy"}},
-				Risk:        "Low",
 				Reversible:  agenticv1alpha1.ReversibilityReversible,
 			},
 			RBAC: agenticv1alpha1.RBACResult{
@@ -930,12 +929,11 @@ func TestReconcile_ExecutionRBACCleanedOnFailure(t *testing.T) {
 		Options: []agenticv1alpha1.RemediationOption{{
 			Title: "Fix it",
 			Diagnosis: agenticv1alpha1.DiagnosisResult{
-				Summary: "Broken", Confidence: "High", RootCause: "Bug",
+				Summary: "Broken", RootCause: "Bug",
 			},
 			RemediationPlan: agenticv1alpha1.RemediationPlan{
 				Description: "Apply fix",
 				Actions:     []agenticv1alpha1.ProposedAction{{Command: "kubectl patch deployment/web -n production -p '{}'", Type: "mutation", Description: "Patch"}},
-				Risk:        "Low",
 				Reversible:  agenticv1alpha1.ReversibilityReversible,
 			},
 			RBAC: agenticv1alpha1.RBACResult{
@@ -988,14 +986,12 @@ func TestFullLifecycle_WithSandboxAgent(t *testing.T) {
 		Options: []agenticv1alpha1.RemediationOption{{
 			Title: "Increase memory limit",
 			Diagnosis: agenticv1alpha1.DiagnosisResult{
-				Summary:    "Pod OOMKilled due to 256Mi memory limit",
-				Confidence: "High",
-				RootCause:  "Memory limit too low for workload",
+				Summary:   "Pod OOMKilled due to 256Mi memory limit",
+				RootCause: "Memory limit too low for workload",
 			},
 			RemediationPlan: agenticv1alpha1.RemediationPlan{
 				Description: "Increase deployment memory limit to 512Mi",
 				Actions:     []agenticv1alpha1.ProposedAction{{Command: "kubectl set resources deployment/web -n production --limits=memory=512Mi", Type: "mutation", Description: "Patch deployment memory limit"}},
-				Risk:        "Low",
 				Reversible:  agenticv1alpha1.ReversibilityReversible,
 			},
 		}},
@@ -1056,9 +1052,6 @@ func TestFullLifecycle_WithSandboxAgent(t *testing.T) {
 	}
 	if ar.Status.Options[0].Title != "Increase memory limit" {
 		t.Errorf("option title = %q", ar.Status.Options[0].Title)
-	}
-	if ar.Status.Options[0].Diagnosis.Confidence != "High" {
-		t.Errorf("confidence = %q", ar.Status.Options[0].Diagnosis.Confidence)
 	}
 
 	// Approve

@@ -69,7 +69,7 @@ type DiagnosisResult struct {
 	// confidence is the agent's self-assessed confidence in its diagnosis.
 	// Higher confidence generally correlates with clearer symptoms and
 	// more deterministic root causes.
-	// +required
+	// +optional
 	Confidence ConfidenceLevel `json:"confidence,omitempty"`
 	// rootCause is a concise Markdown-formatted description of the identified
 	// root cause (e.g., "OOMKilled due to memory limit of 256Mi").
@@ -139,7 +139,7 @@ type RemediationPlan struct {
 	Actions []ProposedAction `json:"actions,omitempty"`
 	// risk is the agent's assessment of how risky the remediation is.
 	// Critical-risk remediations typically require explicit human review.
-	// +required
+	// +optional
 	Risk RiskLevel `json:"risk,omitempty"`
 	// reversible indicates whether the remediation can be rolled back
 	// if something goes wrong. See rollbackPlan for details.
