@@ -337,6 +337,23 @@ reviews:
         - Audit logging: who uploaded/downloaded/deleted what
         - Secure storage: encrypted at rest, access-controlled
 
+    # ── Agent prompt templates (STE) ──────────────────────────────
+    - path: "**/*.tmpl"
+      instructions: |
+        STE-lite review (structural rules from ASD-STE100, no predefined vocabulary):
+        - One instruction per sentence, max 20 words
+        - Descriptive sentences max 25 words
+        - Active voice; passive only when the actor is unknown
+        - Approved modals: can, will, must. Reject: should, would, may, might, could
+        - No contractions (it's → it is)
+        - No Latin abbreviations (e.g. → for example, i.e. → that is)
+        - Condition before command (If X, do Y — not Do Y if X)
+        - One word one meaning; do not rotate synonyms for the same concept
+        - Noun clusters max 3 words
+        - No phrasal verbs (walk through → check, set up → configure)
+        - Simple tenses only (no present perfect, no conditional)
+        - Domain terms (RBAC, replicaset, kubectl) are allowed
+
   # Security scanners (prodsec) + language-specific linters
   tools:
     gitleaks:
