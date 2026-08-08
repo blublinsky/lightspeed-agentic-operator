@@ -122,7 +122,7 @@ func TestSandboxAgentCaller_Execute_HappyPath(t *testing.T) {
 	sandbox := &mockSandboxProvider{claimName: "ls-execution-fix-crash", endpoint: "http://sandbox:8080"}
 	httpClient := &mockHTTPClient{
 		response: &agentRunResponse{
-			Response: json.RawMessage(`{"success": true, "actionsTaken": [{"type": "patch", "description": "Patched deployment", "outcome": "Succeeded"}], "verification": {"conditionOutcome": "Improved", "summary": "Pod running"}}`),
+			Response: json.RawMessage(`{"success": true, "actionsTaken": [{"type": "patch", "description": "Patched deployment", "outcome": "Succeeded"}]}`),
 		},
 	}
 
@@ -137,9 +137,6 @@ func TestSandboxAgentCaller_Execute_HappyPath(t *testing.T) {
 	}
 	if result.ActionsTaken[0].Outcome != agenticv1alpha1.ActionOutcomeSucceeded {
 		t.Errorf("outcome = %q", result.ActionsTaken[0].Outcome)
-	}
-	if result.Verification.ConditionOutcome != agenticv1alpha1.ConditionOutcomeImproved {
-		t.Errorf("conditionOutcome = %q", result.Verification.ConditionOutcome)
 	}
 }
 
@@ -308,10 +305,6 @@ func TestSandboxAgentCaller_VerifyPassesExecutionResult(t *testing.T) {
 			{Type: "patch", Description: "Patched deployment", Outcome: agenticv1alpha1.ActionOutcomeSucceeded, Output: "deployment.apps/nginx patched"},
 			{Type: "scale", Description: "Scaled to 3 replicas", Outcome: agenticv1alpha1.ActionOutcomeSucceeded},
 		},
-		Verification: agenticv1alpha1.ExecutionVerification{
-			ConditionOutcome: agenticv1alpha1.ConditionOutcomeImproved,
-			Summary:          "Pod running after patch",
-		},
 	}
 
 	_, _ = caller.Verify(context.Background(), testSandboxAgenticRun(), testSandboxStep(), option, exec, defaultSandboxSA)
@@ -334,12 +327,6 @@ func TestSandboxAgentCaller_VerifyPassesExecutionResult(t *testing.T) {
 	if httpClient.lastCtx.ExecutionResult.ActionsTaken[0].Description != "Patched deployment" {
 		t.Errorf("actionsTaken[0].description = %q", httpClient.lastCtx.ExecutionResult.ActionsTaken[0].Description)
 	}
-	if httpClient.lastCtx.ExecutionResult.Verification == nil {
-		t.Fatal("executionResult.verification should be set")
-	}
-	if httpClient.lastCtx.ExecutionResult.Verification.ConditionOutcome != agenticv1alpha1.ConditionOutcomeImproved {
-		t.Errorf("verification.conditionOutcome = %q", httpClient.lastCtx.ExecutionResult.Verification.ConditionOutcome)
-	}
 }
 
 func TestSandboxAgentCaller_VerifyNilExecLeavesExecutionResultNil(t *testing.T) {
@@ -356,30 +343,6 @@ func TestSandboxAgentCaller_VerifyNilExecLeavesExecutionResultNil(t *testing.T) 
 	}
 	if httpClient.lastCtx.ExecutionResult != nil {
 		t.Errorf("executionResult should be nil when exec is nil, got %+v", httpClient.lastCtx.ExecutionResult)
-	}
-}
-
-func TestSandboxAgentCaller_VerifyExecWithoutInlineVerification(t *testing.T) {
-	sandbox := &mockSandboxProvider{claimName: "claim-1", endpoint: "http://sandbox:8080"}
-	httpClient := &mockHTTPClient{
-		response: &agentRunResponse{Response: json.RawMessage(`{"success": true, "checks": [], "summary": "ok"}`)},
-	}
-
-	caller := newTestSandboxAgentCaller(sandbox, httpClient)
-	exec := &ExecutionOutput{
-		Success: true,
-		ActionsTaken: []agenticv1alpha1.ExecutionAction{
-			{Type: "apply", Description: "Applied manifest", Outcome: agenticv1alpha1.ActionOutcomeSucceeded},
-		},
-	}
-
-	_, _ = caller.Verify(context.Background(), testSandboxAgenticRun(), testSandboxStep(), nil, exec, defaultSandboxSA)
-
-	if httpClient.lastCtx.ExecutionResult == nil {
-		t.Fatal("expected executionResult in context")
-	}
-	if httpClient.lastCtx.ExecutionResult.Verification != nil {
-		t.Error("executionResult.verification should be nil when exec has zero-value verification")
 	}
 }
 

@@ -194,15 +194,6 @@ var ExecutionOutputSchema = json.RawMessage(`{
         },
         "required": ["type", "description", "outcome"]
       }
-    },
-    "verification": {
-      "type": "object",
-      "description": "Lightweight inline verification performed immediately after execution",
-      "properties": {
-        "conditionOutcome": { "type": "string", "enum": ["Improved", "Unchanged", "Degraded"], "description": "Whether the target condition improved after remediation" },
-        "summary": { "type": "string", "description": "Brief inline verification summary of what you observed after applying the fix" }
-      },
-      "required": ["conditionOutcome", "summary"]
     }
   },
   "required": ["success", "actionsTaken"]

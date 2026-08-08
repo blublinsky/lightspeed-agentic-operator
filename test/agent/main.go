@@ -58,9 +58,8 @@ type runPreviousAttempt struct {
 }
 
 type runExecutionResult struct {
-	Success      bool                                   `json:"success"`
-	ActionsTaken []agenticv1alpha1.ExecutionAction      `json:"actionsTaken"`
-	Verification *agenticv1alpha1.ExecutionVerification `json:"verification,omitempty"`
+	Success      bool                              `json:"success"`
+	ActionsTaken []agenticv1alpha1.ExecutionAction `json:"actionsTaken"`
 }
 
 func main() {
@@ -211,11 +210,7 @@ func cannedResponse(phase, targetNS string) []byte {
       "description": "mock execution action",
       "outcome": "Succeeded"
     }
-  ],
-  "verification": {
-    "conditionOutcome": "Improved",
-    "summary": "mock inline verification"
-  }
+  ]
 }`)
 	case "verification":
 		return []byte(`{

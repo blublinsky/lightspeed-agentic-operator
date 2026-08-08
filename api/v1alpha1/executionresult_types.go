@@ -41,11 +41,6 @@ type ExecutionResultStatus struct {
 	// +kubebuilder:validation:MaxItems=100
 	ActionsTaken []ExecutionAction `json:"actionsTaken,omitempty"`
 
-	// verification is the lightweight inline verification the execution
-	// agent performs immediately after completing its actions.
-	// +optional
-	Verification ExecutionVerification `json:"verification,omitzero"`
-
 	// sandbox tracks the sandbox pod used for this execution.
 	// +optional
 	Sandbox SandboxInfo `json:"sandbox,omitzero"`

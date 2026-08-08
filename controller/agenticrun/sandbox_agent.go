@@ -38,10 +38,9 @@ type analysisResponse struct {
 }
 
 type executionResponse struct {
-	Success      bool                                   `json:"success"`
-	Summary      string                                 `json:"summary,omitempty"`
-	ActionsTaken []agenticv1alpha1.ExecutionAction      `json:"actionsTaken"`
-	Verification *agenticv1alpha1.ExecutionVerification `json:"verification,omitempty"`
+	Success      bool                              `json:"success"`
+	Summary      string                            `json:"summary,omitempty"`
+	ActionsTaken []agenticv1alpha1.ExecutionAction `json:"actionsTaken"`
 }
 
 type verificationResponse struct {
@@ -129,15 +128,11 @@ func (s *SandboxAgentCaller) Execute(ctx context.Context, run *agenticv1alpha1.A
 		return nil, fmt.Errorf("%s: %w", ErrParseExecutionResponse, err)
 	}
 
-	out := &ExecutionOutput{
+	return &ExecutionOutput{
 		Success:      resp.Success,
 		Summary:      resp.Summary,
 		ActionsTaken: resp.ActionsTaken,
-	}
-	if resp.Verification != nil {
-		out.Verification = *resp.Verification
-	}
-	return out, nil
+	}, nil
 }
 
 func (s *SandboxAgentCaller) Verify(ctx context.Context, run *agenticv1alpha1.AgenticRun, step resolvedStep, option *agenticv1alpha1.RemediationOption, exec *ExecutionOutput, serviceAccount string) (*VerificationOutput, error) {

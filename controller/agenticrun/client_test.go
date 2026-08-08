@@ -88,13 +88,6 @@ func TestAgentHTTPClient_RunWithExecutionResult(t *testing.T) {
 		if req.Context.ExecutionResult.ActionsTaken[0].Description != "Patched deployment" {
 			t.Errorf("actionsTaken[0].description = %q", req.Context.ExecutionResult.ActionsTaken[0].Description)
 		}
-		if req.Context.ExecutionResult.Verification == nil {
-			t.Fatal("expected verification in executionResult")
-		}
-		if req.Context.ExecutionResult.Verification.Summary != "Pod running" {
-			t.Errorf("verification.summary = %q", req.Context.ExecutionResult.Verification.Summary)
-		}
-
 		w.Header().Set("Content-Type", "application/json")
 		w.Write([]byte(`{"success": true}`))
 	}))
@@ -107,10 +100,6 @@ func TestAgentHTTPClient_RunWithExecutionResult(t *testing.T) {
 			Success: true,
 			ActionsTaken: []agenticv1alpha1.ExecutionAction{
 				{Type: "patch", Description: "Patched deployment", Outcome: "Succeeded"},
-			},
-			Verification: &agenticv1alpha1.ExecutionVerification{
-				ConditionOutcome: "Improved",
-				Summary:          "Pod running",
 			},
 		},
 	}

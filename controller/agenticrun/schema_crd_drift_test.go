@@ -34,8 +34,7 @@ func crdBasesDir(t *testing.T) string {
 // truth. For every object node a schema pair shares, the CRD's required set
 // must be a subset of the LLM schema's required set. This covers all four LLM
 // output schemas, catching the original estimatedImpact incident as well as
-// the latent verification (checks source/value) and execution (verification
-// conditionOutcome/summary) gaps.
+// the latent verification (checks source/value) gaps.
 func TestSchemasCoverCRDRequiredFields(t *testing.T) {
 	cases := []struct {
 		name      string

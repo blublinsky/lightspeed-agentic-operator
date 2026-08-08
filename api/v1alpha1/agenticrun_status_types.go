@@ -36,16 +36,6 @@ func ActionOutcomeFromBool(success bool) ActionOutcome {
 	return ActionOutcomeFailed
 }
 
-// ConditionOutcome indicates whether the target condition improved after remediation.
-// +kubebuilder:validation:Enum=Improved;Unchanged;Degraded
-type ConditionOutcome string
-
-const (
-	ConditionOutcomeImproved  ConditionOutcome = "Improved"
-	ConditionOutcomeUnchanged ConditionOutcome = "Unchanged"
-	ConditionOutcomeDegraded  ConditionOutcome = "Degraded"
-)
-
 // CheckResult indicates whether a verification check passed.
 // +kubebuilder:validation:Enum=Passed;Failed
 type CheckResult string
@@ -88,25 +78,6 @@ type ExecutionAction struct {
 	// +kubebuilder:validation:MinLength=1
 	// +kubebuilder:validation:MaxLength=8192
 	Error string `json:"error,omitempty"`
-}
-
-// ExecutionVerification is a lightweight inline verification that the
-// execution agent performs immediately after completing its actions,
-// before the formal verification step. This gives early signal on whether
-// the remediation worked. In trust-mode workflows (verification skipped),
-// this is the only verification that occurs.
-type ExecutionVerification struct {
-	// conditionOutcome indicates whether the target condition improved
-	// after the remediation (e.g., pod is no longer CrashLoopBackOff).
-	// Must be one of: Improved, Unchanged, Degraded.
-	// +required
-	ConditionOutcome ConditionOutcome `json:"conditionOutcome,omitempty"`
-	// summary is a Markdown-formatted summary of the inline verification.
-	// Maximum 4096 characters.
-	// +required
-	// +kubebuilder:validation:MinLength=1
-	// +kubebuilder:validation:MaxLength=4096
-	Summary string `json:"summary,omitempty"`
 }
 
 // VerifyCheck is a single verification check result from the verification

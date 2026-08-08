@@ -1004,10 +1004,6 @@ func TestFullLifecycle_WithSandboxAgent(t *testing.T) {
 			Description: "Patched deployment/web memory limit to 512Mi",
 			Outcome:     agenticv1alpha1.ActionOutcomeSucceeded,
 		}},
-		Verification: &agenticv1alpha1.ExecutionVerification{
-			ConditionOutcome: agenticv1alpha1.ConditionOutcomeImproved,
-			Summary:          "Pod running with new memory limit",
-		},
 	})
 
 	verificationJSON, _ := json.Marshal(verificationResponse{
@@ -1082,10 +1078,6 @@ func TestFullLifecycle_WithSandboxAgent(t *testing.T) {
 	if er.Status.ActionsTaken[0].Outcome != agenticv1alpha1.ActionOutcomeSucceeded {
 		t.Errorf("action outcome = %q", er.Status.ActionsTaken[0].Outcome)
 	}
-	if er.Status.Verification.ConditionOutcome != agenticv1alpha1.ConditionOutcomeImproved {
-		t.Errorf("inline verification = %q", er.Status.Verification.ConditionOutcome)
-	}
-
 	// Reconcile 3: Verifying → Completed (via sandbox verification)
 	if _, err := reconcileOnce(r, "fix-crash"); err != nil {
 		t.Fatalf("verification reconcile: %v", err)
@@ -1232,10 +1224,6 @@ func TestReconcile_ExecutionInlineVerificationFailed_ProceedsToVerification(t *t
 			{Type: "patch", Description: "Patched NetworkPolicy", Outcome: agenticv1alpha1.ActionOutcomeSucceeded},
 			{Type: "verification", Description: "Checked frontend logs", Outcome: agenticv1alpha1.ActionOutcomeFailed},
 		},
-		Verification: agenticv1alpha1.ExecutionVerification{
-			ConditionOutcome: agenticv1alpha1.ConditionOutcomeUnchanged,
-			Summary:          "Logs still show timeout — checked too early",
-		},
 	}
 	r := &AgenticRunReconciler{Client: fc, Agent: agent, Namespace: "default"}
 
@@ -1246,7 +1234,7 @@ func TestReconcile_ExecutionInlineVerificationFailed_ProceedsToVerification(t *t
 	p, _ := getAgenticRun(r, "fix-crash")
 	phase := agenticv1alpha1.DerivePhase(p.Status.Conditions)
 	if phase != agenticv1alpha1.AgenticRunPhaseVerifying {
-		t.Fatalf("expected Verifying when only inline verification failed, got %s", phase)
+		t.Fatalf("expected Verifying when only observation action failed, got %s", phase)
 	}
 }
 
@@ -1616,13 +1604,6 @@ func TestExecutionFailureMessage(t *testing.T) {
 				},
 			},
 			want: `Execution failed: {"success": false, "actionsTaken": []}`,
-		},
-		{
-			name: "falls back to verification summary",
-			result: &ExecutionOutput{
-				Verification: agenticv1alpha1.ExecutionVerification{Summary: "Pod still in CrashLoopBackOff"},
-			},
-			want: "Execution failed: Pod still in CrashLoopBackOff",
 		},
 		{
 			name:   "no details available",

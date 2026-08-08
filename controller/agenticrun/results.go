@@ -167,7 +167,6 @@ func (r *AgenticRunReconciler) createExecutionResult(
 
 	if result != nil {
 		cr.Status.ActionsTaken = result.ActionsTaken
-		cr.Status.Verification = result.Verification
 	}
 
 	snapshot := cr.DeepCopy()
@@ -306,7 +305,6 @@ func copyResultStatus(dst, src client.Object) {
 	case *agenticv1alpha1.ExecutionResult:
 		if s, ok := src.(*agenticv1alpha1.ExecutionResult); ok {
 			d.Status.ActionsTaken = s.Status.ActionsTaken
-			d.Status.Verification = s.Status.Verification
 			d.Status.FailureReason = s.Status.FailureReason
 			d.Status.Sandbox = s.Status.Sandbox
 		}
