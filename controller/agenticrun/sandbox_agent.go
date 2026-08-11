@@ -17,6 +17,10 @@ import (
 const (
 	defaultSandboxTimeout = 5 * time.Minute
 
+	analysisStepTimeout     = 10 * time.Minute
+	executionStepTimeout    = 10 * time.Minute
+	verificationStepTimeout = 30 * time.Minute
+
 	ErrAnalysisAgentCall         = "analysis agent call"
 	ErrParseAnalysisResponse     = "parse analysis response"
 	ErrExecutionAgentCall        = "execution agent call"
@@ -51,7 +55,7 @@ type verificationResponse struct {
 
 // SandboxLifecycle is the interface for sandbox create/wait/release.
 type SandboxLifecycle interface {
-	Create(ctx context.Context, run *agenticv1alpha1.AgenticRun, step string, agent *agenticv1alpha1.Agent, llm *agenticv1alpha1.LLMProvider, tools *agenticv1alpha1.ToolsSpec, serviceAccount string) (string, error)
+	Create(ctx context.Context, run *agenticv1alpha1.AgenticRun, step string, agent *agenticv1alpha1.Agent, llm *agenticv1alpha1.LLMProvider, tools *agenticv1alpha1.ToolsSpec, serviceAccount string, deadline time.Duration) (string, error)
 	WaitReady(ctx context.Context, name string, timeout time.Duration) (endpoint string, err error)
 	Release(ctx context.Context, name string) error
 }
@@ -61,9 +65,8 @@ type SandboxLifecycle interface {
 type SandboxAgentCaller struct {
 	Sandbox       SandboxLifecycle
 	K8sClient     client.Client
-	ClientFactory func(endpoint string) AgentHTTPClientInterface
+	ClientFactory func(endpoint string, timeout time.Duration) AgentHTTPClientInterface
 	Namespace     string
-	Timeout       time.Duration
 	Audit         AuditLogger
 }
 
@@ -183,6 +186,19 @@ func (s *SandboxAgentCaller) Escalate(ctx context.Context, run *agenticv1alpha1.
 	}, nil
 }
 
+func stepTimeout(step string) time.Duration {
+	switch step {
+	case "analysis", "escalation":
+		return analysisStepTimeout
+	case "execution":
+		return executionStepTimeout
+	case "verification":
+		return verificationStepTimeout
+	default:
+		return analysisStepTimeout
+	}
+}
+
 func (s *SandboxAgentCaller) callWithSandbox(
 	ctx context.Context,
 	run *agenticv1alpha1.AgenticRun,
@@ -192,19 +208,17 @@ func (s *SandboxAgentCaller) callWithSandbox(
 	agentCtx *agentContext,
 	serviceAccount string,
 ) (json.RawMessage, error) {
-	name, err := s.Sandbox.Create(ctx, run, stepName, step.Agent, step.LLM, step.Tools, serviceAccount)
+	agentTimeout := stepTimeout(stepName)
+	podDeadline := agentTimeout + defaultSandboxTimeout
+
+	name, err := s.Sandbox.Create(ctx, run, stepName, step.Agent, step.LLM, step.Tools, serviceAccount, podDeadline)
 	if err != nil {
 		return nil, fmt.Errorf("%s: %w", ErrClaimSandbox, err)
 	}
 
 	s.patchSandboxInfo(ctx, run, stepName, name)
 
-	timeout := s.Timeout
-	if timeout == 0 {
-		timeout = defaultSandboxTimeout
-	}
-
-	endpoint, err := s.Sandbox.WaitReady(ctx, name, timeout)
+	endpoint, err := s.Sandbox.WaitReady(ctx, name, defaultSandboxTimeout)
 	if err != nil {
 		return nil, fmt.Errorf("%s: %w", ErrWaitForSandbox, err)
 	}
@@ -222,8 +236,8 @@ func (s *SandboxAgentCaller) callWithSandbox(
 		s.Audit.InjectTraceContext(ctx, run, headers)
 	}
 
-	client := s.ClientFactory(agentURL)
-	resp, err := client.Run(ctx, "", query, schema, agentCtx, headers)
+	client := s.ClientFactory(agentURL, podDeadline)
+	resp, err := client.Run(ctx, "", query, schema, agentCtx, headers, agentTimeout)
 	if err != nil {
 		return nil, err
 	}

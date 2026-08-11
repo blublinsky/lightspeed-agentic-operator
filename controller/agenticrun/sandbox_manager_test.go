@@ -100,7 +100,7 @@ func TestCreate_BarePod(t *testing.T) {
 	fc := fake.NewClientBuilder().WithScheme(testScheme()).Build()
 	mgr := newTestSandboxManager(fc, cache)
 
-	name, err := mgr.Create(context.Background(), testSMRun(), "analysis", testSMAgent(), testLLMForManager(), nil, "test-sa")
+	name, err := mgr.Create(context.Background(), testSMRun(), "analysis", testSMAgent(), testLLMForManager(), nil, "test-sa", 15*time.Minute)
 	if err != nil {
 		t.Fatalf("Create failed: %v", err)
 	}
@@ -121,6 +121,12 @@ func TestCreate_BarePod(t *testing.T) {
 	if pod.OwnerReferences[0].Name != "test-run" {
 		t.Fatalf("expected owner name 'test-run', got %q", pod.OwnerReferences[0].Name)
 	}
+	if pod.Spec.ActiveDeadlineSeconds == nil {
+		t.Fatal("expected ActiveDeadlineSeconds to be set on pod")
+	}
+	if *pod.Spec.ActiveDeadlineSeconds != int64(15*time.Minute/time.Second) {
+		t.Fatalf("expected ActiveDeadlineSeconds=%d, got %d", int64(15*time.Minute/time.Second), *pod.Spec.ActiveDeadlineSeconds)
+	}
 }
 
 func TestCreate_SandboxClaim(t *testing.T) {
@@ -128,7 +134,7 @@ func TestCreate_SandboxClaim(t *testing.T) {
 	fc := fake.NewClientBuilder().WithScheme(testScheme()).Build()
 	mgr := newTestSandboxManager(fc, cache)
 
-	name, err := mgr.Create(context.Background(), testSMRun(), "analysis", testSMAgent(), testLLMForManager(), nil, "test-sa")
+	name, err := mgr.Create(context.Background(), testSMRun(), "analysis", testSMAgent(), testLLMForManager(), nil, "test-sa", 15*time.Minute)
 	if err != nil {
 		t.Fatalf("Create failed: %v", err)
 	}
@@ -157,7 +163,7 @@ func TestCreate_ConfigNotAvailable(t *testing.T) {
 	fc := fake.NewClientBuilder().WithScheme(testScheme()).Build()
 	mgr := newTestSandboxManager(fc, cache)
 
-	_, err := mgr.Create(context.Background(), testSMRun(), "analysis", testSMAgent(), testLLMForManager(), nil, "test-sa")
+	_, err := mgr.Create(context.Background(), testSMRun(), "analysis", testSMAgent(), testLLMForManager(), nil, "test-sa", 15*time.Minute)
 	if err == nil {
 		t.Fatal("expected error when config is not available")
 	}
@@ -168,11 +174,11 @@ func TestCreate_Idempotent_BarePod(t *testing.T) {
 	fc := fake.NewClientBuilder().WithScheme(testScheme()).Build()
 	mgr := newTestSandboxManager(fc, cache)
 
-	name1, err := mgr.Create(context.Background(), testSMRun(), "analysis", testSMAgent(), testLLMForManager(), nil, "test-sa")
+	name1, err := mgr.Create(context.Background(), testSMRun(), "analysis", testSMAgent(), testLLMForManager(), nil, "test-sa", 15*time.Minute)
 	if err != nil {
 		t.Fatalf("first Create failed: %v", err)
 	}
-	name2, err := mgr.Create(context.Background(), testSMRun(), "analysis", testSMAgent(), testLLMForManager(), nil, "test-sa")
+	name2, err := mgr.Create(context.Background(), testSMRun(), "analysis", testSMAgent(), testLLMForManager(), nil, "test-sa", 15*time.Minute)
 	if err != nil {
 		t.Fatalf("second Create failed: %v", err)
 	}
@@ -186,11 +192,11 @@ func TestCreate_Idempotent_SandboxClaim(t *testing.T) {
 	fc := fake.NewClientBuilder().WithScheme(testScheme()).Build()
 	mgr := newTestSandboxManager(fc, cache)
 
-	name1, err := mgr.Create(context.Background(), testSMRun(), "analysis", testSMAgent(), testLLMForManager(), nil, "test-sa")
+	name1, err := mgr.Create(context.Background(), testSMRun(), "analysis", testSMAgent(), testLLMForManager(), nil, "test-sa", 15*time.Minute)
 	if err != nil {
 		t.Fatalf("first Create failed: %v", err)
 	}
-	name2, err := mgr.Create(context.Background(), testSMRun(), "analysis", testSMAgent(), testLLMForManager(), nil, "test-sa")
+	name2, err := mgr.Create(context.Background(), testSMRun(), "analysis", testSMAgent(), testLLMForManager(), nil, "test-sa", 15*time.Minute)
 	if err != nil {
 		t.Fatalf("second Create failed: %v", err)
 	}
@@ -205,7 +211,7 @@ func TestCreate_OTELEnvVars(t *testing.T) {
 	mgr := newTestSandboxManager(fc, cache)
 
 	run := testSMRun()
-	name, err := mgr.Create(context.Background(), run, "analysis", testSMAgent(), testLLMForManager(), nil, "test-sa")
+	name, err := mgr.Create(context.Background(), run, "analysis", testSMAgent(), testLLMForManager(), nil, "test-sa", 15*time.Minute)
 	if err != nil {
 		t.Fatalf("Create failed: %v", err)
 	}
@@ -265,7 +271,7 @@ func TestCreate_NoOTEL_NoEnvVars(t *testing.T) {
 	fc := fake.NewClientBuilder().WithScheme(testScheme()).Build()
 	mgr := newTestSandboxManager(fc, cache)
 
-	name, err := mgr.Create(context.Background(), testSMRun(), "analysis", testSMAgent(), testLLMForManager(), nil, "test-sa")
+	name, err := mgr.Create(context.Background(), testSMRun(), "analysis", testSMAgent(), testLLMForManager(), nil, "test-sa", 15*time.Minute)
 	if err != nil {
 		t.Fatalf("Create failed: %v", err)
 	}
@@ -288,7 +294,7 @@ func TestCreate_OTELEnvVars_SandboxClaim(t *testing.T) {
 	mgr := newTestSandboxManager(fc, cache)
 
 	run := testSMRun()
-	name, err := mgr.Create(context.Background(), run, "execution", testSMAgent(), testLLMForManager(), nil, "test-sa")
+	name, err := mgr.Create(context.Background(), run, "execution", testSMAgent(), testLLMForManager(), nil, "test-sa", 15*time.Minute)
 	if err != nil {
 		t.Fatalf("Create failed: %v", err)
 	}
@@ -332,6 +338,14 @@ func TestCreate_OTELEnvVars_SandboxClaim(t *testing.T) {
 	}
 	if v := envMap["OTEL_EXPORTER_OTLP_CERTIFICATE"]; v != otelCAMountPath+"/"+otelCASecretKey {
 		t.Fatalf("expected OTEL CA cert path in SandboxTemplate, got %q", v)
+	}
+
+	deadline, found, _ := unstructured.NestedInt64(tmpl.Object, "spec", "podTemplate", "spec", "activeDeadlineSeconds")
+	if !found {
+		t.Fatal("expected activeDeadlineSeconds in SandboxTemplate podTemplate spec")
+	}
+	if deadline != int64(15*time.Minute/time.Second) {
+		t.Fatalf("expected activeDeadlineSeconds=%d, got %d", int64(15*time.Minute/time.Second), deadline)
 	}
 }
 
@@ -439,7 +453,7 @@ func TestNamePrefix_LSPrefix(t *testing.T) {
 			fc := fake.NewClientBuilder().WithScheme(testScheme()).Build()
 			mgr := newTestSandboxManager(fc, cache)
 
-			name, err := mgr.Create(context.Background(), testSMRun(), "analysis", testSMAgent(), testLLMForManager(), nil, "test-sa")
+			name, err := mgr.Create(context.Background(), testSMRun(), "analysis", testSMAgent(), testLLMForManager(), nil, "test-sa", 15*time.Minute)
 			if err != nil {
 				t.Fatalf("Create failed: %v", err)
 			}
@@ -458,7 +472,7 @@ func TestNamePrefix_LongNameTruncated(t *testing.T) {
 	longRun := testSMRun()
 	longRun.Name = "a-very-long-run-name-that-exceeds-sixty-three-characters-in-total-length"
 
-	name, err := mgr.Create(context.Background(), longRun, "analysis", testSMAgent(), testLLMForManager(), nil, "test-sa")
+	name, err := mgr.Create(context.Background(), longRun, "analysis", testSMAgent(), testLLMForManager(), nil, "test-sa", 15*time.Minute)
 	if err != nil {
 		t.Fatalf("Create failed: %v", err)
 	}

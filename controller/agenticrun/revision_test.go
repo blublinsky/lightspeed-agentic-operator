@@ -92,6 +92,12 @@ func TestBuildAnalysisQuery_FullAgenticRun(t *testing.T) {
 	if !strings.Contains(result, "Verification plan") {
 		t.Error("full run should mention verification plan")
 	}
+	if !strings.Contains(result, "read-only cluster access") {
+		t.Error("full run should constrain verification to read-only commands")
+	}
+	if !strings.Contains(result, "Expected must be an exact observable value") {
+		t.Error("full run should require exact verification Expected values")
+	}
 	if !strings.Contains(result, "Fix the crash") {
 		t.Error("should contain the request text")
 	}
