@@ -10,8 +10,8 @@ Behavioral specification for the `AgenticRun` resource lifecycle. **Approval gat
 4. **Terminal phases**: `Completed`, `Denied`, `Escalated`, `Failed`, `EmergencyStopped`, and `NoActionRequired` are terminal for reconciliation progression. After `Completed`, `Denied`, `Escalated`, `EmergencyStopped`, or `NoActionRequired`, the controller MUST stop active work and MAY release sandbox claims when present. `Failed` triggers failure cleanup behaviors (see `sandbox-execution.md` for RBAC cleanup interactions). `EmergencyStopped` indicates the run was terminated by the system kill switch (see `system-config.md`). `NoActionRequired` indicates the analysis agent determined no remediation is needed (see rule 9).
 5. **Workflow shape**: `spec.analysis` is always required. `spec.execution` and `spec.verification` MAY be omitted; omission skips those steps subject to rules 20–22.
 6. **Revision loop**: If `spec.revisionFeedback` is non-empty AND `metadata.generation` is greater than `Analyzed.observedGeneration`, the system MUST treat the run as needing **re-analysis** before continuing downstream steps. Re-analysis MUST append revision context to the user-visible request text (after `spec.request`), then reset execution/verification/escalation progress as implemented for revision handling, and MUST NOT advance execution until the new analysis completes. Revision feedback is supported from the `NoActionRequired` terminal phase — patching `spec.revisionFeedback` resets conditions and re-runs analysis.
-7. **Execution retries (verification-gated)**: When `spec.verification` is present, after a successful execution the verification step MAY fail **objectively** if the agent reports failure **or** any verification check records a non-pass outcome (even when a coarse success flag might otherwise read true). In that case the system MAY increment `status.steps.execution.retryCount` and clear execution/verification progress to run execution again, bounded by the effective max attempt count from approval policy and execution approval (see `approval.md`). While awaiting a retry, `Verified` MUST be `False` with reason indicating retrying execution.
-8. **Escalation injection**: When verification has failed and retries are exhausted (per `approval.md`), the system MUST set `Verified` to `False` with reason indicating retries exhausted and MUST set `Escalated` to `Unknown` with reason indicating retries exhausted, entering the escalating phase until the escalation step completes or fails.
+7. **Verification failure → escalation**: When `spec.verification` is present, after a successful execution the verification step MAY fail **objectively** if the agent reports failure **or** any verification check records a non-pass outcome (even when a coarse success flag might otherwise read true). On verification failure, the system MUST NOT retry execution. The system MUST set `Verified` to `False` with reason `VerificationFailed` and MUST set `Escalated` to `Unknown`, entering the escalating phase. The escalation summary includes the execution result and failed verification result so a human operator can assess what happened.
+8. **No execution retries**: The operator does not re-execute remediation after verification failure. Convergence-dependent checks (alerts, metrics, pod readiness) are handled within the verification agent's single sandbox call via prompt-guided wait-and-retry. This avoids the risk of re-executing non-idempotent remediations against a cluster in an unknown intermediate state.
 9. **DerivePhase — precedence (first match in order)**:
    - If `EmergencyStopped` exists with status `True` → phase `EmergencyStopped`.
    - Else if `Escalated` exists with status `True` → phase `Escalated`.
@@ -20,8 +20,7 @@ Behavioral specification for the `AgenticRun` resource lifecycle. **Approval gat
    - Else evaluate `Verified` if present:
      - If `Verified` is `True` → phase `Completed`.
      - If `Verified` is `Unknown` → phase `Verifying`.
-     - If `Verified` is `False` AND reason indicates retrying execution → phase `Executing`.
-     - If `Verified` is `False` otherwise → phase `Failed`.
+     - If `Verified` is `False` → phase `Failed` (unless `Escalated` is set, which takes precedence per rule ordering).
    - Else evaluate `Executed` if present:
      - If `Executed` is `True` → phase `Verifying`.
      - If `Executed` is `Unknown` → phase `Executing`.
@@ -49,7 +48,7 @@ Behavioral specification for the `AgenticRun` resource lifecycle. **Approval gat
 | `False` | `SandboxFailed` | Pod exited without creating Result CR |
 | `False` | `ImagePullFailed` | Pod stuck in ImagePullBackOff |
 15. **Success**: `Verified=True` MUST yield `Completed` once rule 9 reaches the `Verified` branch, unless an earlier branch already returned `Escalated` or `Denied` per rules 9–10.
-16. **Step failure**: Any of `Analyzed`, `Executed`, or `Verified` with status `False` and reasons that are not the dedicated retrying-execution reason MUST yield `Failed` when reached by the derivation order in rule 9 (unless superseded by `Escalated` / `Denied` per rules 9–10).
+16. **Step failure**: Any of `Analyzed`, `Executed`, or `Verified` with status `False` MUST yield `Failed` when reached by the derivation order in rule 9 (unless superseded by `Escalated` / `Denied` per rules 9–10).
 16a. **[OLS-3666] Failure condition message**: When the controller sets a step condition to `False` (reason `Failed`) because the agent returned `success: false`, the condition `message` MUST include context from the agent response rather than a generic string. The controller MUST use the first available source from this fallback chain: (1) the sandbox response `summary` field (which contains the error message for sandbox-level failures or the raw agent output when the output schema has no top-level `summary` property); (2) for analysis: the top-level or per-option `diagnosis.summary`; for execution: the first failed action's `description` and `error`; (3) a properly-cased generic fallback (`"Analysis agent reported failure"` / `"Execution agent reported failure"`). The message MUST use sentence casing.
 17. **Escalation failure**: `Escalated` with status `False` MUST yield `Failed` once rule 9 evaluates the `Escalated` presence branch (non-`True`, non-`Unknown`).
 18. **Result CR linkage**: Each analysis/execution/verification/escalation attempt SHOULD append a `status.steps.*.results[]` entry naming the corresponding result resource with an outcome matching agent success/failure for that attempt. **Exception:** when the execution agent reports `success=false` but all mutating actions succeeded (only observation actions failed), the controller MUST override the outcome to `Succeeded` and proceed to the verification step. Observation action types (`pre-check`, `post-check`, `verification`, `check`, `wait`) are not considered when determining mutation success.
@@ -68,14 +67,13 @@ Behavioral specification for the `AgenticRun` resource lifecycle. **Approval gat
 - `spec.analysis`, `spec.execution`, `spec.verification`
 - `metadata.generation` (revision detection vs `status.conditions`)
 - `status.conditions[*].type`, `status.conditions[*].status`, `status.conditions[*].reason`, `status.conditions[*].observedGeneration`
-- `status.steps.execution.retryCount`
 - `status.steps.*.results`, `status.steps.*.sandbox`
 
 ## Constraints
 
 - Derivation MUST be a pure function of `status.conditions` for phase display (same conditions → same phase).
 - Downstream steps MUST NOT run before approval and precondition rules in `approval.md` are satisfied.
-- Total execution attempts (initial + retries) MUST NOT exceed the effective limit from `approval.md`.
+- Execution runs exactly once per analysis iteration. Verification failure escalates, never re-executes.
 
 ## Planned Changes
 
