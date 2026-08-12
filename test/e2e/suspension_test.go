@@ -4,12 +4,15 @@ package e2e
 
 import (
 	"context"
+	"fmt"
 	"strconv"
 	"strings"
 	"testing"
 	"time"
 
+	admissionregistrationv1 "k8s.io/api/admissionregistration/v1"
 	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
@@ -19,14 +22,19 @@ import (
 	agenticv1alpha1 "github.com/openshift/lightspeed-agentic-operator/api/v1alpha1"
 )
 
+const suspensionVAPName = "agentic.openshift.io-agenticrun-suspension"
+
 // TestSuspension verifies the full suspension lifecycle: activating the kill
-// switch emergency-stops in-flight proposals, sets the Suspended=True status
+// switch emergency-stops an in-flight run, sets the Suspended=True status
 // condition on AgenticOLSConfig, emits a SuspensionActivated event, and
 // preserves the terminal state after the config is deleted (resume).
+// New CREATE while suspended is covered by TestSuspension_AdmissionRejectsCreate.
 func TestSuspension(t *testing.T) {
 	c := newClient(t)
 	createFixtures(t, c)
 	ctx := context.Background()
+
+	prop := createAgenticRun(t, c, "suspend-inflight")
 
 	config := &agenticv1alpha1.AgenticOLSConfig{
 		ObjectMeta: metav1.ObjectMeta{Name: "cluster"},
@@ -35,7 +43,7 @@ func TestSuspension(t *testing.T) {
 	cleanup(t, c, config)
 	t.Cleanup(func() { cleanup(t, c, config) })
 
-	// Activate kill switch — reset fields that cleanup's c.Get may have overwritten.
+	// Activate kill switch after the run exists — reset fields that cleanup may overwrite.
 	config.SetResourceVersion("")
 	config.SetUID("")
 	config.Spec.Suspended = true
@@ -43,12 +51,7 @@ func TestSuspension(t *testing.T) {
 		t.Fatalf("create AgenticOLSConfig: %v", err)
 	}
 
-	// Let the controller cache sync.
-	time.Sleep(5 * time.Second)
-
-	prop := createAgenticRun(t, c, "suspend-inflight")
-
-	// AgenticRun should reach EmergencyStopped on its first reconcile.
+	// AgenticRun should reach EmergencyStopped via the reconciler guard.
 	waitForPhase(t, c, prop.Name, agenticv1alpha1.AgenticRunPhaseEmergencyStopped)
 	t.Log("run terminated by suspension guard")
 
@@ -74,6 +77,84 @@ func TestSuspension(t *testing.T) {
 		t.Fatalf("expected EmergencyStopped after resume, got %s", phase)
 	}
 	t.Log("stopped run remains terminal after resume")
+}
+
+// TestSuspension_AdmissionRejectsCreate verifies rules 11a–11b: while suspended,
+// AgenticRun CREATE is rejected at admission and no CR is persisted. Also checks
+// that the install path shipped the VAP and binding.
+func TestSuspension_AdmissionRejectsCreate(t *testing.T) {
+	c := newClient(t)
+	createFixtures(t, c)
+	ctx := context.Background()
+
+	assertSuspensionVAPInstalled(t, c)
+
+	config := &agenticv1alpha1.AgenticOLSConfig{
+		ObjectMeta: metav1.ObjectMeta{Name: "cluster"},
+		Spec:       agenticv1alpha1.AgenticOLSConfigSpec{Suspended: true},
+	}
+	cleanup(t, c, config)
+	t.Cleanup(func() { cleanup(t, c, config) })
+
+	config.SetResourceVersion("")
+	config.SetUID("")
+	config.Spec.Suspended = true
+	if err := c.Create(ctx, config); err != nil {
+		t.Fatalf("create AgenticOLSConfig: %v", err)
+	}
+
+	name := "suspend-admission-blocked"
+	waitForSuspendedAdmissionReject(t, c, name, agenticv1alpha1.AgenticRunSpec{
+		Request:          "should be rejected by VAP",
+		TargetNamespaces: []string{"staging"},
+		Analysis:         agenticv1alpha1.AgenticRunStep{Agent: "e2e-agent"},
+	})
+
+	var got agenticv1alpha1.AgenticRun
+	if getErr := c.Get(ctx, types.NamespacedName{Name: name, Namespace: testNS}, &got); !apierrors.IsNotFound(getErr) {
+		t.Fatalf("expected AgenticRun not to exist after admission reject, get err=%v", getErr)
+	}
+}
+
+// TestSuspension_AdmissionAllowsCreateWhenConfigAbsent verifies rule 11c:
+// with no AgenticOLSConfig, VAP parameterNotFoundAction Allow permits CREATE.
+func TestSuspension_AdmissionAllowsCreateWhenConfigAbsent(t *testing.T) {
+	c := newClient(t)
+	createFixtures(t, c)
+	ctx := context.Background()
+
+	assertSuspensionVAPInstalled(t, c)
+
+	// Ensure the param object is absent (other e2e tests may leave it).
+	if err := c.Delete(ctx, &agenticv1alpha1.AgenticOLSConfig{
+		ObjectMeta: metav1.ObjectMeta{Name: "cluster"},
+	}); err != nil && !apierrors.IsNotFound(err) {
+		t.Fatalf("delete AgenticOLSConfig: %v", err)
+	}
+	err := wait.PollUntilContextTimeout(ctx, pollInterval, pollTimeout, true, func(ctx context.Context) (bool, error) {
+		var cfg agenticv1alpha1.AgenticOLSConfig
+		getErr := c.Get(ctx, types.NamespacedName{Name: "cluster"}, &cfg)
+		if apierrors.IsNotFound(getErr) {
+			return true, nil
+		}
+		if getErr != nil {
+			return false, getErr
+		}
+		return false, nil
+	})
+	if err != nil {
+		t.Fatalf("timed out waiting for AgenticOLSConfig absence: %v", err)
+	}
+
+	// Poll CREATE until VAP parameter cache observes the missing config
+	// (parameterNotFoundAction Allow). A single-shot Create can still see a
+	// stale suspended param and flake.
+	waitForAdmissionAllow(t, c, "suspend-admission-absent-config", agenticv1alpha1.AgenticRunSpec{
+		Request:          "should be allowed when config is absent",
+		TargetNamespaces: []string{"staging"},
+		Analysis:         agenticv1alpha1.AgenticRunStep{Agent: "e2e-agent"},
+	})
+	t.Log("CREATE succeeded with absent AgenticOLSConfig (parameterNotFoundAction Allow)")
 }
 
 // TestSuspension_InFlight verifies rule 6: a run that has already
@@ -110,7 +191,8 @@ func TestSuspension_InFlight(t *testing.T) {
 }
 
 // TestSuspension_ResumeNewAgenticRun verifies rule 10: after resuming the
-// system (suspended → false), new proposals proceed normally.
+// system (suspended → false), new runs proceed normally. While suspended,
+// CREATE is rejected by admission (rule 11a).
 func TestSuspension_ResumeNewAgenticRun(t *testing.T) {
 	c := newClient(t)
 	createFixtures(t, c)
@@ -129,12 +211,14 @@ func TestSuspension_ResumeNewAgenticRun(t *testing.T) {
 	if err := c.Create(ctx, config); err != nil {
 		t.Fatalf("create AgenticOLSConfig: %v", err)
 	}
-	time.Sleep(5 * time.Second)
 
-	// Verify suspension works.
-	stopped := createAgenticRun(t, c, "suspend-before-resume")
-	waitForPhase(t, c, stopped.Name, agenticv1alpha1.AgenticRunPhaseEmergencyStopped)
-	t.Log("confirmed suspension is active")
+	// Verify admission blocking while suspended (poll until VAP param cache catches up).
+	waitForSuspendedAdmissionReject(t, c, "suspend-before-resume", agenticv1alpha1.AgenticRunSpec{
+		Request:          "should be rejected while suspended",
+		TargetNamespaces: []string{"staging"},
+		Analysis:         agenticv1alpha1.AgenticRunStep{Agent: "e2e-agent"},
+	})
+	t.Log("confirmed admission blocking while suspended")
 
 	// Resume via raw JSON merge patch — avoids omitempty/omitzero serialization
 	// issues with bool false, and sends a MODIFIED watch event that the informer
@@ -143,16 +227,111 @@ func TestSuspension_ResumeNewAgenticRun(t *testing.T) {
 	if err := c.Patch(ctx, config, patch); err != nil {
 		t.Fatalf("patch config to resume: %v", err)
 	}
-	time.Sleep(5 * time.Second)
 
 	waitForConfigDeactivated(t, c)
 	waitForConfigEvent(t, c, "SuspensionDeactivated", "System resumed; agentic operations re-enabled")
 	t.Log("config deactivation condition and event verified")
 
-	// New run should proceed past Pending.
-	resumed := createAgenticRun(t, c, "suspend-after-resume")
-	waitForPhase(t, c, resumed.Name, agenticv1alpha1.AgenticRunPhaseProposed)
+	// Poll CREATE until VAP observes suspended=false (replaces fixed sleep).
+	waitForAdmissionAllow(t, c, "suspend-after-resume", agenticv1alpha1.AgenticRunSpec{
+		Request:          "resume after suspend",
+		TargetNamespaces: []string{"staging"},
+		Analysis:         agenticv1alpha1.AgenticRunStep{Agent: "e2e-agent"},
+	})
+	waitForPhase(t, c, "suspend-after-resume", agenticv1alpha1.AgenticRunPhaseProposed)
 	t.Log("new run proceeded normally after resume")
+}
+
+// assertSuspensionVAPInstalled fails if the suspension policy or binding is missing.
+func assertSuspensionVAPInstalled(t *testing.T, c client.Client) {
+	t.Helper()
+	ctx := context.Background()
+
+	var policy admissionregistrationv1.ValidatingAdmissionPolicy
+	if err := c.Get(ctx, types.NamespacedName{Name: suspensionVAPName}, &policy); err != nil {
+		t.Fatalf("ValidatingAdmissionPolicy %s not installed (deploy path must apply config/admission): %v", suspensionVAPName, err)
+	}
+	var binding admissionregistrationv1.ValidatingAdmissionPolicyBinding
+	if err := c.Get(ctx, types.NamespacedName{Name: suspensionVAPName}, &binding); err != nil {
+		t.Fatalf("ValidatingAdmissionPolicyBinding %s not installed: %v", suspensionVAPName, err)
+	}
+	if binding.Spec.ParamRef == nil || binding.Spec.ParamRef.ParameterNotFoundAction == nil ||
+		*binding.Spec.ParamRef.ParameterNotFoundAction != admissionregistrationv1.AllowAction {
+		t.Fatalf("expected binding parameterNotFoundAction=Allow, got %+v", binding.Spec.ParamRef)
+	}
+}
+
+// waitForSuspendedAdmissionReject polls AgenticRun CREATE until the VAP denies
+// it with Forbidden or Invalid and a "suspended" message. Retries when CREATE
+// succeeds (param cache lag) by deleting the accidental object. Fatals on
+// timeout; logs the expected rejection on success.
+func waitForSuspendedAdmissionReject(t *testing.T, c client.Client, name string, spec agenticv1alpha1.AgenticRunSpec) {
+	t.Helper()
+	ctx := context.Background()
+
+	var lastErr error
+	err := wait.PollUntilContextTimeout(ctx, pollInterval, pollTimeout, true, func(ctx context.Context) (bool, error) {
+		run := &agenticv1alpha1.AgenticRun{
+			ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: testNS},
+			Spec:       spec,
+		}
+		createErr := c.Create(ctx, run)
+		if createErr == nil {
+			t.Logf("CREATE succeeded before VAP observed suspension — deleting and retrying")
+			cleanup(t, c, run)
+			return false, nil
+		}
+		lastErr = createErr
+		if !apierrors.IsForbidden(createErr) && !apierrors.IsInvalid(createErr) {
+			t.Logf("waiting for admission Forbidden/Invalid, got %T / %v", createErr, createErr)
+			return false, nil
+		}
+		if !strings.Contains(strings.ToLower(createErr.Error()), "suspended") {
+			return false, fmt.Errorf("admission error missing suspended mention: %w", createErr)
+		}
+		return true, nil
+	})
+	if err != nil {
+		t.Fatalf("timed out waiting for suspended admission reject (last=%v): %v", lastErr, err)
+	}
+	t.Logf("CREATE rejected as expected: %v", lastErr)
+}
+
+// waitForAdmissionAllow polls AgenticRun CREATE until admission accepts it.
+// Retries while the VAP still denies with a suspension error (stale param
+// cache after delete/resume). The created object is registered for cleanup.
+func waitForAdmissionAllow(t *testing.T, c client.Client, name string, spec agenticv1alpha1.AgenticRunSpec) {
+	t.Helper()
+	ctx := context.Background()
+
+	var lastErr error
+	err := wait.PollUntilContextTimeout(ctx, pollInterval, pollTimeout, true, func(ctx context.Context) (bool, error) {
+		run := &agenticv1alpha1.AgenticRun{
+			ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: testNS},
+			Spec:       spec,
+		}
+		createErr := c.Create(ctx, run)
+		if createErr == nil {
+			t.Cleanup(func() { cleanup(t, c, run) })
+			return true, nil
+		}
+		lastErr = createErr
+		if apierrors.IsAlreadyExists(createErr) {
+			// A prior successful create from this poll left the object.
+			t.Cleanup(func() { cleanup(t, c, run) })
+			return true, nil
+		}
+		if (apierrors.IsForbidden(createErr) || apierrors.IsInvalid(createErr)) &&
+			strings.Contains(strings.ToLower(createErr.Error()), "suspended") {
+			t.Logf("CREATE still denied by stale VAP param cache — retrying: %v", createErr)
+			return false, nil
+		}
+		t.Logf("waiting for admission allow, got %T / %v", createErr, createErr)
+		return false, nil
+	})
+	if err != nil {
+		t.Fatalf("timed out waiting for admission allow (last=%v): %v", lastErr, err)
+	}
 }
 
 // waitForConfigSuspended polls AgenticOLSConfig until the Suspended condition
