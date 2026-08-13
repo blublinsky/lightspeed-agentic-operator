@@ -44,10 +44,13 @@ func TestBuildEscalationRequest_UsesOutcome(t *testing.T) {
 		t.Fatalf("template rendering failed: %s", result)
 	}
 
-	if !strings.Contains(result, "outcome=Succeeded") {
-		t.Errorf("expected outcome=Succeeded for analysis result, got: %s", result)
+	if !strings.Contains(result, "AnalysisResult: analysis-1 (outcome=Succeeded)") {
+		t.Errorf("expected %q, got: %s", "AnalysisResult: analysis-1 (outcome=Succeeded)", result)
 	}
-	if !strings.Contains(result, "outcome=Failed") {
-		t.Errorf("expected outcome=Failed for execution/verification results, got: %s", result)
+	if !strings.Contains(result, "ExecutionResult: exec-1 (outcome=Failed)") {
+		t.Errorf("expected %q, got: %s", "ExecutionResult: exec-1 (outcome=Failed)", result)
+	}
+	if !strings.Contains(result, "VerificationResult: verify-1 (outcome=Failed)") {
+		t.Errorf("expected %q, got: %s", "VerificationResult: verify-1 (outcome=Failed)", result)
 	}
 }
