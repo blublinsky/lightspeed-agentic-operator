@@ -45,9 +45,7 @@ const (
 // Condition reasons used by DerivePhase for state transitions.
 // SYNC: must match derivePhaseFromConditions in lightspeed-agentic-console/src/models/agenticrun.ts
 const (
-	ReasonRetryingExecution = "RetryingExecution"
-	ReasonRetriesExhausted  = "RetriesExhausted"
-	ReasonNoActionRequired  = "NoActionRequired"
+	ReasonNoActionRequired = "NoActionRequired"
 )
 
 // DerivePhase computes the display phase from conditions. Conditions are
@@ -93,9 +91,6 @@ func DerivePhase(conditions []metav1.Condition) AgenticRunPhase {
 		case metav1.ConditionUnknown:
 			return AgenticRunPhaseVerifying
 		default:
-			if c.Reason == ReasonRetryingExecution {
-				return AgenticRunPhaseExecuting
-			}
 			return AgenticRunPhaseFailed
 		}
 	}

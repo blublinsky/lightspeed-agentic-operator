@@ -656,12 +656,12 @@ func TestDerivePhase_ProposedVsExecuting(t *testing.T) {
 			want: agenticv1alpha1.AgenticRunPhaseVerifying,
 		},
 		{
-			name: "Analyzed=True + Verified=False/RetryingExecution → Executing (retry)",
+			name: "Analyzed=True + Verified=False → Failed (any reason)",
 			conditions: []metav1.Condition{
 				{Type: agenticv1alpha1.AgenticRunConditionAnalyzed, Status: metav1.ConditionTrue},
-				{Type: agenticv1alpha1.AgenticRunConditionVerified, Status: metav1.ConditionFalse, Reason: agenticv1alpha1.ReasonRetryingExecution},
+				{Type: agenticv1alpha1.AgenticRunConditionVerified, Status: metav1.ConditionFalse, Reason: "VerificationFailed"},
 			},
-			want: agenticv1alpha1.AgenticRunPhaseExecuting,
+			want: agenticv1alpha1.AgenticRunPhaseFailed,
 		},
 		{
 			name: "Analyzed=False → Failed",

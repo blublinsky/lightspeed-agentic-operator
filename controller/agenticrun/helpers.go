@@ -48,20 +48,18 @@ const (
 	rbacMaxCleanupAttempts        = 3
 	rbacCleanupRequeueAfter       = 1 * time.Second
 
-	reasonInProgress        = "InProgress"
-	reasonComplete          = "Complete"
-	reasonFailed            = "Failed"
-	reasonSkipped           = "Skipped"
-	reasonPassed            = "Passed"
-	reasonWorkflowFailed    = "WorkflowResolutionFailed"
-	reasonUserDenied        = "UserDenied"
-	defaultSandboxSA        = "lightspeed-agent"
-	reasonRevising          = "Revising"
-	reasonRevisionComplete  = "RevisionComplete"
-	reasonRetryingExecution = agenticv1alpha1.ReasonRetryingExecution
-	reasonRetriesExhausted  = agenticv1alpha1.ReasonRetriesExhausted
-	reasonSystemSuspended   = "SystemSuspended"
-	reasonNoActionRequired  = agenticv1alpha1.ReasonNoActionRequired
+	reasonInProgress       = "InProgress"
+	reasonComplete         = "Complete"
+	reasonFailed           = "Failed"
+	reasonSkipped          = "Skipped"
+	reasonPassed           = "Passed"
+	reasonWorkflowFailed   = "WorkflowResolutionFailed"
+	reasonUserDenied       = "UserDenied"
+	defaultSandboxSA       = "lightspeed-agent"
+	reasonRevising         = "Revising"
+	reasonRevisionComplete = "RevisionComplete"
+	reasonSystemSuspended  = "SystemSuspended"
+	reasonNoActionRequired = agenticv1alpha1.ReasonNoActionRequired
 
 	LogKeyName      = "name"
 	LogKeyStep      = "step"

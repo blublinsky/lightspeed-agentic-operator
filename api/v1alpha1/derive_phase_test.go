@@ -106,22 +106,6 @@ func TestDerivePhase(t *testing.T) {
 			want: AgenticRunPhaseFailed,
 		},
 		{
-			name: "verification failed - retrying execution",
-			conditions: []metav1.Condition{
-				cond(AgenticRunConditionAnalyzed, metav1.ConditionTrue, "Complete"),
-				cond(AgenticRunConditionVerified, metav1.ConditionFalse, "RetryingExecution"),
-			},
-			want: AgenticRunPhaseExecuting,
-		},
-		{
-			name: "verification failed - retries exhausted (without escalated condition)",
-			conditions: []metav1.Condition{
-				cond(AgenticRunConditionAnalyzed, metav1.ConditionTrue, "Complete"),
-				cond(AgenticRunConditionVerified, metav1.ConditionFalse, "RetriesExhausted"),
-			},
-			want: AgenticRunPhaseFailed,
-		},
-		{
 			name: "advisory completed - exec and verify skipped",
 			conditions: []metav1.Condition{
 				cond(AgenticRunConditionAnalyzed, metav1.ConditionTrue, "Complete"),
@@ -134,7 +118,7 @@ func TestDerivePhase(t *testing.T) {
 			name: "escalated",
 			conditions: []metav1.Condition{
 				cond(AgenticRunConditionAnalyzed, metav1.ConditionTrue, "Complete"),
-				cond(AgenticRunConditionEscalated, metav1.ConditionTrue, "MaxAttemptsExhausted"),
+				cond(AgenticRunConditionEscalated, metav1.ConditionTrue, "VerificationFailed"),
 			},
 			want: AgenticRunPhaseEscalated,
 		},
@@ -143,7 +127,7 @@ func TestDerivePhase(t *testing.T) {
 			conditions: []metav1.Condition{
 				cond(AgenticRunConditionAnalyzed, metav1.ConditionTrue, "Complete"),
 				cond(AgenticRunConditionExecuted, metav1.ConditionFalse, "Failed"),
-				cond(AgenticRunConditionEscalated, metav1.ConditionTrue, "MaxAttemptsExhausted"),
+				cond(AgenticRunConditionEscalated, metav1.ConditionTrue, "VerificationFailed"),
 			},
 			want: AgenticRunPhaseEscalated,
 		},
@@ -155,11 +139,11 @@ func TestDerivePhase(t *testing.T) {
 			want: AgenticRunPhaseEscalating,
 		},
 		{
-			name: "escalating takes priority over verified retries exhausted",
+			name: "escalating takes priority over verified false",
 			conditions: []metav1.Condition{
 				cond(AgenticRunConditionAnalyzed, metav1.ConditionTrue, "Complete"),
-				cond(AgenticRunConditionVerified, metav1.ConditionFalse, "RetriesExhausted"),
-				cond(AgenticRunConditionEscalated, metav1.ConditionUnknown, "RetriesExhausted"),
+				cond(AgenticRunConditionVerified, metav1.ConditionFalse, "VerificationFailed"),
+				cond(AgenticRunConditionEscalated, metav1.ConditionUnknown, "VerificationFailed"),
 			},
 			want: AgenticRunPhaseEscalating,
 		},
