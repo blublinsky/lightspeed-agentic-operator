@@ -457,13 +457,13 @@ git commit -m "OLS-3817 e2e: verification failure escalates, single execution"
 
 In `CLAUDE.md` (and `AGENTS.md` if it carries the same text), change the `Executing` bullet:
 
-```
+```text
 - **Executing** — in flight (Executed=Unknown) or retry (Verified=False / RetryingExecution).
 ```
 
 to:
 
-```
+```text
 - **Executing** — execution in flight (Executed=Unknown). Verification failure escalates; it never returns to Executing.
 ```
 

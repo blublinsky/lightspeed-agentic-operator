@@ -184,7 +184,7 @@ for event := range watch.ResultChan() {
     case v1alpha1.AgenticRunPhaseCompleted:
         // Remediation succeeded
     case v1alpha1.AgenticRunPhaseFailed:
-        // Check run.Status.PreviousAttempts for failure details
+        // Inspect run.Status.Steps.*.results (and the referenced Result CRs) for failure details
     case v1alpha1.AgenticRunPhaseEscalated:
         // Verification failed; an EscalationResult was created for human review
     }
@@ -522,7 +522,7 @@ type AgenticRunSpec struct {
     Verification *AgenticRunStep
 
     // Mutable fields — the designated mutation points.
-    Revision    *int32  // Increment to trigger re-analysis with feedback.
+    RevisionFeedback string  // Set to feedback text to trigger re-analysis.
 }
 ```
 

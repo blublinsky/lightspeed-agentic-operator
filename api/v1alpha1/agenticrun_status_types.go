@@ -185,7 +185,7 @@ type ExecutionStepStatus struct {
 	// +optional
 	Sandbox SandboxInfo `json:"sandbox,omitzero"`
 	// results references ExecutionResult CRs, newest last.
-	// Each entry corresponds to one execution attempt (including retries).
+	// Each entry corresponds to one execution attempt (one per revision).
 	// +optional
 	// +listType=atomic
 	// +kubebuilder:validation:MinItems=1
@@ -210,7 +210,7 @@ type VerificationStepStatus struct {
 	// +optional
 	Sandbox SandboxInfo `json:"sandbox,omitzero"`
 	// results references VerificationResult CRs, newest last.
-	// Each entry corresponds to one verification attempt (including retries).
+	// Each entry corresponds to one verification attempt (one per revision).
 	// +optional
 	// +listType=atomic
 	// +kubebuilder:validation:MinItems=1
@@ -219,7 +219,7 @@ type VerificationStepStatus struct {
 }
 
 // EscalationStepStatus is the observed state of the escalation step.
-// The operator injects this step when retries are exhausted; it is not
+// The operator injects this step when verification fails; it is not
 // declared in the AgenticRun spec.
 //
 // +kubebuilder:validation:MinProperties=1

@@ -331,7 +331,7 @@ func TestReconcile_VerificationObjectiveFailure_Escalates(t *testing.T) {
 		t.Fatalf("expected Escalating, got %s", agenticv1alpha1.DerivePhase(p.Status.Conditions))
 	}
 	verified := meta.FindStatusCondition(p.Status.Conditions, agenticv1alpha1.AgenticRunConditionVerified)
-	if verified == nil || verified.Status != metav1.ConditionFalse || verified.Reason != "VerificationFailed" {
+	if verified == nil || verified.Status != metav1.ConditionFalse || verified.Reason != agenticv1alpha1.ReasonVerificationFailed {
 		t.Fatalf("expected Verified=False/VerificationFailed, got %+v", verified)
 	}
 }
@@ -1239,7 +1239,7 @@ func TestReconcile_VerificationOutcomeFailed_Escalates(t *testing.T) {
 		t.Fatalf("expected Escalating when verification success=false, got %s", agenticv1alpha1.DerivePhase(p.Status.Conditions))
 	}
 	verified := meta.FindStatusCondition(p.Status.Conditions, agenticv1alpha1.AgenticRunConditionVerified)
-	if verified == nil || verified.Status != metav1.ConditionFalse || verified.Reason != "VerificationFailed" {
+	if verified == nil || verified.Status != metav1.ConditionFalse || verified.Reason != agenticv1alpha1.ReasonVerificationFailed {
 		t.Fatalf("expected Verified=False/VerificationFailed, got %+v", verified)
 	}
 }

@@ -497,18 +497,18 @@ func (r *AgenticRunReconciler) handleVerification(
 		meta.SetStatusCondition(&run.Status.Conditions, metav1.Condition{
 			Type:               agenticv1alpha1.AgenticRunConditionVerified,
 			Status:             metav1.ConditionFalse,
-			Reason:             "VerificationFailed",
+			Reason:             agenticv1alpha1.ReasonVerificationFailed,
 			Message:            fmt.Sprintf("Verification failed: %s", verifyResult.Summary),
 			ObservedGeneration: run.Generation,
 		})
 		meta.SetStatusCondition(&run.Status.Conditions, metav1.Condition{
 			Type:               agenticv1alpha1.AgenticRunConditionEscalated,
 			Status:             metav1.ConditionUnknown,
-			Reason:             "VerificationFailed",
+			Reason:             agenticv1alpha1.ReasonVerificationFailed,
 			Message:            "Verification failed, escalating",
 			ObservedGeneration: run.Generation,
 		})
-		if err := r.statusPatch(ctx, run, base); err != nil {
+		if err := r.statusPatch(spanCtx, run, base); err != nil {
 			return ctrl.Result{}, fmt.Errorf("%s: %w", ErrUpdateVerificationFailed, err)
 		}
 		return ctrl.Result{}, nil

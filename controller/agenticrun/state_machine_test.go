@@ -380,7 +380,7 @@ func TestManualApproval_VerificationFailEscalates(t *testing.T) {
 
 	p, _ := getAgenticRun(r, "fix-crash")
 	verified := meta.FindStatusCondition(p.Status.Conditions, agenticv1alpha1.AgenticRunConditionVerified)
-	if verified == nil || verified.Status != metav1.ConditionFalse || verified.Reason != "VerificationFailed" {
+	if verified == nil || verified.Status != metav1.ConditionFalse || verified.Reason != agenticv1alpha1.ReasonVerificationFailed {
 		t.Fatalf("expected Verified=False/VerificationFailed, got %+v", verified)
 	}
 	escalated := meta.FindStatusCondition(p.Status.Conditions, agenticv1alpha1.AgenticRunConditionEscalated)
@@ -560,10 +560,10 @@ func TestManualApproval_ExecutionSuccessFalse_NoMutations_Fails(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// Verification objective failure → terminal Failed
+// Verification objective failure → Escalating (no retries)
 // ---------------------------------------------------------------------------
 
-func TestManualApproval_VerificationFailDefaultOneAttempt(t *testing.T) {
+func TestManualApproval_VerificationFailEscalatesNoRetry(t *testing.T) {
 	run := testAgenticRun()
 	agent := newTestAgentCaller()
 	agent.verifyResult = &VerificationOutput{
@@ -653,7 +653,7 @@ func TestDerivePhase_ProposedVsExecuting(t *testing.T) {
 			name: "Analyzed=True + Verified=False → Failed (any reason)",
 			conditions: []metav1.Condition{
 				{Type: agenticv1alpha1.AgenticRunConditionAnalyzed, Status: metav1.ConditionTrue},
-				{Type: agenticv1alpha1.AgenticRunConditionVerified, Status: metav1.ConditionFalse, Reason: "VerificationFailed"},
+				{Type: agenticv1alpha1.AgenticRunConditionVerified, Status: metav1.ConditionFalse, Reason: agenticv1alpha1.ReasonVerificationFailed},
 			},
 			want: agenticv1alpha1.AgenticRunPhaseFailed,
 		},

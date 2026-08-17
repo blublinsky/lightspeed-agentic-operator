@@ -434,9 +434,11 @@ func createAgenticRunTargeting(t *testing.T, c client.Client, name, targetNamesp
 	deleteSandboxClaim(t, c, "ls-analysis-"+name, testNS)
 	deleteSandboxClaim(t, c, "ls-execution-"+name, testNS)
 	deleteSandboxClaim(t, c, "ls-verification-"+name, testNS)
+	deleteSandboxClaim(t, c, "ls-escalation-"+name, testNS)
 	deleteBarePod(t, c, "ls-analysis-"+name)
 	deleteBarePod(t, c, "ls-execution-"+name)
 	deleteBarePod(t, c, "ls-verification-"+name)
+	deleteBarePod(t, c, "ls-escalation-"+name)
 
 	if err := c.Create(ctx, prop); err != nil {
 		t.Fatalf("create AgenticRun: %v", err)

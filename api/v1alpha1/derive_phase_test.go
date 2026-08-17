@@ -142,8 +142,8 @@ func TestDerivePhase(t *testing.T) {
 			name: "escalating takes priority over verified false",
 			conditions: []metav1.Condition{
 				cond(AgenticRunConditionAnalyzed, metav1.ConditionTrue, "Complete"),
-				cond(AgenticRunConditionVerified, metav1.ConditionFalse, "VerificationFailed"),
-				cond(AgenticRunConditionEscalated, metav1.ConditionUnknown, "VerificationFailed"),
+				cond(AgenticRunConditionVerified, metav1.ConditionFalse, ReasonVerificationFailed),
+				cond(AgenticRunConditionEscalated, metav1.ConditionUnknown, ReasonVerificationFailed),
 			},
 			want: AgenticRunPhaseEscalating,
 		},

@@ -68,9 +68,7 @@ stateDiagram-v2
     Executing --> Verifying: execution succeeds
     Executing --> Failed: execution fails
     Verifying --> Completed: verification passes
-    Verifying --> Executing: verification fails (retry)
-    Verifying --> Escalating: retries exhausted
-    Verifying --> Failed: verification fails (no retry)
+    Verifying --> Escalating: verification fails
     Escalating --> Escalated: escalation completes
     Escalating --> Failed: escalation fails
 ```

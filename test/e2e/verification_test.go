@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	rbacv1 "k8s.io/api/rbac/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
@@ -152,17 +153,31 @@ func TestVerificationFlow_FailureEscalatesSingleExecution(t *testing.T) {
 
 	// --- Verify: Verified=False/VerificationFailed ---
 	verified := meta.FindStatusCondition(updated.Status.Conditions, agenticv1alpha1.AgenticRunConditionVerified)
-	if verified == nil || verified.Status != metav1.ConditionFalse || verified.Reason != "VerificationFailed" {
-		t.Fatalf("expected Verified=False/VerificationFailed, got %+v", verified)
+	if verified == nil || verified.Status != metav1.ConditionFalse || verified.Reason != agenticv1alpha1.ReasonVerificationFailed {
+		t.Fatalf("expected Verified=False/%s, got %+v", agenticv1alpha1.ReasonVerificationFailed, verified)
 	}
 	t.Log("Verified: Verified=False/VerificationFailed condition present")
 
-	// --- Verify: Escalated condition present (Unknown while Escalating, True if auto-advanced) ---
+	// --- Verify: Escalated condition present with the expected reason ---
+	// Unknown while Escalating (reason VerificationFailed), or True if the
+	// controller auto-advanced to Escalated (terminal reason Complete).
 	escalated := meta.FindStatusCondition(updated.Status.Conditions, agenticv1alpha1.AgenticRunConditionEscalated)
-	if escalated == nil || (escalated.Status != metav1.ConditionUnknown && escalated.Status != metav1.ConditionTrue) {
+	if escalated == nil {
+		t.Fatalf("expected Escalated condition, got nil")
+	}
+	switch escalated.Status {
+	case metav1.ConditionUnknown:
+		if escalated.Reason != agenticv1alpha1.ReasonVerificationFailed {
+			t.Fatalf("expected Escalated=Unknown reason %s, got %+v", agenticv1alpha1.ReasonVerificationFailed, escalated)
+		}
+	case metav1.ConditionTrue:
+		if escalated.Reason != "Complete" {
+			t.Fatalf("expected Escalated=True reason Complete, got %+v", escalated)
+		}
+	default:
 		t.Fatalf("expected Escalated condition Unknown or True, got %+v", escalated)
 	}
-	t.Logf("Verified: Escalated condition present with status=%s", escalated.Status)
+	t.Logf("Verified: Escalated condition present with status=%s reason=%s", escalated.Status, escalated.Reason)
 
 	// --- Verify: exactly ONE ExecutionResult — proof of no re-execution ---
 	var execList agenticv1alpha1.ExecutionResultList
@@ -189,7 +204,10 @@ func waitForEscalationRaised(t *testing.T, c client.Client, name string) agentic
 
 	err := wait.PollUntilContextTimeout(ctx, pollInterval, pollTimeout, true, func(ctx context.Context) (bool, error) {
 		if err := c.Get(ctx, types.NamespacedName{Name: name, Namespace: testNS}, &updated); err != nil {
-			return false, nil
+			if apierrors.IsNotFound(err) {
+				return false, nil
+			}
+			return false, err
 		}
 		phase := agenticv1alpha1.DerivePhase(updated.Status.Conditions)
 		t.Logf("polling %s: phase=%s conditions=%d", name, phase, len(updated.Status.Conditions))

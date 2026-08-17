@@ -2079,7 +2079,7 @@ spec:
                       results:
                         description: |-
                           results references ExecutionResult CRs, newest last.
-                          Each entry corresponds to one execution attempt (including retries).
+                          Each entry corresponds to one execution attempt (one per revision).
                         items:
                           description: |-
                             StepResultRef is a lightweight reference to a result CR with an inline
@@ -2204,7 +2204,7 @@ spec:
                       results:
                         description: |-
                           results references VerificationResult CRs, newest last.
-                          Each entry corresponds to one verification attempt (including retries).
+                          Each entry corresponds to one verification attempt (one per revision).
                         items:
                           description: |-
                             StepResultRef is a lightweight reference to a result CR with an inline
