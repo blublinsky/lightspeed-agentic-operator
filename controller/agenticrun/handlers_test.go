@@ -423,7 +423,7 @@ func TestReconcile_ObjectiveFailure_ThenRevise(t *testing.T) {
 
 	r := &AgenticRunReconciler{Client: fc, Agent: agent, Namespace: "default"}
 
-	// Full lifecycle to verification failure, retries exhausted → Analyzing
+	// Full lifecycle to verification failure → escalates directly, then revised → Analyzing
 	reconcileOnce(r, "fix-crash")
 	approveAgenticRun(t, fc, "fix-crash")
 	reconcileOnce(r, "fix-crash")
@@ -440,7 +440,7 @@ func TestReconcile_ObjectiveFailure_ThenRevise(t *testing.T) {
 
 	p, _ := getAgenticRun(r, "fix-crash")
 	if agenticv1alpha1.DerivePhase(p.Status.Conditions) != agenticv1alpha1.AgenticRunPhaseEscalating {
-		t.Fatalf("expected Escalating (retries exhausted), got %s", agenticv1alpha1.DerivePhase(p.Status.Conditions))
+		t.Fatalf("expected Escalating (verification failed), got %s", agenticv1alpha1.DerivePhase(p.Status.Conditions))
 	}
 
 	// Admin submits revision

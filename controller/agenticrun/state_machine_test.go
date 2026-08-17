@@ -794,7 +794,7 @@ func TestEscalation_ApproveAndComplete(t *testing.T) {
 	policy := testPolicy(agenticv1alpha1.ApprovalModeManual, agenticv1alpha1.ApprovalModeManual, agenticv1alpha1.ApprovalModeManual)
 	r, fc := newReconcilerWithPolicy(t, run, agent, policy)
 
-	// Run through to verification failure → retry → exhaustion → Escalating
+	// Run through to verification failure → escalate directly → Escalating
 	approveAnalysis(t, fc, "fix-crash")
 	reconcileOnce(r, "fix-crash")
 	approveExecution(t, fc, "fix-crash", 0)
@@ -921,9 +921,9 @@ func TestEscalation_InProgressIsIdempotent(t *testing.T) {
 	approveExecution(t, fc, "fix-crash", 0)
 	reconcileOnce(r, "fix-crash")
 	approveVerification(t, fc, "fix-crash")
-	reconcileOnce(r, "fix-crash") // verify fails, retry
-	reconcileOnce(r, "fix-crash") // re-execute
-	reconcileOnce(r, "fix-crash") // verify fails again, retries exhausted → Escalating
+	reconcileOnce(r, "fix-crash") // verify fails → escalate immediately
+	reconcileOnce(r, "fix-crash") // re-reconcile is idempotent
+	reconcileOnce(r, "fix-crash") // still Escalating
 	assertPhase(t, r, "fix-crash", agenticv1alpha1.AgenticRunPhaseEscalating)
 
 	// Approve escalation and run it
