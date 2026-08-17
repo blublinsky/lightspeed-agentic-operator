@@ -4,15 +4,24 @@ package e2e
 
 import (
 	"context"
+	"fmt"
 	"testing"
 
 	rbacv1 "k8s.io/api/rbac/v1"
+	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/apimachinery/pkg/util/wait"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	agenticv1alpha1 "github.com/openshift/lightspeed-agentic-operator/api/v1alpha1"
 )
+
+// verifyFailNamespace is the target namespace sentinel the mock agent
+// (test/agent/main.go cannedResponse) recognizes to return a FAILING
+// verification response instead of the default "Passed" one. Must match the
+// constant of the same name in test/agent/main.go.
+const verifyFailNamespace = "e2e-verify-fail"
 
 // TestVerificationFlow_VerifyingToCompleted validates the verification phase:
 //
@@ -96,4 +105,105 @@ func TestVerificationFlow_VerifyingToCompleted(t *testing.T) {
 	}
 	t.Log("Verified: RBAC cleaned up after deletion")
 	t.Log("PASS: verification complete, phase=Completed, RBAC cleaned")
+}
+
+// TestVerificationFlow_FailureEscalatesSingleExecution validates that a
+// verification failure escalates directly, without re-executing:
+//
+//  1. Create AgenticRun targeting the verifyFailNamespace sentinel, drive
+//     through analysis + execution to Verifying
+//  2. Approve verification — the mock agent returns a FAILING check for this
+//     sentinel namespace
+//  3. Assert: escalation is raised (phase Escalating, or Escalated if the
+//     controller auto-advances before the poll observes Escalating),
+//     Verified=False/VerificationFailed, Escalated condition present
+//  4. Assert: exactly one ExecutionResult exists for the run — proof
+//     verification failure never triggers re-execution
+func TestVerificationFlow_FailureEscalatesSingleExecution(t *testing.T) {
+	t.Log("=== TestVerificationFlow_FailureEscalatesSingleExecution: validates verification failure -> Escalating, single execution ===")
+	c := newClient(t)
+	ctx := context.Background()
+
+	t.Log("Creating fixtures (LLMProvider, Agent, ApprovalPolicy, Secret)")
+	createFixtures(t, c)
+	ensureNamespace(t, c, verifyFailNamespace)
+
+	prop := createAgenticRunTargeting(t, c, "e2e-verification-fail-escalates", verifyFailNamespace,
+		"Pod crash-looping in "+verifyFailNamespace+" namespace")
+	t.Logf("AgenticRun created: %s/%s (targeting sentinel namespace %s)", testNS, prop.Name, verifyFailNamespace)
+
+	t.Log("Waiting for phase: Proposed (analysis complete)")
+	waitForPhase(t, c, prop.Name, agenticv1alpha1.AgenticRunPhaseProposed)
+	t.Log("Phase reached: Proposed")
+
+	t.Log("Approving execution with option 0")
+	approveExecution(t, c, prop.Name, 0)
+
+	t.Log("Waiting for phase: Verifying (execution complete)")
+	waitForPhase(t, c, prop.Name, agenticv1alpha1.AgenticRunPhaseVerifying)
+	t.Log("Phase reached: Verifying")
+
+	t.Log("Approving verification (mock agent will report a FAILING check for the sentinel namespace)")
+	approveVerification(t, c, prop.Name)
+
+	t.Log("Waiting for escalation to be raised (phase Escalating or Escalated)")
+	updated := waitForEscalationRaised(t, c, prop.Name)
+	t.Logf("Escalation raised: phase=%s", agenticv1alpha1.DerivePhase(updated.Status.Conditions))
+
+	// --- Verify: Verified=False/VerificationFailed ---
+	verified := meta.FindStatusCondition(updated.Status.Conditions, agenticv1alpha1.AgenticRunConditionVerified)
+	if verified == nil || verified.Status != metav1.ConditionFalse || verified.Reason != "VerificationFailed" {
+		t.Fatalf("expected Verified=False/VerificationFailed, got %+v", verified)
+	}
+	t.Log("Verified: Verified=False/VerificationFailed condition present")
+
+	// --- Verify: Escalated condition present (Unknown while Escalating, True if auto-advanced) ---
+	escalated := meta.FindStatusCondition(updated.Status.Conditions, agenticv1alpha1.AgenticRunConditionEscalated)
+	if escalated == nil || (escalated.Status != metav1.ConditionUnknown && escalated.Status != metav1.ConditionTrue) {
+		t.Fatalf("expected Escalated condition Unknown or True, got %+v", escalated)
+	}
+	t.Logf("Verified: Escalated condition present with status=%s", escalated.Status)
+
+	// --- Verify: exactly ONE ExecutionResult — proof of no re-execution ---
+	var execList agenticv1alpha1.ExecutionResultList
+	if err := c.List(ctx, &execList, client.InNamespace(testNS), client.MatchingLabels{"agentic.openshift.io/run": prop.Name}); err != nil {
+		t.Fatalf("list ExecutionResult: %v", err)
+	}
+	if len(execList.Items) != 1 {
+		t.Fatalf("expected exactly 1 ExecutionResult, got %d", len(execList.Items))
+	}
+	t.Logf("Verified: exactly 1 ExecutionResult %s exists — no re-execution occurred", execList.Items[0].Name)
+
+	t.Log("PASS: verification failure escalated with a single execution")
+}
+
+// waitForEscalationRaised polls until the AgenticRun's Escalated condition is
+// present with Status Unknown (phase Escalating) or True (phase Escalated,
+// if the controller auto-advances before the poll observes Escalating).
+// Either outcome proves escalation was raised. Fails fast if the run instead
+// reaches a different terminal phase.
+func waitForEscalationRaised(t *testing.T, c client.Client, name string) agenticv1alpha1.AgenticRun {
+	t.Helper()
+	ctx := context.Background()
+	var updated agenticv1alpha1.AgenticRun
+
+	err := wait.PollUntilContextTimeout(ctx, pollInterval, pollTimeout, true, func(ctx context.Context) (bool, error) {
+		if err := c.Get(ctx, types.NamespacedName{Name: name, Namespace: testNS}, &updated); err != nil {
+			return false, nil
+		}
+		phase := agenticv1alpha1.DerivePhase(updated.Status.Conditions)
+		t.Logf("polling %s: phase=%s conditions=%d", name, phase, len(updated.Status.Conditions))
+		if phase == agenticv1alpha1.AgenticRunPhaseEscalating || phase == agenticv1alpha1.AgenticRunPhaseEscalated {
+			return true, nil
+		}
+		if terminalPhases[phase] {
+			return false, fmt.Errorf("reached terminal phase %s without escalation being raised", phase)
+		}
+		return false, nil
+	})
+	if err != nil {
+		phase := agenticv1alpha1.DerivePhase(updated.Status.Conditions)
+		t.Fatalf("waiting for escalation raised failed: %v; current=%s conditions=%v", err, phase, updated.Status.Conditions)
+	}
+	return updated
 }

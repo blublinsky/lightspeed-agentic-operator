@@ -199,6 +199,13 @@ func phaseFromSchema(schema json.RawMessage) string {
 	}
 }
 
+// verifyFailNamespace is a sentinel target namespace that makes the mock
+// agent's verification response report failure instead of the default
+// success. e2e tests that need to exercise verification-failure/escalation
+// behavior target this namespace; every other namespace keeps getting the
+// canned "Passed" response.
+const verifyFailNamespace = "e2e-verify-fail"
+
 func cannedResponse(phase, targetNS string) []byte {
 	switch phase {
 	case "execution":
@@ -213,6 +220,20 @@ func cannedResponse(phase, targetNS string) []byte {
   ]
 }`)
 	case "verification":
+		if targetNS == verifyFailNamespace {
+			return []byte(`{
+  "success": false,
+  "checks": [
+    {
+      "name": "mock-check",
+      "source": "mock",
+      "value": "not-ok",
+      "result": "Failed"
+    }
+  ],
+  "summary": "mock verification failure (sentinel)"
+}`)
+		}
 		return []byte(`{
   "success": true,
   "checks": [

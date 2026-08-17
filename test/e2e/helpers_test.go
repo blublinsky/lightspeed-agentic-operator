@@ -201,6 +201,15 @@ func ensureCrashLoopPod(t *testing.T, c client.Client) {
 	t.Log("crash-loop pod is CrashLoopBackOff in staging namespace")
 }
 
+// ensureNamespace creates the namespace if absent (idempotent — ignores AlreadyExists).
+func ensureNamespace(t *testing.T, c client.Client, name string) {
+	t.Helper()
+	ns := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: name}}
+	if err := c.Create(context.Background(), ns); err != nil && !apierrors.IsAlreadyExists(err) {
+		t.Fatalf("create namespace %s: %v", name, err)
+	}
+}
+
 // --- Fixture builders ---
 
 // e2eFixtures holds the prerequisite CRs needed for any run flow.
@@ -391,17 +400,27 @@ func createRealProviderFixtures(t *testing.T, c client.Client) *e2eFixtures {
 	return f
 }
 
-// createAgenticRun creates a AgenticRun + pre-created AgenticRunApproval (CEL workaround).
-// Cleans up leftovers from previous runs. Returns the created AgenticRun.
+// createAgenticRun creates a AgenticRun + pre-created AgenticRunApproval (CEL workaround),
+// targeting the "staging" namespace. Cleans up leftovers from previous runs. Returns the
+// created AgenticRun.
 func createAgenticRun(t *testing.T, c client.Client, name string) *agenticv1alpha1.AgenticRun {
+	t.Helper()
+	return createAgenticRunTargeting(t, c, name, "staging", "Pod crash-looping in staging namespace")
+}
+
+// createAgenticRunTargeting creates a AgenticRun + pre-created AgenticRunApproval (CEL
+// workaround) against an arbitrary target namespace and request string — e.g. the mock
+// agent's verifyFailNamespace sentinel to drive a failing verification response. Cleans up
+// leftovers from previous runs. Returns the created AgenticRun.
+func createAgenticRunTargeting(t *testing.T, c client.Client, name, targetNamespace, request string) *agenticv1alpha1.AgenticRun {
 	t.Helper()
 	ctx := context.Background()
 
 	prop := &agenticv1alpha1.AgenticRun{
 		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: testNS},
 		Spec: agenticv1alpha1.AgenticRunSpec{
-			Request:          "Pod crash-looping in staging namespace",
-			TargetNamespaces: []string{"staging"},
+			Request:          request,
+			TargetNamespaces: []string{targetNamespace},
 			Tools:            agenticv1alpha1.ToolsSpec{Skills: []agenticv1alpha1.SkillsSource{{Image: "quay.io/openshift-lightspeed/ols-qe:lightspeed-mock-agent", Paths: []string{"/skills"}}}},
 			Analysis:         agenticv1alpha1.AgenticRunStep{Agent: "e2e-agent"},
 			Execution:        agenticv1alpha1.AgenticRunStep{Agent: "e2e-agent"},
