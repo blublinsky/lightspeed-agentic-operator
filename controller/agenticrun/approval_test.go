@@ -127,8 +127,8 @@ func TestGetStageOverrideAgent_OmittedMeansNoOverride(t *testing.T) {
 	approval := &agenticv1alpha1.AgenticRunApproval{
 		Spec: agenticv1alpha1.AgenticRunApprovalSpec{
 			Stages: []agenticv1alpha1.ApprovalStage{
-				agenticv1alpha1.NewApprovalStage(agenticv1alpha1.ApprovalStageAnalysis, "", "", nil, 0),
-				agenticv1alpha1.NewApprovalStage(agenticv1alpha1.ApprovalStageExecution, "", "fast", nil, 0),
+				agenticv1alpha1.NewApprovalStage(agenticv1alpha1.ApprovalStageAnalysis, "", "", nil),
+				agenticv1alpha1.NewApprovalStage(agenticv1alpha1.ApprovalStageExecution, "", "fast", nil),
 			},
 		},
 	}

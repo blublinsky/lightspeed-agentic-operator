@@ -52,15 +52,6 @@ spec:
             description: spec defines the desired approval policy.
             minProperties: 1
             properties:
-              maxAttempts:
-                description: |-
-                  maxAttempts sets the maximum number of execution retry attempts
-                  allowed for agentic runs. When verification fails, the operator retries
-                  execution up to this limit before escalating. Defaults to 1 if omitted.
-                format: int32
-                maximum: 3
-                minimum: 1
-                type: integer
               maxConcurrentRuns:
                 default: 5
                 description: |-

@@ -95,14 +95,6 @@ type ExecutionApproval struct {
 	// +optional
 	// +kubebuilder:validation:Minimum=0
 	Option *int32 `json:"option,omitempty"`
-
-	// maxAttempts is the number of execution retry attempts approved
-	// for this agentic run. Must not exceed ApprovalPolicy.spec.maxAttempts.
-	// Defaults to 1 if unset.
-	// +optional
-	// +kubebuilder:validation:Minimum=1
-	// +kubebuilder:validation:Maximum=3
-	MaxAttempts int32 `json:"maxAttempts,omitempty"`
 }
 
 // VerificationApproval contains approval parameters for the verification step.
@@ -176,11 +168,10 @@ type ApprovalStage struct {
 // AgenticRunApprovalSpec defines the desired state of AgenticRunApproval.
 //
 // spec.stages is append-only: once a stage is added, it cannot be removed.
-// Decisions once set cannot be changed. maxAttempts once set cannot be reduced.
+// Decisions once set cannot be changed.
 //
 // +kubebuilder:validation:XValidation:rule="oldSelf.stages.all(old, self.stages.exists(s, s.type == old.type))",message="stages are append-only: existing stages cannot be removed"
 // +kubebuilder:validation:XValidation:rule="oldSelf.stages.all(old, !(has(old.decision) && old.decision == 'Denied') || self.stages.exists(s, s.type == old.type && has(s.decision) && s.decision == 'Denied'))",message="decisions once set cannot be changed"
-// +kubebuilder:validation:XValidation:rule="oldSelf.stages.all(old, old.type != 'Execution' || !has(old.execution) || !has(old.execution.maxAttempts) || old.execution.maxAttempts == 0 || self.stages.exists(s, s.type == 'Execution' && has(s.execution) && has(s.execution.maxAttempts) && s.execution.maxAttempts == old.execution.maxAttempts))",message="maxAttempts once set cannot be changed"
 // +kubebuilder:validation:MinProperties=1
 type AgenticRunApprovalSpec struct {
 	// approver captures the authenticated identity of the user who last

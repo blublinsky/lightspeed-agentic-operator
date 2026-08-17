@@ -59,14 +59,6 @@ type ApprovalPolicySpec struct {
 	// +kubebuilder:validation:MaxItems=4
 	Stages []ApprovalPolicyStage `json:"stages,omitempty"`
 
-	// maxAttempts sets the maximum number of execution retry attempts
-	// allowed for agentic runs. When verification fails, the operator retries
-	// execution up to this limit before escalating. Defaults to 1 if omitted.
-	// +optional
-	// +kubebuilder:validation:Minimum=1
-	// +kubebuilder:validation:Maximum=3
-	MaxAttempts int32 `json:"maxAttempts,omitempty"`
-
 	// maxConcurrentRuns sets the maximum number of agentic runs the
 	// operator reconciles concurrently. Higher values allow more agentic runs
 	// to run in parallel but consume more cluster resources.

@@ -132,14 +132,9 @@ func testAgenticRun() *agenticv1alpha1.AgenticRun {
 // and verification stages, so tests only need to explicitly approve execution
 // (which carries the selected option).
 func testAutoApprovePolicy() *agenticv1alpha1.ApprovalPolicy {
-	return testAutoApprovePolicyWithMaxAttempts(0)
-}
-
-func testAutoApprovePolicyWithMaxAttempts(maxAttempts int32) *agenticv1alpha1.ApprovalPolicy {
 	return &agenticv1alpha1.ApprovalPolicy{
 		ObjectMeta: metav1.ObjectMeta{Name: "cluster"},
 		Spec: agenticv1alpha1.ApprovalPolicySpec{
-			MaxAttempts: maxAttempts,
 			Stages: []agenticv1alpha1.ApprovalPolicyStage{
 				{Name: agenticv1alpha1.SandboxStepAnalysis, Approval: agenticv1alpha1.ApprovalModeAutomatic},
 				{Name: agenticv1alpha1.SandboxStepVerification, Approval: agenticv1alpha1.ApprovalModeAutomatic},
@@ -153,12 +148,6 @@ func testAutoApprovePolicyWithMaxAttempts(maxAttempts int32) *agenticv1alpha1.Ap
 func defaultObjects() []client.Object {
 	return []client.Object{
 		testDefaultAgent(), testLLM("smart"), testAutoApprovePolicy(), testReaderClusterRoleBinding(),
-	}
-}
-
-func defaultObjectsWithMaxAttempts(maxAttempts int32) []client.Object {
-	return []client.Object{
-		testDefaultAgent(), testLLM("smart"), testAutoApprovePolicyWithMaxAttempts(maxAttempts), testReaderClusterRoleBinding(),
 	}
 }
 

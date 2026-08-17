@@ -417,7 +417,7 @@ func TestReconcile_ObjectiveFailure_ThenRevise(t *testing.T) {
 
 	run := testAgenticRun()
 
-	objs := append([]client.Object{run}, defaultObjectsWithMaxAttempts(1)...)
+	objs := append([]client.Object{run}, defaultObjects()...)
 	fc := fake.NewClientBuilder().WithScheme(scheme).WithObjects(objs...).
 		WithStatusSubresource(run, &agenticv1alpha1.AnalysisResult{}, &agenticv1alpha1.ExecutionResult{}, &agenticv1alpha1.VerificationResult{}, &agenticv1alpha1.EscalationResult{}).Build()
 
@@ -432,11 +432,10 @@ func TestReconcile_ObjectiveFailure_ThenRevise(t *testing.T) {
 		Checks:  []agenticv1alpha1.VerifyCheck{{Name: "pod-running", Source: "oc", Value: "CrashLoopBackOff", Result: agenticv1alpha1.CheckResultFailed}},
 		Summary: "Pod still crashing",
 	}
-	// Verification fails → Executing (retry, retryCount=1)
+	// Verification fails → Escalating immediately (no retries)
 	reconcileOnce(r, "fix-crash")
-	// Re-execute → Verifying
+	// Re-reconcile while escalating is idempotent
 	reconcileOnce(r, "fix-crash")
-	// Re-verify → retryCount=1 >= maxAttempts=1 → Escalating (exhausted)
 	reconcileOnce(r, "fix-crash")
 
 	p, _ := getAgenticRun(r, "fix-crash")
@@ -1327,7 +1326,7 @@ func TestReconcile_TrimOptionsOnExecution(t *testing.T) {
 	scheme := testScheme()
 	run := testAgenticRun()
 
-	objs := append([]client.Object{run}, defaultObjectsWithMaxAttempts(3)...)
+	objs := append([]client.Object{run}, defaultObjects()...)
 	fc := fake.NewClientBuilder().WithScheme(scheme).WithObjects(objs...).
 		WithStatusSubresource(run, &agenticv1alpha1.AnalysisResult{}, &agenticv1alpha1.ExecutionResult{}, &agenticv1alpha1.VerificationResult{}, &agenticv1alpha1.EscalationResult{}).Build()
 

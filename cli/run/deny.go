@@ -92,7 +92,7 @@ func (o *DenyOptions) Run(ctx context.Context) error {
 		}
 	}
 
-	entry := agenticv1alpha1.NewApprovalStage(stageType, agenticv1alpha1.ApprovalDecisionDenied, "", nil, 0)
+	entry := agenticv1alpha1.NewApprovalStage(stageType, agenticv1alpha1.ApprovalDecisionDenied, "", nil)
 
 	patch := client.MergeFrom(approval.DeepCopy())
 	approval.Spec.Stages = append(approval.Spec.Stages, entry)

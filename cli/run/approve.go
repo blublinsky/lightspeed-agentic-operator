@@ -138,7 +138,7 @@ func (o *ApproveOptions) Run(ctx context.Context) error {
 		if stageType == agenticv1alpha1.ApprovalStageExecution {
 			option = &o.option
 		}
-		entries = append(entries, agenticv1alpha1.NewApprovalStage(stageType, "", o.agent, option, 0))
+		entries = append(entries, agenticv1alpha1.NewApprovalStage(stageType, "", o.agent, option))
 	}
 
 	patch := client.MergeFrom(approval.DeepCopy())

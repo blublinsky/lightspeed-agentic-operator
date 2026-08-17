@@ -23,14 +23,9 @@ func testManualPolicy() *agenticv1alpha1.ApprovalPolicy {
 }
 
 func testPolicy(analysis, execution, verification agenticv1alpha1.ApprovalMode) *agenticv1alpha1.ApprovalPolicy {
-	return testPolicyWithMaxAttempts(analysis, execution, verification, 0)
-}
-
-func testPolicyWithMaxAttempts(analysis, execution, verification agenticv1alpha1.ApprovalMode, maxAttempts int32) *agenticv1alpha1.ApprovalPolicy {
 	return &agenticv1alpha1.ApprovalPolicy{
 		ObjectMeta: metav1.ObjectMeta{Name: "cluster"},
 		Spec: agenticv1alpha1.ApprovalPolicySpec{
-			MaxAttempts: maxAttempts,
 			Stages: []agenticv1alpha1.ApprovalPolicyStage{
 				{Name: agenticv1alpha1.SandboxStepAnalysis, Approval: analysis},
 				{Name: agenticv1alpha1.SandboxStepExecution, Approval: execution},
@@ -565,12 +560,11 @@ func TestManualApproval_ExecutionSuccessFalse_NoMutations_Fails(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// Verification objective failure without maxAttempts → terminal Failed
+// Verification objective failure → terminal Failed
 // ---------------------------------------------------------------------------
 
 func TestManualApproval_VerificationFailDefaultOneAttempt(t *testing.T) {
 	run := testAgenticRun()
-	// No maxAttempts on policy → defaults to 1 (one attempt, no retries)
 	agent := newTestAgentCaller()
 	agent.verifyResult = &VerificationOutput{
 		Success: false,
@@ -585,7 +579,7 @@ func TestManualApproval_VerificationFailDefaultOneAttempt(t *testing.T) {
 	approveVerification(t, fc, "fix-crash")
 	reconcileOnce(r, "fix-crash")
 
-	// maxAttempts=1 → 1 total attempt, no retries → escalate immediately
+	// No retries → escalate immediately
 	assertPhase(t, r, "fix-crash", agenticv1alpha1.AgenticRunPhaseEscalating)
 }
 
@@ -797,7 +791,7 @@ func TestEscalation_ApproveAndComplete(t *testing.T) {
 		Summary: "Pod still crashing",
 		Checks:  []agenticv1alpha1.VerifyCheck{{Name: "pod-running", Result: agenticv1alpha1.CheckResultFailed}},
 	}
-	policy := testPolicyWithMaxAttempts(agenticv1alpha1.ApprovalModeManual, agenticv1alpha1.ApprovalModeManual, agenticv1alpha1.ApprovalModeManual, 1)
+	policy := testPolicy(agenticv1alpha1.ApprovalModeManual, agenticv1alpha1.ApprovalModeManual, agenticv1alpha1.ApprovalModeManual)
 	r, fc := newReconcilerWithPolicy(t, run, agent, policy)
 
 	// Run through to verification failure → retry → exhaustion → Escalating
@@ -806,7 +800,7 @@ func TestEscalation_ApproveAndComplete(t *testing.T) {
 	approveExecution(t, fc, "fix-crash", 0)
 	reconcileOnce(r, "fix-crash")
 	approveVerification(t, fc, "fix-crash")
-	reconcileOnce(r, "fix-crash") // verify fails, maxAttempts=1 → escalate immediately
+	reconcileOnce(r, "fix-crash") // verify fails → escalate immediately
 	assertPhase(t, r, "fix-crash", agenticv1alpha1.AgenticRunPhaseEscalating)
 
 	// Approve escalation
@@ -918,7 +912,7 @@ func TestEscalation_InProgressIsIdempotent(t *testing.T) {
 		Summary: "Pod still crashing",
 		Checks:  []agenticv1alpha1.VerifyCheck{{Name: "pod-running", Result: agenticv1alpha1.CheckResultFailed}},
 	}
-	policy := testPolicyWithMaxAttempts(agenticv1alpha1.ApprovalModeManual, agenticv1alpha1.ApprovalModeManual, agenticv1alpha1.ApprovalModeManual, 1)
+	policy := testPolicy(agenticv1alpha1.ApprovalModeManual, agenticv1alpha1.ApprovalModeManual, agenticv1alpha1.ApprovalModeManual)
 	r, fc := newReconcilerWithPolicy(t, run, agent, policy)
 
 	// Drive to Escalating phase

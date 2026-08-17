@@ -180,7 +180,7 @@ func TestDerivePhase(t *testing.T) {
 		{
 			name: "emergency stopped takes priority over escalated",
 			conditions: []metav1.Condition{
-				cond(AgenticRunConditionEscalated, metav1.ConditionTrue, "MaxAttemptsExhausted"),
+				cond(AgenticRunConditionEscalated, metav1.ConditionTrue, "VerificationFailed"),
 				cond(AgenticRunConditionEmergencyStopped, metav1.ConditionTrue, "SystemSuspended"),
 			},
 			want: AgenticRunPhaseEmergencyStopped,
