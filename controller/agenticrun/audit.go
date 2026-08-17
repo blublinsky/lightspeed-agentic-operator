@@ -229,19 +229,11 @@ func (l *ProductionAuditLogger) StartAnalysisSpan(ctx context.Context, run *agen
 }
 
 func (l *ProductionAuditLogger) StartExecutionSpan(ctx context.Context, run *agenticv1alpha1.AgenticRun) (context.Context, trace.Span) {
-	var extra []attribute.KeyValue
-	if run.Status.Steps.Execution.RetryCount != nil && *run.Status.Steps.Execution.RetryCount > 0 {
-		extra = append(extra, attribute.Int("retry_index", int(*run.Status.Steps.Execution.RetryCount)))
-	}
-	return l.startPhaseSpan(ctx, run, "agenticrun.execute", extra...)
+	return l.startPhaseSpan(ctx, run, "agenticrun.execute")
 }
 
 func (l *ProductionAuditLogger) StartVerificationSpan(ctx context.Context, run *agenticv1alpha1.AgenticRun) (context.Context, trace.Span) {
-	var extra []attribute.KeyValue
-	if run.Status.Steps.Execution.RetryCount != nil && *run.Status.Steps.Execution.RetryCount > 0 {
-		extra = append(extra, attribute.Int("retry_index", int(*run.Status.Steps.Execution.RetryCount)))
-	}
-	return l.startPhaseSpan(ctx, run, "agenticrun.verify", extra...)
+	return l.startPhaseSpan(ctx, run, "agenticrun.verify")
 }
 
 func (l *ProductionAuditLogger) StartEscalationSpan(ctx context.Context, run *agenticv1alpha1.AgenticRun) (context.Context, trace.Span) {

@@ -2106,15 +2106,6 @@ spec:
                         minItems: 1
                         type: array
                         x-kubernetes-list-type: atomic
-                      retryCount:
-                        description: |-
-                          retryCount tracks how many times execution+verification has been
-                          retried for the current analysis option. Reset when a new analysis
-                          is run (initial or revision). The operator increments this on each
-                          objective verification failure before retrying execution.
-                        format: int32
-                        minimum: 0
-                        type: integer
                       sandbox:
                         description: sandbox tracks the sandbox used.
                         properties:

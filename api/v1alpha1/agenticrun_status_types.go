@@ -184,13 +184,6 @@ type ExecutionStepStatus struct {
 	// sandbox tracks the sandbox used.
 	// +optional
 	Sandbox SandboxInfo `json:"sandbox,omitzero"`
-	// retryCount tracks how many times execution+verification has been
-	// retried for the current analysis option. Reset when a new analysis
-	// is run (initial or revision). The operator increments this on each
-	// objective verification failure before retrying execution.
-	// +optional
-	// +kubebuilder:validation:Minimum=0
-	RetryCount *int32 `json:"retryCount,omitempty"`
 	// results references ExecutionResult CRs, newest last.
 	// Each entry corresponds to one execution attempt (including retries).
 	// +optional
