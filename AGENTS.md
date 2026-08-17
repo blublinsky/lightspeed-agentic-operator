@@ -40,7 +40,7 @@ Pending → Analyzing → Proposed → Executing → Verifying → Completed
 ```
 
 - **Proposed** — analysis done, awaiting execution approval (Analyzed=True, no Executed condition).
-- **Executing** — in flight (Executed=Unknown) or retry (Verified=False / RetryingExecution).
+- **Executing** — execution in flight (Executed=Unknown). Verification failure escalates; it never returns to Executing.
 
 ## Commands
 

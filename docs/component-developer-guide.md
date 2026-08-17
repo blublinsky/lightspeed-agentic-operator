@@ -96,7 +96,6 @@ spec:
   execution: {}
   verification:
     agent: fast
-  maxAttempts: 3
   tools:
     skills:
       - image: registry.redhat.io/my-product/lightspeed-skills:latest
@@ -146,8 +145,8 @@ Every step (analysis, execution, verification) has a built-in approval gate. The
 - **Denied** -- User denied a step on the AgenticRunApproval. Terminal.
 - **Verifying** -- Execution complete (or skipped). Verification step approved (or pending approval).
 - **Completed** -- Verification passed. Terminal (success).
-- **Failed** -- A step failed. May retry (up to `maxAttempts`) or escalate.
-- **Escalated** -- Max retries exhausted. A child AgenticRun is created with failure history.
+- **Failed** -- A step failed. Terminal for analysis/execution failures. Verification failure instead escalates immediately (no retry) -- see **Escalated**.
+- **Escalated** -- Verification failed. An `EscalationResult` is produced with the execution and verification history for a human operator to assess.
 
 ### Approval flow
 
@@ -187,7 +186,7 @@ for event := range watch.ResultChan() {
     case v1alpha1.AgenticRunPhaseFailed:
         // Check run.Status.PreviousAttempts for failure details
     case v1alpha1.AgenticRunPhaseEscalated:
-        // Max retries exhausted, child run created
+        // Verification failed; an EscalationResult was created for human review
     }
 }
 ```
@@ -321,7 +320,6 @@ spec:
   execution: {}
   verification:
     agent: fast
-  maxAttempts: 3
 ```
 
 **Assisted** (analysis + verification, user applies):
@@ -524,7 +522,6 @@ type AgenticRunSpec struct {
     Verification *AgenticRunStep
 
     // Mutable fields — the designated mutation points.
-    MaxAttempts *int32  // Retry limit (patched at approval).
     Revision    *int32  // Increment to trigger re-analysis with feedback.
 }
 ```

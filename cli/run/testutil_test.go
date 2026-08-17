@@ -78,7 +78,7 @@ func setPhaseConditions(s *agenticv1alpha1.AgenticRunStatus, phase agenticv1alph
 		})
 	case agenticv1alpha1.AgenticRunPhaseEscalated:
 		meta.SetStatusCondition(&s.Conditions, metav1.Condition{
-			Type: agenticv1alpha1.AgenticRunConditionEscalated, Status: metav1.ConditionTrue, Reason: "MaxRetriesExhausted",
+			Type: agenticv1alpha1.AgenticRunConditionEscalated, Status: metav1.ConditionTrue, Reason: "Complete",
 		})
 	case agenticv1alpha1.AgenticRunPhaseEmergencyStopped:
 		meta.SetStatusCondition(&s.Conditions, metav1.Condition{
