@@ -356,14 +356,13 @@ func TestManualApproval_VerificationFails(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// Verification failure triggers retry back to Executing
+// Verification failure escalates directly (no execution retries) — OLS-3817
 // ---------------------------------------------------------------------------
 
-func TestManualApproval_VerificationFailRetry(t *testing.T) {
+func TestManualApproval_VerificationFailEscalates(t *testing.T) {
 	run := testAgenticRun()
 	agent := newTestAgentCaller()
-	policy := testPolicyWithMaxAttempts(agenticv1alpha1.ApprovalModeManual, agenticv1alpha1.ApprovalModeManual, agenticv1alpha1.ApprovalModeManual, 3)
-	r, fc := newReconcilerWithPolicy(t, run, agent, policy)
+	r, fc := newManualReconciler(t, run, agent)
 
 	// Analysis → Proposed → Executing → Verifying
 	approveAnalysis(t, fc, "fix-crash")
@@ -372,7 +371,7 @@ func TestManualApproval_VerificationFailRetry(t *testing.T) {
 	reconcileOnce(r, "fix-crash")
 	assertPhase(t, r, "fix-crash", agenticv1alpha1.AgenticRunPhaseVerifying)
 
-	// Make verification fail (not a system error — objective failure)
+	// Objective verification failure
 	agent.verifyResult = &VerificationOutput{
 		Success: false,
 		Summary: "Pod still crashing",
@@ -381,102 +380,26 @@ func TestManualApproval_VerificationFailRetry(t *testing.T) {
 	approveVerification(t, fc, "fix-crash")
 	reconcileOnce(r, "fix-crash")
 
-	// Should retry → Executing (Verified=False/RetryingExecution)
-	assertPhase(t, r, "fix-crash", agenticv1alpha1.AgenticRunPhaseExecuting)
-	p, _ := getAgenticRun(r, "fix-crash")
-	if p.Status.Steps.Execution.RetryCount == nil || *p.Status.Steps.Execution.RetryCount != 1 {
-		t.Fatalf("expected retryCount=1, got %v", p.Status.Steps.Execution.RetryCount)
-	}
-}
-
-func TestManualApproval_FullRetryExhaustion(t *testing.T) {
-	run := testAgenticRun()
-	agent := newTestAgentCaller()
-	policy := testPolicyWithMaxAttempts(agenticv1alpha1.ApprovalModeManual, agenticv1alpha1.ApprovalModeManual, agenticv1alpha1.ApprovalModeManual, 3)
-	r, fc := newReconcilerWithPolicy(t, run, agent, policy)
-
-	// Run through to Verifying
-	approveAnalysis(t, fc, "fix-crash")
-	reconcileOnce(r, "fix-crash")
-	approveExecution(t, fc, "fix-crash", 0)
-	reconcileOnce(r, "fix-crash")
-	assertPhase(t, r, "fix-crash", agenticv1alpha1.AgenticRunPhaseVerifying)
-
-	// Verification keeps failing across all retries
-	agent.verifyResult = &VerificationOutput{
-		Success: false,
-		Summary: "Pod still crashing",
-		Checks:  []agenticv1alpha1.VerifyCheck{{Name: "pod-running", Result: agenticv1alpha1.CheckResultFailed}},
-	}
-
-	// Approve verification once — approval persists across retries
-	approveVerification(t, fc, "fix-crash")
-
-	// Attempt 1 (of 3): verify fails → Executing (retryCount=1)
-	reconcileOnce(r, "fix-crash")
-	assertPhase(t, r, "fix-crash", agenticv1alpha1.AgenticRunPhaseExecuting)
-	p, _ := getAgenticRun(r, "fix-crash")
-	if *p.Status.Steps.Execution.RetryCount != 1 {
-		t.Fatalf("expected retryCount=1, got %d", *p.Status.Steps.Execution.RetryCount)
-	}
-
-	// Re-execute → Verifying
-	reconcileOnce(r, "fix-crash")
-	assertPhase(t, r, "fix-crash", agenticv1alpha1.AgenticRunPhaseVerifying)
-
-	// Attempt 2 (of 3): verify fails again → Executing (retryCount=2)
-	reconcileOnce(r, "fix-crash")
-	assertPhase(t, r, "fix-crash", agenticv1alpha1.AgenticRunPhaseExecuting)
-	p, _ = getAgenticRun(r, "fix-crash")
-	if *p.Status.Steps.Execution.RetryCount != 2 {
-		t.Fatalf("expected retryCount=2, got %d", *p.Status.Steps.Execution.RetryCount)
-	}
-
-	// Re-execute → Verifying
-	reconcileOnce(r, "fix-crash")
-	assertPhase(t, r, "fix-crash", agenticv1alpha1.AgenticRunPhaseVerifying)
-
-	// Attempt 3 (of 3): verify fails → retries exhausted (retryCount=2 == maxAttempts-1)
-	// → Escalating (escalation step injected)
-	reconcileOnce(r, "fix-crash")
+	// Escalates directly — never returns to Executing.
 	assertPhase(t, r, "fix-crash", agenticv1alpha1.AgenticRunPhaseEscalating)
-}
-
-func TestManualApproval_RetryThenSucceed(t *testing.T) {
-	run := testAgenticRun()
-	agent := newTestAgentCaller()
-	policy := testPolicyWithMaxAttempts(agenticv1alpha1.ApprovalModeManual, agenticv1alpha1.ApprovalModeManual, agenticv1alpha1.ApprovalModeManual, 3)
-	r, fc := newReconcilerWithPolicy(t, run, agent, policy)
-
-	// Run through to Verifying
-	approveAnalysis(t, fc, "fix-crash")
-	reconcileOnce(r, "fix-crash")
-	approveExecution(t, fc, "fix-crash", 0)
-	reconcileOnce(r, "fix-crash")
-	approveVerification(t, fc, "fix-crash")
-
-	// First verification fails
-	agent.verifyResult = &VerificationOutput{
-		Success: false,
-		Summary: "Pod still crashing",
-		Checks:  []agenticv1alpha1.VerifyCheck{{Name: "pod-running", Result: agenticv1alpha1.CheckResultFailed}},
-	}
-	reconcileOnce(r, "fix-crash")
-	assertPhase(t, r, "fix-crash", agenticv1alpha1.AgenticRunPhaseExecuting)
-
-	// Re-execute succeeds, now make verification pass
-	agent.verifyResult = &VerificationOutput{
-		Success: true,
-		Summary: "All checks passed",
-		Checks:  []agenticv1alpha1.VerifyCheck{{Name: "pod-running", Result: agenticv1alpha1.CheckResultPassed}},
-	}
-	reconcileOnce(r, "fix-crash") // re-execute → Verifying
-	reconcileOnce(r, "fix-crash") // verify → Completed
-	assertPhase(t, r, "fix-crash", agenticv1alpha1.AgenticRunPhaseCompleted)
 
 	p, _ := getAgenticRun(r, "fix-crash")
-	if *p.Status.Steps.Execution.RetryCount != 1 {
-		t.Fatalf("expected retryCount=1, got %d", *p.Status.Steps.Execution.RetryCount)
+	verified := meta.FindStatusCondition(p.Status.Conditions, agenticv1alpha1.AgenticRunConditionVerified)
+	if verified == nil || verified.Status != metav1.ConditionFalse || verified.Reason != "VerificationFailed" {
+		t.Fatalf("expected Verified=False/VerificationFailed, got %+v", verified)
+	}
+	escalated := meta.FindStatusCondition(p.Status.Conditions, agenticv1alpha1.AgenticRunConditionEscalated)
+	if escalated == nil || escalated.Status != metav1.ConditionUnknown {
+		t.Fatalf("expected Escalated=Unknown, got %+v", escalated)
+	}
+
+	// Exactly one ExecutionResult — proof of no re-execution.
+	var execResults agenticv1alpha1.ExecutionResultList
+	if err := fc.List(context.Background(), &execResults); err != nil {
+		t.Fatalf("list execution results: %v", err)
+	}
+	if len(execResults.Items) != 1 {
+		t.Fatalf("expected exactly 1 ExecutionResult, got %d", len(execResults.Items))
 	}
 }
 

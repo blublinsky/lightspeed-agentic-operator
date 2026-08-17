@@ -31,8 +31,7 @@ const (
 	ErrUpdateToVerifying         = "update to Verifying"
 	ErrResolveSelectedOption     = "resolve selected option"
 	ErrCreateVerificationResult  = "create verification result"
-	ErrUpdateForExecRetry        = "update for execution retry"
-	ErrUpdateRetriesExhausted    = "update (retries exhausted)"
+	ErrUpdateVerificationFailed  = "update (verification failed, escalating)"
 	ErrUpdateToCompleted         = "update to Completed"
 	ErrGetOverrideAgent          = "get override Agent"
 	ErrGetEscalationLLMProvider  = "get LLMProvider"
@@ -491,54 +490,26 @@ func (r *AgenticRunReconciler) handleVerification(
 	}
 
 	if !allPassed {
-		retryCount := int32(0)
-		if run.Status.Steps.Execution.RetryCount != nil {
-			retryCount = *run.Status.Steps.Execution.RetryCount
-		}
-		maxRetries := maxAttempts(approval, policy)
-
-		if int(retryCount) < maxRetries-1 {
-			next := retryCount + 1
-			log.Info("verification failed, retrying execution", "attempt", next+1, "maxAttempts", maxRetries, LogKeySummary, verifyResult.Summary)
-			if r.Audit != nil {
-				r.Audit.EmitVerificationRetry(spanCtx, run, verifyCR, int(next))
-			}
-			run.Status.Steps.Execution.RetryCount = &next
-			resetExecutionAndVerification(&run.Status.Steps)
-			meta.RemoveStatusCondition(&run.Status.Conditions, agenticv1alpha1.AgenticRunConditionExecuted)
-			meta.SetStatusCondition(&run.Status.Conditions, metav1.Condition{
-				Type:               agenticv1alpha1.AgenticRunConditionVerified,
-				Status:             metav1.ConditionFalse,
-				Reason:             reasonRetryingExecution,
-				Message:            fmt.Sprintf("Verification failed (attempt %d/%d): %s", next+1, maxRetries, verifyResult.Summary),
-				ObservedGeneration: run.Generation,
-			})
-			if err := r.statusPatch(spanCtx, run, base); err != nil {
-				return ctrl.Result{}, fmt.Errorf("%s: %w", ErrUpdateForExecRetry, err)
-			}
-			return ctrl.Result{}, nil
-		}
-
-		log.Info("verification retries exhausted, escalating", "retryCount", retryCount, LogKeySummary, verifyResult.Summary)
+		log.Info("verification failed, escalating", LogKeySummary, verifyResult.Summary)
 		if r.Audit != nil {
 			r.Audit.EmitVerificationCompleted(spanCtx, run, verifyCR)
 		}
 		meta.SetStatusCondition(&run.Status.Conditions, metav1.Condition{
 			Type:               agenticv1alpha1.AgenticRunConditionVerified,
 			Status:             metav1.ConditionFalse,
-			Reason:             reasonRetriesExhausted,
-			Message:            fmt.Sprintf("Verification failed after %d attempt(s): %s", retryCount+1, verifyResult.Summary),
+			Reason:             "VerificationFailed",
+			Message:            fmt.Sprintf("Verification failed: %s", verifyResult.Summary),
 			ObservedGeneration: run.Generation,
 		})
 		meta.SetStatusCondition(&run.Status.Conditions, metav1.Condition{
 			Type:               agenticv1alpha1.AgenticRunConditionEscalated,
 			Status:             metav1.ConditionUnknown,
-			Reason:             reasonRetriesExhausted,
-			Message:            fmt.Sprintf("Verification failed after %d attempt(s), escalating", retryCount+1),
+			Reason:             "VerificationFailed",
+			Message:            "Verification failed, escalating",
 			ObservedGeneration: run.Generation,
 		})
 		if err := r.statusPatch(ctx, run, base); err != nil {
-			return ctrl.Result{}, fmt.Errorf("%s: %w", ErrUpdateRetriesExhausted, err)
+			return ctrl.Result{}, fmt.Errorf("%s: %w", ErrUpdateVerificationFailed, err)
 		}
 		return ctrl.Result{}, nil
 	}
