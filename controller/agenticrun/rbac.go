@@ -6,7 +6,6 @@ import (
 	"strings"
 	"sync/atomic"
 
-	corev1 "k8s.io/api/core/v1"
 	rbacv1 "k8s.io/api/rbac/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -19,10 +18,9 @@ import (
 // +kubebuilder:rbac:groups="",resources=serviceaccounts,verbs=create;delete;get
 
 const (
-	rbacNamespacesAnnotation        = "agentic.openshift.io/rbac-namespaces"
-	defaultReaderClusterRoleBinding = "lightspeed-agent-cluster-reader"
+	rbacNamespacesAnnotation = "agentic.openshift.io/rbac-namespaces"
 
-	ErrCreateExecutionSA        = "create execution SA"
+	ErrCreateSandboxSA          = "create sandbox SA"
 	ErrCreateRole               = "create Role in"
 	ErrCreateRoleBinding        = "create RoleBinding in"
 	ErrCreateClusterRole        = "create ClusterRole"
@@ -33,7 +31,6 @@ const (
 	ErrDeleteRole               = "delete Role in"
 	ErrDeleteClusterRoleBinding = "delete ClusterRoleBinding"
 	ErrDeleteClusterRole        = "delete ClusterRole"
-	ErrDeleteExecutionSA        = "delete execution SA"
 )
 
 var readerBindings atomic.Value // []string — cached CRB names; nil until first discovery
@@ -78,36 +75,26 @@ func resolveReaderBindings(ctx context.Context, c client.Client, operatorNS stri
 	return names, nil
 }
 
-// executionSAName returns the per-run ServiceAccount name for execution RBAC isolation.
-// Uses the same truncation pattern as executionRoleName. Collision is theoretically possible
-// for very long namespace+name combinations (>55 chars) that share the same prefix after
-// truncation, but is near-impossible in practice with typical naming conventions.
-func executionSAName(run *agenticv1alpha1.AgenticRun) string {
-	return truncateK8sName(fmt.Sprintf("ls-exec-%s-%s", run.Namespace, run.Name))
+// sandboxSAName returns the per-step ServiceAccount name for RBAC isolation.
+// Each step gets its own SA so it can only create its specific Result CRD.
+// Uses the run UID to guarantee uniqueness without truncation collisions.
+func sandboxSAName(run *agenticv1alpha1.AgenticRun, step string) string {
+	return fmt.Sprintf("ls-%s-%s", stepAbbrev(step), run.UID)
 }
 
-// ensureExecutionSA creates a per-run ServiceAccount for execution RBAC isolation
-// and adds it as a subject to the shared cluster-reader ClusterRoleBinding for base read access.
-// No owner reference — cross-namespace owner refs are unsupported by Kubernetes GC.
-// Cleanup is handled explicitly by cleanupExecutionRBAC (via finalizer on AgenticRun deletion).
-func ensureExecutionSA(ctx context.Context, c client.Client, run *agenticv1alpha1.AgenticRun, operatorNS string) (string, error) {
-	saName := executionSAName(run)
-	sa := &corev1.ServiceAccount{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      saName,
-			Namespace: operatorNS,
-			Labels:    rbacLabels(run.Name, "execution-sa"),
-		},
+func stepAbbrev(step string) string {
+	switch step {
+	case "analysis":
+		return "anl"
+	case "execution":
+		return "exe"
+	case "verification":
+		return "ver"
+	case "escalation":
+		return "esc"
+	default:
+		return step
 	}
-	if err := c.Create(ctx, sa); err != nil && !apierrors.IsAlreadyExists(err) {
-		return "", fmt.Errorf("%s %s: %w", ErrCreateExecutionSA, saName, err)
-	}
-
-	if err := addReaderSubject(ctx, c, saName, operatorNS); err != nil {
-		return "", err
-	}
-
-	return saName, nil
 }
 
 // addReaderSubject adds the SA as a subject to every ClusterRoleBinding that
@@ -213,16 +200,10 @@ func removeSubjectFromBinding(ctx context.Context, c client.Client, bindingName,
 	return fmt.Errorf("%s: conflict after retries", ErrRemoveReaderSubject)
 }
 
-// deleteExecutionSA explicitly deletes the per-run ServiceAccount after execution completes.
-func deleteExecutionSA(ctx context.Context, c client.Client, run *agenticv1alpha1.AgenticRun, operatorNS string) error {
-	saName := executionSAName(run)
-	return deleteIfExists(ctx, c, &corev1.ServiceAccount{ObjectMeta: metav1.ObjectMeta{Name: saName, Namespace: operatorNS}})
-}
-
-// ensureExecutionRBAC creates a per-run SA, then Role+RoleBinding (namespace-scoped) and
+// ensureExecutionRBAC creates Role+RoleBinding (namespace-scoped) and
 // ClusterRole+ClusterRoleBinding (cluster-scoped) from the selected option's RBAC result.
 // All bindings reference the per-run SA for isolation between concurrent AgenticRuns.
-// Idempotent — skips resources that already exist.
+// SA creation is handled by SandboxManager.Create. Idempotent.
 func ensureExecutionRBAC(
 	ctx context.Context,
 	c client.Client,
@@ -234,13 +215,9 @@ func ensureExecutionRBAC(
 		return nil
 	}
 
-	saName, err := ensureExecutionSA(ctx, c, run, operatorNS)
-	if err != nil {
-		return err
-	}
-
-	roleName := executionRoleName(run.Name)
-	labels := rbacLabels(run.Name, "execution-rbac")
+	saName := sandboxSAName(run, "execution")
+	roleName := executionRoleName(string(run.UID))
+	labels := rbacLabels(string(run.UID), "execution-rbac")
 
 	subjects := []rbacv1.Subject{{
 		Kind:      rbacv1.ServiceAccountKind,
@@ -279,7 +256,7 @@ func ensureExecutionRBAC(
 	}
 
 	if len(rbacResult.ClusterScoped) > 0 {
-		crName := clusterRoleName(run.Name)
+		crName := clusterRoleName(string(run.UID))
 		clusterRules := rbacRulesToPolicyRules(rbacResult.ClusterScoped)
 		cr := &rbacv1.ClusterRole{
 			ObjectMeta: metav1.ObjectMeta{Name: crName, Labels: labels},
@@ -303,8 +280,8 @@ func ensureExecutionRBAC(
 
 // cleanupExecutionRBAC removes all RBAC resources and the per-run SA created for
 // a run's execution. Uses the annotation to find namespaces (survives retry clearing Steps).
-func cleanupExecutionRBAC(ctx context.Context, c client.Client, run *agenticv1alpha1.AgenticRun, operatorNS string) error {
-	roleName := executionRoleName(run.Name)
+func cleanupExecutionRBAC(ctx context.Context, c client.Client, run *agenticv1alpha1.AgenticRun) error {
+	roleName := executionRoleName(string(run.UID))
 
 	nsList := annotatedRBACNamespaces(run)
 
@@ -317,7 +294,7 @@ func cleanupExecutionRBAC(ctx context.Context, c client.Client, run *agenticv1al
 		}
 	}
 
-	crName := clusterRoleName(run.Name)
+	crName := clusterRoleName(string(run.UID))
 	if err := deleteIfExists(ctx, c, &rbacv1.ClusterRoleBinding{ObjectMeta: metav1.ObjectMeta{Name: crName}}); err != nil {
 		return fmt.Errorf("%s %s: %w", ErrDeleteClusterRoleBinding, crName, err)
 	}
@@ -325,14 +302,6 @@ func cleanupExecutionRBAC(ctx context.Context, c client.Client, run *agenticv1al
 		return fmt.Errorf("%s %s: %w", ErrDeleteClusterRole, crName, err)
 	}
 
-	saName := executionSAName(run)
-	if err := removeReaderSubject(ctx, c, saName, operatorNS); err != nil {
-		return err
-	}
-
-	if err := deleteExecutionSA(ctx, c, run, operatorNS); err != nil {
-		return fmt.Errorf("%s: %w", ErrDeleteExecutionSA, err)
-	}
 	return nil
 }
 
@@ -372,6 +341,106 @@ func rbacTargetNamespaces(run *agenticv1alpha1.AgenticRun, rbacResult *agenticv1
 	return nsList
 }
 
+// stepResultResource maps a sandbox step name to its Result CRD resource name.
+var stepResultResource = map[string]string{
+	"analysis":     "analysisresults",
+	"execution":    "executionresults",
+	"verification": "verificationresults",
+	"escalation":   "escalationresults",
+}
+
+// resultRoleName uses the run UID for fixed-length, collision-free names.
+func resultRoleName(runUID, step string) string {
+	return fmt.Sprintf("ls-result-%s-%s", step, runUID)
+}
+
+// ensureResultRBAC creates a per-run, per-step Role+RoleBinding in the operator
+// namespace granting the sandbox SA permission to create the specific Result CR
+// for this step and patch its status. Idempotent.
+func ensureResultRBAC(ctx context.Context, c client.Client, run *agenticv1alpha1.AgenticRun, step, serviceAccount, operatorNS string) error {
+	resource, ok := stepResultResource[step]
+	if !ok {
+		return fmt.Errorf("unknown step %q for result RBAC", step)
+	}
+
+	roleName := resultRoleName(string(run.UID), step)
+	labels := rbacLabels(string(run.UID), "result-rbac")
+	resultName := resultCRName(run.Name, step, nextResultIndex(run, step))
+
+	rules := []rbacv1.PolicyRule{
+		{
+			// create cannot be name-scoped — the object doesn't exist at authz time.
+			APIGroups: []string{"agentic.openshift.io"},
+			Resources: []string{resource},
+			Verbs:     []string{"create"},
+		},
+		{
+			APIGroups:     []string{"agentic.openshift.io"},
+			Resources:     []string{resource, resource + "/status"},
+			ResourceNames: []string{resultName},
+			Verbs:         []string{"get", "patch", "update"},
+		},
+	}
+	if step == "escalation" {
+		rules = append(rules, rbacv1.PolicyRule{
+			APIGroups: []string{"agentic.openshift.io"},
+			Resources: []string{"analysisresults", "executionresults", "verificationresults"},
+			Verbs:     []string{"get", "list"},
+		})
+	}
+
+	role := &rbacv1.Role{
+		ObjectMeta: metav1.ObjectMeta{Name: roleName, Namespace: operatorNS, Labels: labels},
+		Rules:      rules,
+	}
+	if err := c.Create(ctx, role); err != nil && !apierrors.IsAlreadyExists(err) {
+		return fmt.Errorf("create result Role %s: %w", roleName, err)
+	}
+
+	binding := &rbacv1.RoleBinding{
+		ObjectMeta: metav1.ObjectMeta{Name: roleName, Namespace: operatorNS, Labels: labels},
+		RoleRef:    rbacv1.RoleRef{APIGroup: rbacv1.GroupName, Kind: "Role", Name: roleName},
+		Subjects: []rbacv1.Subject{{
+			Kind:      rbacv1.ServiceAccountKind,
+			Name:      serviceAccount,
+			Namespace: operatorNS,
+		}},
+	}
+	if err := c.Create(ctx, binding); err != nil && !apierrors.IsAlreadyExists(err) {
+		return fmt.Errorf("create result RoleBinding %s: %w", roleName, err)
+	}
+
+	return nil
+}
+
+// setResultRBACOwner sets the pod/claim as owner on the per-step result RBAC
+// Role and RoleBinding so Kubernetes GC cleans them up automatically.
+func setResultRBACOwner(ctx context.Context, c client.Client, runUID, step string, owner metav1.OwnerReference, operatorNS string) error {
+	roleName := resultRoleName(runUID, step)
+
+	role := &rbacv1.Role{}
+	if err := c.Get(ctx, client.ObjectKey{Name: roleName, Namespace: operatorNS}, role); err != nil {
+		return fmt.Errorf("get result Role %s: %w", roleName, err)
+	}
+	baseRole := role.DeepCopy()
+	role.OwnerReferences = append(role.OwnerReferences, owner)
+	if err := c.Patch(ctx, role, client.MergeFrom(baseRole)); err != nil {
+		return fmt.Errorf("set owner on result Role %s: %w", roleName, err)
+	}
+
+	binding := &rbacv1.RoleBinding{}
+	if err := c.Get(ctx, client.ObjectKey{Name: roleName, Namespace: operatorNS}, binding); err != nil {
+		return fmt.Errorf("get result RoleBinding %s: %w", roleName, err)
+	}
+	baseBinding := binding.DeepCopy()
+	binding.OwnerReferences = append(binding.OwnerReferences, owner)
+	if err := c.Patch(ctx, binding, client.MergeFrom(baseBinding)); err != nil {
+		return fmt.Errorf("set owner on result RoleBinding %s: %w", roleName, err)
+	}
+
+	return nil
+}
+
 func truncateK8sName(name string) string {
 	if len(name) > 63 {
 		name = strings.TrimRight(name[:63], "-._")
@@ -387,9 +456,9 @@ func clusterRoleName(agenticRunName string) string {
 	return truncateK8sName("ls-exec-cluster-" + agenticRunName)
 }
 
-func rbacLabels(agenticRunName, component string) map[string]string {
+func rbacLabels(runUID, component string) map[string]string {
 	return map[string]string{
-		LabelRun:       truncateK8sName(agenticRunName),
+		LabelRun:       runUID,
 		LabelComponent: component,
 	}
 }

@@ -6,7 +6,6 @@ import (
 	"strings"
 	"testing"
 
-	corev1 "k8s.io/api/core/v1"
 	rbacv1 "k8s.io/api/rbac/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -18,6 +17,8 @@ import (
 
 	agenticv1alpha1 "github.com/openshift/lightspeed-agentic-operator/api/v1alpha1"
 )
+
+const defaultReaderClusterRoleBinding = "lightspeed-agent-cluster-reader"
 
 func resetReaderBindings() {
 	readerBindings.Store([]string(nil))
@@ -47,7 +48,7 @@ func TestEnsureExecutionRBAC_NamespaceScopedOnly(t *testing.T) {
 	fc := fake.NewClientBuilder().WithScheme(testScheme()).WithObjects(readerBinding()).Build()
 
 	run := &agenticv1alpha1.AgenticRun{
-		ObjectMeta: metav1.ObjectMeta{Name: "fix-oom", Namespace: "default"},
+		ObjectMeta: metav1.ObjectMeta{Name: "fix-oom", Namespace: "app-ns", UID: "uid-fix-oom"},
 		Spec:       agenticv1alpha1.AgenticRunSpec{TargetNamespaces: []string{"production"}},
 	}
 	rbacResult := &agenticv1alpha1.RBACResult{
@@ -63,20 +64,7 @@ func TestEnsureExecutionRBAC_NamespaceScopedOnly(t *testing.T) {
 		t.Fatalf("ensureExecutionRBAC: %v", err)
 	}
 
-	// Verify per-run SA created with correct labels
-	var sa corev1.ServiceAccount
-	saName := executionSAName(run)
-	if err := fc.Get(ctx, types.NamespacedName{Name: saName, Namespace: "default"}, &sa); err != nil {
-		t.Fatalf("per-run SA not found: %v", err)
-	}
-	if sa.Labels[LabelRun] != run.Name {
-		t.Fatalf("SA label %s = %q, want %q", LabelRun, sa.Labels[LabelRun], run.Name)
-	}
-	if sa.Labels[LabelComponent] != "execution-sa" {
-		t.Fatalf("SA label %s = %q, want execution-sa", LabelComponent, sa.Labels[LabelComponent])
-	}
-
-	roleName := executionRoleName("fix-oom")
+	roleName := executionRoleName("uid-fix-oom")
 
 	// Verify Role
 	var role rbacv1.Role
@@ -92,8 +80,8 @@ func TestEnsureExecutionRBAC_NamespaceScopedOnly(t *testing.T) {
 	if role.Rules[0].Resources[0] != "deployments" {
 		t.Fatalf("unexpected resource: %s", role.Rules[0].Resources[0])
 	}
-	if role.Labels[LabelRun] != "fix-oom" {
-		t.Fatalf("missing run label")
+	if role.Labels[LabelRun] != "uid-fix-oom" {
+		t.Fatalf("run label = %q, want uid-fix-oom", role.Labels[LabelRun])
 	}
 	if role.Labels[LabelComponent] != "execution-rbac" {
 		t.Fatalf("missing component label")
@@ -107,7 +95,7 @@ func TestEnsureExecutionRBAC_NamespaceScopedOnly(t *testing.T) {
 	if len(binding.Subjects) != 1 {
 		t.Fatalf("expected 1 subject, got %d", len(binding.Subjects))
 	}
-	if binding.Subjects[0].Name != executionSAName(run) {
+	if binding.Subjects[0].Name != sandboxSAName(run, "execution") {
 		t.Fatalf("unexpected subject: %s", binding.Subjects[0].Name)
 	}
 	if binding.Subjects[0].Namespace != "default" {
@@ -136,7 +124,7 @@ func TestEnsureExecutionRBAC_ClusterScopedOnly(t *testing.T) {
 	fc := fake.NewClientBuilder().WithScheme(testScheme()).WithObjects(readerBinding()).Build()
 
 	run := &agenticv1alpha1.AgenticRun{
-		ObjectMeta: metav1.ObjectMeta{Name: "check-nodes", Namespace: "default"},
+		ObjectMeta: metav1.ObjectMeta{Name: "check-nodes", Namespace: "default", UID: "uid-check-nodes"},
 	}
 	rbacResult := &agenticv1alpha1.RBACResult{
 		ClusterScoped: []agenticv1alpha1.RBACRule{{
@@ -151,7 +139,7 @@ func TestEnsureExecutionRBAC_ClusterScopedOnly(t *testing.T) {
 		t.Fatalf("ensureExecutionRBAC: %v", err)
 	}
 
-	crName := clusterRoleName("check-nodes")
+	crName := clusterRoleName("uid-check-nodes")
 
 	// Verify ClusterRole
 	var cr rbacv1.ClusterRole
@@ -170,7 +158,7 @@ func TestEnsureExecutionRBAC_ClusterScopedOnly(t *testing.T) {
 	if crb.RoleRef.Kind != "ClusterRole" || crb.RoleRef.Name != crName {
 		t.Fatalf("unexpected roleRef: %+v", crb.RoleRef)
 	}
-	if crb.Subjects[0].Name != executionSAName(run) {
+	if crb.Subjects[0].Name != sandboxSAName(run, "execution") {
 		t.Fatalf("unexpected subject: %s", crb.Subjects[0].Name)
 	}
 }
@@ -181,7 +169,7 @@ func TestEnsureExecutionRBAC_BothScopes(t *testing.T) {
 	fc := fake.NewClientBuilder().WithScheme(testScheme()).WithObjects(readerBinding()).Build()
 
 	run := &agenticv1alpha1.AgenticRun{
-		ObjectMeta: metav1.ObjectMeta{Name: "full-fix", Namespace: "default"},
+		ObjectMeta: metav1.ObjectMeta{Name: "full-fix", Namespace: "default", UID: "uid-full-fix"},
 		Spec:       agenticv1alpha1.AgenticRunSpec{TargetNamespaces: []string{"staging"}},
 	}
 	rbacResult := &agenticv1alpha1.RBACResult{
@@ -201,13 +189,13 @@ func TestEnsureExecutionRBAC_BothScopes(t *testing.T) {
 
 	// Role in staging
 	var role rbacv1.Role
-	if err := fc.Get(ctx, types.NamespacedName{Name: executionRoleName("full-fix"), Namespace: "staging"}, &role); err != nil {
+	if err := fc.Get(ctx, types.NamespacedName{Name: executionRoleName("uid-full-fix"), Namespace: "staging"}, &role); err != nil {
 		t.Fatalf("Role not found: %v", err)
 	}
 
 	// ClusterRole
 	var cr rbacv1.ClusterRole
-	if err := fc.Get(ctx, types.NamespacedName{Name: clusterRoleName("full-fix")}, &cr); err != nil {
+	if err := fc.Get(ctx, types.NamespacedName{Name: clusterRoleName("uid-full-fix")}, &cr); err != nil {
 		t.Fatalf("ClusterRole not found: %v", err)
 	}
 }
@@ -218,7 +206,7 @@ func TestEnsureExecutionRBAC_MultipleNamespaces(t *testing.T) {
 	fc := fake.NewClientBuilder().WithScheme(testScheme()).WithObjects(readerBinding()).Build()
 
 	run := &agenticv1alpha1.AgenticRun{
-		ObjectMeta: metav1.ObjectMeta{Name: "multi-ns", Namespace: "default"},
+		ObjectMeta: metav1.ObjectMeta{Name: "multi-ns", Namespace: "default", UID: "uid-multi-ns"},
 		Spec:       agenticv1alpha1.AgenticRunSpec{TargetNamespaces: []string{"ns-a", "ns-b", "ns-c"}},
 	}
 	rbacResult := &agenticv1alpha1.RBACResult{
@@ -232,7 +220,7 @@ func TestEnsureExecutionRBAC_MultipleNamespaces(t *testing.T) {
 		t.Fatalf("ensureExecutionRBAC: %v", err)
 	}
 
-	roleName := executionRoleName("multi-ns")
+	roleName := executionRoleName("uid-multi-ns")
 	for _, ns := range []string{"ns-a", "ns-b", "ns-c"} {
 		var role rbacv1.Role
 		if err := fc.Get(ctx, types.NamespacedName{Name: roleName, Namespace: ns}, &role); err != nil {
@@ -257,7 +245,7 @@ func TestEnsureExecutionRBAC_Idempotent(t *testing.T) {
 	fc := fake.NewClientBuilder().WithScheme(testScheme()).WithObjects(readerBinding()).Build()
 
 	run := &agenticv1alpha1.AgenticRun{
-		ObjectMeta: metav1.ObjectMeta{Name: "idem", Namespace: "default"},
+		ObjectMeta: metav1.ObjectMeta{Name: "idem", Namespace: "default", UID: "uid-idem"},
 		Spec:       agenticv1alpha1.AgenticRunSpec{TargetNamespaces: []string{"prod"}},
 	}
 	rbacResult := &agenticv1alpha1.RBACResult{
@@ -285,7 +273,7 @@ func TestEnsureExecutionRBAC_NilResult(t *testing.T) {
 	fc := fake.NewClientBuilder().WithScheme(testScheme()).WithObjects(readerBinding()).Build()
 
 	run := &agenticv1alpha1.AgenticRun{
-		ObjectMeta: metav1.ObjectMeta{Name: "no-rbac", Namespace: "default"},
+		ObjectMeta: metav1.ObjectMeta{Name: "no-rbac", Namespace: "default", UID: "uid-no-rbac"},
 	}
 
 	if err := ensureExecutionRBAC(ctx, fc, run, nil, "default"); err != nil {
@@ -299,7 +287,7 @@ func TestEnsureExecutionRBAC_EmptyRules(t *testing.T) {
 	fc := fake.NewClientBuilder().WithScheme(testScheme()).WithObjects(readerBinding()).Build()
 
 	run := &agenticv1alpha1.AgenticRun{
-		ObjectMeta: metav1.ObjectMeta{Name: "empty-rules", Namespace: "default"},
+		ObjectMeta: metav1.ObjectMeta{Name: "empty-rules", Namespace: "default", UID: "uid-empty-rules"},
 		Spec:       agenticv1alpha1.AgenticRunSpec{TargetNamespaces: []string{"prod"}},
 	}
 	rbacResult := &agenticv1alpha1.RBACResult{}
@@ -310,7 +298,7 @@ func TestEnsureExecutionRBAC_EmptyRules(t *testing.T) {
 
 	// No Role should exist
 	var role rbacv1.Role
-	if err := fc.Get(ctx, types.NamespacedName{Name: executionRoleName("empty-rules"), Namespace: "prod"}, &role); err == nil {
+	if err := fc.Get(ctx, types.NamespacedName{Name: executionRoleName("uid-empty-rules"), Namespace: "prod"}, &role); err == nil {
 		t.Fatal("Role should not exist for empty rules")
 	}
 }
@@ -323,7 +311,7 @@ func TestEnsureExecutionRBAC_NamespacesFromRBACRules(t *testing.T) {
 	ns1 := "app-ns"
 	ns2 := "data-ns"
 	run := &agenticv1alpha1.AgenticRun{
-		ObjectMeta: metav1.ObjectMeta{Name: "ns-from-rules", Namespace: "default"},
+		ObjectMeta: metav1.ObjectMeta{Name: "ns-from-rules", Namespace: "default", UID: "uid-ns-from-rules"},
 	}
 	rbacResult := &agenticv1alpha1.RBACResult{
 		NamespaceScoped: []agenticv1alpha1.RBACRule{
@@ -336,7 +324,7 @@ func TestEnsureExecutionRBAC_NamespacesFromRBACRules(t *testing.T) {
 		t.Fatalf("ensureExecutionRBAC: %v", err)
 	}
 
-	roleName := executionRoleName("ns-from-rules")
+	roleName := executionRoleName("uid-ns-from-rules")
 	for _, ns := range []string{"app-ns", "data-ns"} {
 		var role rbacv1.Role
 		if err := fc.Get(ctx, types.NamespacedName{Name: roleName, Namespace: ns}, &role); err != nil {
@@ -351,7 +339,7 @@ func TestEnsureExecutionRBAC_ResourceNames(t *testing.T) {
 	fc := fake.NewClientBuilder().WithScheme(testScheme()).WithObjects(readerBinding()).Build()
 
 	run := &agenticv1alpha1.AgenticRun{
-		ObjectMeta: metav1.ObjectMeta{Name: "with-names", Namespace: "default"},
+		ObjectMeta: metav1.ObjectMeta{Name: "with-names", Namespace: "default", UID: "uid-with-names"},
 		Spec:       agenticv1alpha1.AgenticRunSpec{TargetNamespaces: []string{"prod"}},
 	}
 	rbacResult := &agenticv1alpha1.RBACResult{
@@ -369,7 +357,7 @@ func TestEnsureExecutionRBAC_ResourceNames(t *testing.T) {
 	}
 
 	var role rbacv1.Role
-	if err := fc.Get(ctx, types.NamespacedName{Name: executionRoleName("with-names"), Namespace: "prod"}, &role); err != nil {
+	if err := fc.Get(ctx, types.NamespacedName{Name: executionRoleName("uid-with-names"), Namespace: "prod"}, &role); err != nil {
 		t.Fatalf("Role not found: %v", err)
 	}
 	if len(role.Rules[0].ResourceNames) != 1 || role.Rules[0].ResourceNames[0] != "web-frontend" {
@@ -390,6 +378,7 @@ func TestCleanupExecutionRBAC_NamespaceAndCluster(t *testing.T) {
 		ObjectMeta: metav1.ObjectMeta{
 			Name:        "cleanup-test",
 			Namespace:   "default",
+			UID:         "uid-cleanup-test",
 			Annotations: map[string]string{rbacNamespacesAnnotation: "ns-a,ns-b"},
 		},
 		Spec: agenticv1alpha1.AgenticRunSpec{TargetNamespaces: []string{"ns-a", "ns-b"}},
@@ -411,8 +400,8 @@ func TestCleanupExecutionRBAC_NamespaceAndCluster(t *testing.T) {
 	}
 
 	// Verify resources exist
-	roleName := executionRoleName("cleanup-test")
-	crName := clusterRoleName("cleanup-test")
+	roleName := executionRoleName("uid-cleanup-test")
+	crName := clusterRoleName("uid-cleanup-test")
 	var role rbacv1.Role
 	if err := fc.Get(ctx, types.NamespacedName{Name: roleName, Namespace: "ns-a"}, &role); err != nil {
 		t.Fatalf("Role not created: %v", err)
@@ -423,7 +412,7 @@ func TestCleanupExecutionRBAC_NamespaceAndCluster(t *testing.T) {
 	}
 
 	// Cleanup
-	if err := cleanupExecutionRBAC(ctx, fc, run, "default"); err != nil {
+	if err := cleanupExecutionRBAC(ctx, fc, run); err != nil {
 		t.Fatalf("cleanupExecutionRBAC: %v", err)
 	}
 
@@ -453,7 +442,7 @@ func TestCleanupExecutionRBAC_NoAnnotation(t *testing.T) {
 	fc := fake.NewClientBuilder().WithScheme(testScheme()).WithObjects(readerBinding()).Build()
 
 	run := &agenticv1alpha1.AgenticRun{
-		ObjectMeta: metav1.ObjectMeta{Name: "no-annot", Namespace: "default"},
+		ObjectMeta: metav1.ObjectMeta{Name: "no-annot", Namespace: "default", UID: "uid-no-annot"},
 	}
 
 	// Create cluster-scoped only
@@ -468,11 +457,11 @@ func TestCleanupExecutionRBAC_NoAnnotation(t *testing.T) {
 	}
 
 	// Cleanup with no namespace annotation — should still clean cluster resources
-	if err := cleanupExecutionRBAC(ctx, fc, run, "default"); err != nil {
+	if err := cleanupExecutionRBAC(ctx, fc, run); err != nil {
 		t.Fatalf("cleanupExecutionRBAC: %v", err)
 	}
 
-	crName := clusterRoleName("no-annot")
+	crName := clusterRoleName("uid-no-annot")
 	var cr rbacv1.ClusterRole
 	if err := fc.Get(ctx, types.NamespacedName{Name: crName}, &cr); err == nil {
 		t.Fatal("ClusterRole should be deleted")
@@ -488,13 +477,204 @@ func TestCleanupExecutionRBAC_MissingResources(t *testing.T) {
 		ObjectMeta: metav1.ObjectMeta{
 			Name:        "already-gone",
 			Namespace:   "default",
+			UID:         "uid-already-gone",
 			Annotations: map[string]string{rbacNamespacesAnnotation: "ghost-ns"},
 		},
 	}
 
 	// Nothing created — cleanup should tolerate NotFound
-	if err := cleanupExecutionRBAC(ctx, fc, run, "default"); err != nil {
+	if err := cleanupExecutionRBAC(ctx, fc, run); err != nil {
 		t.Fatalf("cleanup of missing resources should succeed: %v", err)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// ensureResultRBAC / resultRoleName / setResultRBACOwner
+// ---------------------------------------------------------------------------
+
+func TestResultRoleName(t *testing.T) {
+	name := resultRoleName("uid-abc", "analysis")
+	if name != "ls-result-analysis-uid-abc" {
+		t.Fatalf("resultRoleName = %q", name)
+	}
+}
+
+func TestEnsureResultRBAC_CreatesRoleAndBinding(t *testing.T) {
+	ctx := context.Background()
+	fc := fake.NewClientBuilder().WithScheme(testScheme()).Build()
+
+	run := &agenticv1alpha1.AgenticRun{
+		ObjectMeta: metav1.ObjectMeta{Name: "my-run", Namespace: "app-ns", UID: "uid-my-run"},
+	}
+
+	if err := ensureResultRBAC(ctx, fc, run, "analysis", "sa-analysis", "operator-ns"); err != nil {
+		t.Fatalf("ensureResultRBAC: %v", err)
+	}
+
+	roleName := resultRoleName("uid-my-run", "analysis")
+
+	var role rbacv1.Role
+	if err := fc.Get(ctx, types.NamespacedName{Name: roleName, Namespace: "operator-ns"}, &role); err != nil {
+		t.Fatalf("Role not found: %v", err)
+	}
+	if len(role.Rules) != 2 {
+		t.Fatalf("expected 2 rules, got %d", len(role.Rules))
+	}
+	if role.Rules[0].Verbs[0] != "create" {
+		t.Fatalf("first rule should be create, got %v", role.Rules[0].Verbs)
+	}
+	if len(role.Rules[0].ResourceNames) != 0 {
+		t.Fatal("create rule must not have resourceNames")
+	}
+	if role.Rules[1].ResourceNames[0] != resultCRName("my-run", "analysis", 1) {
+		t.Fatalf("resourceNames = %v, want %s", role.Rules[1].ResourceNames, resultCRName("my-run", "analysis", 1))
+	}
+	if role.Rules[0].Resources[0] != "analysisresults" {
+		t.Fatalf("resource = %q, want analysisresults", role.Rules[0].Resources[0])
+	}
+	if role.Labels[LabelRun] != "uid-my-run" {
+		t.Fatalf("LabelRun = %q, want uid-my-run", role.Labels[LabelRun])
+	}
+
+	var binding rbacv1.RoleBinding
+	if err := fc.Get(ctx, types.NamespacedName{Name: roleName, Namespace: "operator-ns"}, &binding); err != nil {
+		t.Fatalf("RoleBinding not found: %v", err)
+	}
+	if binding.Subjects[0].Name != "sa-analysis" {
+		t.Fatalf("subject = %q, want sa-analysis", binding.Subjects[0].Name)
+	}
+}
+
+func TestEnsureResultRBAC_AllSteps(t *testing.T) {
+	ctx := context.Background()
+
+	for step, resource := range stepResultResource {
+		fc := fake.NewClientBuilder().WithScheme(testScheme()).Build()
+		run := &agenticv1alpha1.AgenticRun{
+			ObjectMeta: metav1.ObjectMeta{Name: "r", Namespace: "ns", UID: "uid-r"},
+		}
+		if err := ensureResultRBAC(ctx, fc, run, step, "sa", "op"); err != nil {
+			t.Fatalf("step %s: %v", step, err)
+		}
+		var role rbacv1.Role
+		if err := fc.Get(ctx, types.NamespacedName{Name: resultRoleName("uid-r", step), Namespace: "op"}, &role); err != nil {
+			t.Fatalf("step %s: Role not found: %v", step, err)
+		}
+		if role.Rules[0].Resources[0] != resource {
+			t.Fatalf("step %s: resource = %q, want %q", step, role.Rules[0].Resources[0], resource)
+		}
+	}
+}
+
+func TestEnsureResultRBAC_EscalationReadsOtherResults(t *testing.T) {
+	ctx := context.Background()
+	fc := fake.NewClientBuilder().WithScheme(testScheme()).Build()
+	run := &agenticv1alpha1.AgenticRun{
+		ObjectMeta: metav1.ObjectMeta{Name: "r", Namespace: "ns", UID: "uid-r"},
+	}
+	if err := ensureResultRBAC(ctx, fc, run, "escalation", "sa-esc", "op"); err != nil {
+		t.Fatalf("ensureResultRBAC: %v", err)
+	}
+	var role rbacv1.Role
+	if err := fc.Get(ctx, types.NamespacedName{Name: resultRoleName("uid-r", "escalation"), Namespace: "op"}, &role); err != nil {
+		t.Fatalf("Role not found: %v", err)
+	}
+	if len(role.Rules) != 3 {
+		t.Fatalf("expected 3 rules for escalation (create + get/patch + read prior results), got %d", len(role.Rules))
+	}
+	readRule := role.Rules[2]
+	wantResources := []string{"analysisresults", "executionresults", "verificationresults"}
+	if len(readRule.Resources) != len(wantResources) {
+		t.Fatalf("read rule resources = %v, want %v", readRule.Resources, wantResources)
+	}
+	for i, r := range wantResources {
+		if readRule.Resources[i] != r {
+			t.Errorf("read rule resource[%d] = %q, want %q", i, readRule.Resources[i], r)
+		}
+	}
+	if len(readRule.Verbs) != 2 || readRule.Verbs[0] != "get" || readRule.Verbs[1] != "list" {
+		t.Errorf("read rule verbs = %v, want [get list]", readRule.Verbs)
+	}
+}
+
+func TestEnsureResultRBAC_NonEscalationNoReadRule(t *testing.T) {
+	ctx := context.Background()
+	for _, step := range []string{"analysis", "execution", "verification"} {
+		fc := fake.NewClientBuilder().WithScheme(testScheme()).Build()
+		run := &agenticv1alpha1.AgenticRun{
+			ObjectMeta: metav1.ObjectMeta{Name: "r", Namespace: "ns", UID: "uid-r"},
+		}
+		if err := ensureResultRBAC(ctx, fc, run, step, "sa", "op"); err != nil {
+			t.Fatalf("step %s: %v", step, err)
+		}
+		var role rbacv1.Role
+		if err := fc.Get(ctx, types.NamespacedName{Name: resultRoleName("uid-r", step), Namespace: "op"}, &role); err != nil {
+			t.Fatalf("step %s: Role not found: %v", step, err)
+		}
+		if len(role.Rules) != 2 {
+			t.Fatalf("step %s: expected 2 rules, got %d", step, len(role.Rules))
+		}
+	}
+}
+
+func TestEnsureResultRBAC_UnknownStep(t *testing.T) {
+	ctx := context.Background()
+	fc := fake.NewClientBuilder().WithScheme(testScheme()).Build()
+	run := &agenticv1alpha1.AgenticRun{
+		ObjectMeta: metav1.ObjectMeta{Name: "r", Namespace: "ns", UID: "uid-r"},
+	}
+	err := ensureResultRBAC(ctx, fc, run, "bogus", "sa", "op")
+	if err == nil || !strings.Contains(err.Error(), "unknown step") {
+		t.Fatalf("expected unknown step error, got: %v", err)
+	}
+}
+
+func TestEnsureResultRBAC_Idempotent(t *testing.T) {
+	ctx := context.Background()
+	fc := fake.NewClientBuilder().WithScheme(testScheme()).Build()
+	run := &agenticv1alpha1.AgenticRun{
+		ObjectMeta: metav1.ObjectMeta{Name: "r", Namespace: "ns", UID: "uid-r"},
+	}
+	if err := ensureResultRBAC(ctx, fc, run, "analysis", "sa", "op"); err != nil {
+		t.Fatalf("first call: %v", err)
+	}
+	if err := ensureResultRBAC(ctx, fc, run, "analysis", "sa", "op"); err != nil {
+		t.Fatalf("second call (idempotent): %v", err)
+	}
+}
+
+func TestSetResultRBACOwner(t *testing.T) {
+	ctx := context.Background()
+	fc := fake.NewClientBuilder().WithScheme(testScheme()).Build()
+	run := &agenticv1alpha1.AgenticRun{
+		ObjectMeta: metav1.ObjectMeta{Name: "r", Namespace: "ns", UID: "uid-r"},
+	}
+	if err := ensureResultRBAC(ctx, fc, run, "execution", "sa", "op"); err != nil {
+		t.Fatalf("setup: %v", err)
+	}
+
+	owner := metav1.OwnerReference{
+		APIVersion: "v1", Kind: "Pod", Name: "my-pod", UID: "pod-uid",
+	}
+	if err := setResultRBACOwner(ctx, fc, "uid-r", "execution", owner, "op"); err != nil {
+		t.Fatalf("setResultRBACOwner: %v", err)
+	}
+
+	roleName := resultRoleName("uid-r", "execution")
+	var role rbacv1.Role
+	if err := fc.Get(ctx, types.NamespacedName{Name: roleName, Namespace: "op"}, &role); err != nil {
+		t.Fatalf("get Role: %v", err)
+	}
+	if len(role.OwnerReferences) != 1 || role.OwnerReferences[0].Name != "my-pod" {
+		t.Fatalf("Role owner = %v", role.OwnerReferences)
+	}
+
+	var binding rbacv1.RoleBinding
+	if err := fc.Get(ctx, types.NamespacedName{Name: roleName, Namespace: "op"}, &binding); err != nil {
+		t.Fatalf("get RoleBinding: %v", err)
+	}
+	if len(binding.OwnerReferences) != 1 || binding.OwnerReferences[0].Name != "my-pod" {
+		t.Fatalf("RoleBinding owner = %v", binding.OwnerReferences)
 	}
 }
 
@@ -805,8 +985,9 @@ func TestRoleNameGenerators(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestRBACLabels(t *testing.T) {
-	labels := rbacLabels("fix-oom", "execution-rbac")
-	if labels[LabelRun] != "fix-oom" {
+	uid := "a1b2c3d4-e5f6-7890-1234-567890abcdef"
+	labels := rbacLabels(uid, "execution-rbac")
+	if labels[LabelRun] != uid {
 		t.Fatalf("run label: %s", labels[LabelRun])
 	}
 	if labels[LabelComponent] != "execution-rbac" {
@@ -814,17 +995,6 @@ func TestRBACLabels(t *testing.T) {
 	}
 	if len(labels) != 2 {
 		t.Fatalf("expected 2 labels, got %d", len(labels))
-	}
-}
-
-func TestRBACLabels_TruncatesLongAgenticRunName(t *testing.T) {
-	longName := strings.Repeat("a", 80)
-	labels := rbacLabels(longName, "execution-rbac")
-	if len(labels[LabelRun]) > 63 {
-		t.Fatalf("run label length %d exceeds 63", len(labels[LabelRun]))
-	}
-	if labels[LabelRun] != strings.Repeat("a", 63) {
-		t.Errorf("run label = %q, want %q", labels[LabelRun], strings.Repeat("a", 63))
 	}
 }
 

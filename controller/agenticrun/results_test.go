@@ -2,7 +2,6 @@ package agenticrun
 
 import (
 	"context"
-	"strings"
 	"testing"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -12,14 +11,11 @@ import (
 	agenticv1alpha1 "github.com/openshift/lightspeed-agentic-operator/api/v1alpha1"
 )
 
-func TestResultLabels_TruncatesLongAgenticRunName(t *testing.T) {
-	longName := strings.Repeat("a", 80)
-	labels := resultLabels(longName, "analysis")
-	if len(labels[LabelRun]) > 63 {
-		t.Fatalf("run label length %d exceeds 63", len(labels[LabelRun]))
-	}
-	if labels[LabelRun] != strings.Repeat("a", 63) {
-		t.Errorf("run label = %q, want %q", labels[LabelRun], strings.Repeat("a", 63))
+func TestResultLabels_UsesUID(t *testing.T) {
+	uid := "a1b2c3d4-e5f6-7890-1234-567890abcdef"
+	labels := resultLabels(uid, "analysis")
+	if labels[LabelRun] != uid {
+		t.Errorf("run label = %q, want %q", labels[LabelRun], uid)
 	}
 	if labels[LabelStep] != "analysis" {
 		t.Errorf("step label = %q, want analysis", labels[LabelStep])

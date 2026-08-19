@@ -15,7 +15,7 @@ func TestEnsureAgenticRunApproval_OwnerReference(t *testing.T) {
 	run.UID = "test-uid-123"
 	fc := fake.NewClientBuilder().WithScheme(testScheme()).WithObjects(run).Build()
 
-	approval, err := ensureAgenticRunApproval(context.Background(), fc, run, nil)
+	approval, err := ensureAgenticRunApproval(context.Background(), fc, run, nil, run.Namespace)
 	if err != nil {
 		t.Fatalf("ensureAgenticRunApproval: %v", err)
 	}
@@ -50,7 +50,7 @@ func TestEnsureAgenticRunApproval_AutoApproveStages(t *testing.T) {
 	fc := fake.NewClientBuilder().WithScheme(testScheme()).WithObjects(run).Build()
 	policy := testAutoApprovePolicy()
 
-	approval, err := ensureAgenticRunApproval(context.Background(), fc, run, policy)
+	approval, err := ensureAgenticRunApproval(context.Background(), fc, run, policy, run.Namespace)
 	if err != nil {
 		t.Fatalf("ensureAgenticRunApproval: %v", err)
 	}
@@ -85,7 +85,7 @@ func TestEnsureAgenticRunApproval_AnalysisOnly_SkipsAbsentStages(t *testing.T) {
 	fc := fake.NewClientBuilder().WithScheme(testScheme()).WithObjects(run).Build()
 	policy := testAutoApprovePolicy() // auto-approves Analysis + Verification
 
-	approval, err := ensureAgenticRunApproval(context.Background(), fc, run, policy)
+	approval, err := ensureAgenticRunApproval(context.Background(), fc, run, policy, run.Namespace)
 	if err != nil {
 		t.Fatalf("ensureAgenticRunApproval: %v", err)
 	}
@@ -114,7 +114,7 @@ func TestEnsureAgenticRunApproval_NoPolicy(t *testing.T) {
 	run := testAgenticRun()
 	fc := fake.NewClientBuilder().WithScheme(testScheme()).WithObjects(run).Build()
 
-	approval, err := ensureAgenticRunApproval(context.Background(), fc, run, nil)
+	approval, err := ensureAgenticRunApproval(context.Background(), fc, run, nil, run.Namespace)
 	if err != nil {
 		t.Fatalf("ensureAgenticRunApproval: %v", err)
 	}
@@ -152,7 +152,7 @@ func TestGetStageOption_FromApproval(t *testing.T) {
 			},
 		},
 	}
-	got := getStageOption(approval, nil)
+	got := getStageOption(approval)
 	if got == nil || *got != 2 {
 		t.Errorf("expected option 2 from approval, got %v", got)
 	}
@@ -170,14 +170,14 @@ func TestGetStageOption_ApprovalTakesPrecedence(t *testing.T) {
 			},
 		},
 	}
-	got := getStageOption(approval, nil)
+	got := getStageOption(approval)
 	if got == nil || *got != 2 {
 		t.Errorf("expected option from approval, expected 2, got %v", got)
 	}
 }
 
 func TestGetStageOption_FallbackToZero(t *testing.T) {
-	got := getStageOption(nil, nil)
+	got := getStageOption(nil)
 	if got == nil || *got != 0 {
 		t.Errorf("expected fallback to 0, got %v", got)
 	}
@@ -197,12 +197,12 @@ func TestEnsureAgenticRunApproval_Idempotent(t *testing.T) {
 		},
 	}
 
-	first, err := ensureAgenticRunApproval(context.Background(), fc, run, policy)
+	first, err := ensureAgenticRunApproval(context.Background(), fc, run, policy, run.Namespace)
 	if err != nil {
 		t.Fatalf("first call: %v", err)
 	}
 
-	second, err := ensureAgenticRunApproval(context.Background(), fc, run, policy)
+	second, err := ensureAgenticRunApproval(context.Background(), fc, run, policy, run.Namespace)
 	if err != nil {
 		t.Fatalf("second call: %v", err)
 	}

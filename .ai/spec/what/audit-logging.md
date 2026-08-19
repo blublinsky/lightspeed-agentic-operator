@@ -53,7 +53,7 @@ Implementation spec for compliance audit logging in the agentic operator. Parent
 
 ### Trace Propagation
 
-11. The operator MUST propagate trace context to the sandbox via W3C `traceparent` header on all `/v1/agent/run` HTTP calls. The trace ID in the header is the auto-generated trace ID for the current phase trace (not the AgenticRun UID).
+11. The operator MUST propagate trace context to batch sandbox pods via the W3C `TRACEPARENT` environment variable on the container. The value is the active phase span from `BeginStep` at pod creation time. The trace ID is the auto-generated trace ID for the current phase trace (not the AgenticRun UID). When no valid span is in context, the operator MUST omit `TRACEPARENT` (sandbox graceful degradation).
 
 ### Structured Log Format — OTel JSON via Stdout Exporter
 
@@ -116,7 +116,7 @@ Implementation spec for compliance audit logging in the agentic operator. Parent
 
 ### Templog Finalizer
 
-32. When a new AgenticRun CR is created and templog is enabled (read from an environment variable set by the lightspeed-operator), the operator MUST add the finalizer `agentic.openshift.io/templog-cleanup` to the AgenticRun.
+32. When a new AgenticRun CR is created and templog is enabled (read from an environment variable set by the lightspeed-operator), the operator MUST add the finalizer `agentic.openshift.io/templog-cleanup` to the AgenticRun. Both RBAC and templog finalizers are processed in a **single reconcile pass** on deletion (RBAC first, then templog).
 
 33. On AgenticRun deletion, if the `agentic.openshift.io/templog-cleanup` finalizer is present, the operator MUST call the Collector admin API: `DELETE /api/v1/logs?agentic_run_id=<uid>` passing the raw Kubernetes UID (with hyphens; collector normalizes internally). On success, remove the finalizer. On failure, block deletion and requeue with exponential backoff.
 

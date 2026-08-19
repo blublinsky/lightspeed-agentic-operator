@@ -77,61 +77,47 @@ func ptrInt32(v int32) *int32 { return &v }
 
 // --- Cleanup ---
 
-// cleanup deletes objects, stripping finalizers if needed. Order: delete (sets DeletionTimestamp
-// so the operator won't re-add finalizers), then patch finalizers to nil so deletion completes.
-// Logs each action and verifies the object is gone.
+// cleanup deletes objects, letting the operator's finalizers run naturally.
+// It polls briefly for GC to complete; only force-strips finalizers as a
+// fallback when the operator appears stuck.
 func cleanup(t *testing.T, c client.Client, objs ...client.Object) {
 	t.Helper()
 	ctx := context.Background()
+	const cleanupTimeout = 15 * time.Second
+
 	for _, obj := range objs {
 		kind := obj.GetObjectKind().GroupVersionKind().Kind
 		if kind == "" {
 			kind = fmt.Sprintf("%T", obj)
 		}
 		name := obj.GetName()
-		ns := obj.GetNamespace()
-		key := types.NamespacedName{Name: name, Namespace: ns}
+		key := types.NamespacedName{Name: name, Namespace: obj.GetNamespace()}
 
 		if err := c.Get(ctx, key, obj); err != nil {
 			t.Logf("cleanup: %s/%s not found (already clean)", kind, name)
 			continue
 		}
+
 		_ = c.Delete(ctx, obj)
+
+		err := wait.PollUntilContextTimeout(ctx, 1*time.Second, cleanupTimeout, true, func(ctx context.Context) (bool, error) {
+			return c.Get(ctx, key, obj) != nil, nil
+		})
+		if err == nil {
+			t.Logf("cleanup: %s/%s deleted", kind, name)
+			continue
+		}
+
 		if err := c.Get(ctx, key, obj); err != nil {
 			t.Logf("cleanup: %s/%s deleted", kind, name)
 			continue
 		}
 		if len(obj.GetFinalizers()) > 0 {
-			t.Logf("cleanup: %s/%s stripping finalizers %v", kind, name, obj.GetFinalizers())
+			t.Logf("cleanup: %s/%s force-stripping finalizers %v (operator did not process within %s)", kind, name, obj.GetFinalizers(), cleanupTimeout)
 			obj.SetFinalizers(nil)
 			_ = c.Update(ctx, obj)
 		}
-		if err := c.Get(ctx, key, obj); err != nil {
-			t.Logf("cleanup: %s/%s deleted", kind, name)
-		} else {
-			t.Logf("cleanup: WARNING %s/%s still exists after cleanup", kind, name)
-		}
 	}
-}
-
-// deleteSandboxClaim removes a SandboxClaim by name (no typed Go struct in this repo).
-func deleteSandboxClaim(t *testing.T, c client.Client, name, namespace string) {
-	t.Helper()
-	obj := &metav1.PartialObjectMetadata{
-		TypeMeta: metav1.TypeMeta{
-			APIVersion: "extensions.agents.x-k8s.io/v1alpha1",
-			Kind:       "SandboxClaim",
-		},
-		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: namespace},
-	}
-	_ = c.Delete(context.Background(), obj)
-}
-
-// deleteBarePod removes a bare pod by name from the operator namespace (same as testNS).
-func deleteBarePod(t *testing.T, c client.Client, name string) {
-	t.Helper()
-	pod := &corev1.Pod{ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: testNS}}
-	_ = c.Delete(context.Background(), pod)
 }
 
 // ensureCrashLoopPod creates a pod in the staging namespace that immediately
@@ -409,15 +395,10 @@ func createAgenticRun(t *testing.T, c client.Client, name string) *agenticv1alph
 		},
 	}
 
-	// Clean leftovers from previous runs (runs, approvals, sandbox claims, bare pods).
+	// Clean leftovers from previous runs. Sandbox resources use UID-based names
+	// so collisions are impossible; the AgenticRun finalizer handles their cleanup.
 	cleanup(t, c, &agenticv1alpha1.AgenticRun{ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: testNS}})
 	cleanup(t, c, &agenticv1alpha1.AgenticRunApproval{ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: testNS}})
-	deleteSandboxClaim(t, c, "ls-analysis-"+name, testNS)
-	deleteSandboxClaim(t, c, "ls-execution-"+name, testNS)
-	deleteSandboxClaim(t, c, "ls-verification-"+name, testNS)
-	deleteBarePod(t, c, "ls-analysis-"+name)
-	deleteBarePod(t, c, "ls-execution-"+name)
-	deleteBarePod(t, c, "ls-verification-"+name)
 
 	if err := c.Create(ctx, prop); err != nil {
 		t.Fatalf("create AgenticRun: %v", err)

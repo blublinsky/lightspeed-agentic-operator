@@ -29,11 +29,11 @@ Implementation details for the agentic-operator's role in the templog feature.
 
 10. The same ConfigMap-configured OTLP connection is used for trace spans (per-phase root spans). Traces and logs share the same endpoint and TLS configuration.
 11. The `agenticrun.uid` log attribute stores the raw Kubernetes `metadata.uid` (with hyphens). The collector's `postgresexporter` normalizes it (strips hyphens) when writing to the `agentic_run_id` column. The OTel log record's native `TraceID` field carries the per-phase trace ID and is not used for templog column mapping.
-12. Trace context is propagated to sandbox pods via the W3C `traceparent` header on agent HTTP calls.
+12. Trace context is propagated to sandbox pods via the W3C `TRACEPARENT` environment variable set from the operator phase span at pod creation.
 
 ### AgenticRun Finalizer
 
-13. The `agentic.openshift.io/templog-cleanup` (and RBAC cleanup) finalizers are added the first time the controller reconciles any non-deleting AgenticRun — including already-terminal runs — so TTL or manual delete always runs Collector log cleanup.
+13. The `agentic.openshift.io/templog-cleanup` (and RBAC cleanup) finalizers are added the first time the controller reconciles any non-deleting AgenticRun — including already-terminal runs — so TTL or manual delete always runs Collector log cleanup. Both finalizers are processed in a **single reconcile pass** on deletion: RBAC cleanup first (via `ReleaseSandboxes`), then templog cleanup.
 14. When an AgenticRun CR is deleted and the finalizer is present:
     a. The operator calls the Collector admin API: `DELETE /api/v1/logs?agentic_run_id=<uid>` over HTTPS using the CA cert from the ConfigMap. The raw Kubernetes UID (with hyphens) is passed; the collector normalizes internally.
     b. On success, removes the finalizer — CR deletion proceeds.

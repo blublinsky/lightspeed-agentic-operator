@@ -382,8 +382,8 @@ func TestAnalysisOutputSchema_ActionRequiredAndDiagnosis(t *testing.T) {
 	if !ok {
 		t.Fatal("schema missing actionRequired property")
 	}
-	if ar.(map[string]any)["type"] != "boolean" {
-		t.Error("actionRequired should be boolean")
+	if ar.(map[string]any)["type"] != "string" {
+		t.Error("actionRequired should be string")
 	}
 
 	diag, ok := props["diagnosis"]

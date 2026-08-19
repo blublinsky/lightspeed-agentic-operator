@@ -15,6 +15,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	"sigs.k8s.io/controller-runtime/pkg/handler"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
+	"sigs.k8s.io/controller-runtime/pkg/manager"
 
 	agenticv1alpha1 "github.com/openshift/lightspeed-agentic-operator/api/v1alpha1"
 	"github.com/openshift/lightspeed-agentic-operator/pkg/configuration"
@@ -82,7 +83,14 @@ func (r *AgenticRunReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 			r.Audit.Cleanup(&run)
 		}
 		if controllerutil.ContainsFinalizer(&run, rbacCleanupFinalizer) {
-			return r.handleRBACCleanup(ctx, &run)
+			if err := r.Agent.ReleaseSandboxes(ctx, &run); err != nil {
+				log.Error(err, "sandbox release failed during deletion")
+			}
+			original := run.DeepCopy()
+			controllerutil.RemoveFinalizer(&run, rbacCleanupFinalizer)
+			if err := r.Patch(ctx, &run, client.MergeFrom(original)); client.IgnoreNotFound(err) != nil {
+				return ctrl.Result{}, fmt.Errorf("%s: %w", ErrRemoveFinalizer, err)
+			}
 		}
 		if controllerutil.ContainsFinalizer(&run, templogCleanupFinalizer) {
 			return r.handleTemplogCleanup(ctx, &run)
@@ -152,7 +160,7 @@ func (r *AgenticRunReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 		log.Error(err, "failed to get ApprovalPolicy")
 	}
 
-	approval, err := ensureAgenticRunApproval(ctx, r.Client, &run, policy)
+	approval, err := ensureAgenticRunApproval(ctx, r.Client, &run, policy, r.Namespace)
 	if err != nil {
 		log.Error(err, "failed to ensure AgenticRunApproval")
 		return ctrl.Result{Requeue: true}, nil
@@ -258,13 +266,14 @@ func (r *AgenticRunReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		return reqs
 	}
 
+	if err := mgr.Add(manager.RunnableFunc(r.runTimeoutLoop)); err != nil {
+		return err
+	}
+
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&agenticv1alpha1.AgenticRun{}).
 		Owns(&agenticv1alpha1.AgenticRunApproval{}).
-		Owns(&agenticv1alpha1.AnalysisResult{}).
-		Owns(&agenticv1alpha1.ExecutionResult{}).
-		Owns(&agenticv1alpha1.VerificationResult{}).
-		Owns(&agenticv1alpha1.EscalationResult{}).
+		Watches(&corev1.Pod{}, handler.EnqueueRequestsFromMapFunc(r.handlePodEvent)).
 		Watches(&agenticv1alpha1.ApprovalPolicy{}, handler.EnqueueRequestsFromMapFunc(fanOutToActiveRuns)).
 		Watches(&agenticv1alpha1.AgenticOLSConfig{}, handler.EnqueueRequestsFromMapFunc(fanOutToActiveRuns)).
 		Watches(&corev1.ConfigMap{}, handler.EnqueueRequestsFromMapFunc(
@@ -414,7 +423,7 @@ func (r *AgenticRunReconciler) handleTemplogCleanup(ctx context.Context, run *ag
 				run.Annotations = make(map[string]string)
 			}
 			run.Annotations[templogCleanupAttemptsAnnotation] = fmt.Sprintf("%d", attempts+1)
-			if patchErr := r.Patch(ctx, run, client.MergeFrom(original)); patchErr != nil {
+			if patchErr := r.Patch(ctx, run, client.MergeFrom(original)); client.IgnoreNotFound(patchErr) != nil {
 				return ctrl.Result{}, fmt.Errorf("%s: %w", ErrPatchTemplogCleanupAttempts, patchErr)
 			}
 			return ctrl.Result{RequeueAfter: templogCleanupRequeueAfter}, nil
@@ -426,59 +435,8 @@ func (r *AgenticRunReconciler) handleTemplogCleanup(ctx context.Context, run *ag
 
 	original := run.DeepCopy()
 	controllerutil.RemoveFinalizer(run, templogCleanupFinalizer)
-	if err := r.Patch(ctx, run, client.MergeFrom(original)); err != nil {
+	if err := r.Patch(ctx, run, client.MergeFrom(original)); client.IgnoreNotFound(err) != nil {
 		return ctrl.Result{}, fmt.Errorf("%s: %w", ErrRemoveFinalizer, err)
 	}
 	return ctrl.Result{}, nil
-}
-
-// handleRBACCleanup releases sandboxes and deletes execution RBAC resources
-// for a deleting AgenticRun. Retries up to rbacMaxCleanupAttempts, then
-// removes the finalizer regardless to avoid leaving the CR stuck in Terminating.
-func (r *AgenticRunReconciler) handleRBACCleanup(ctx context.Context, run *agenticv1alpha1.AgenticRun) (ctrl.Result, error) {
-	log := logf.FromContext(ctx)
-
-	attempts := 0
-	if v, ok := run.Annotations[rbacCleanupAttemptsAnnotation]; ok {
-		parsed, err := strconv.Atoi(v)
-		if err != nil || parsed < 0 {
-			log.Info("ignoring invalid rbac cleanup attempts annotation", "value", v)
-			attempts = 0
-		} else {
-			attempts = parsed
-		}
-	}
-
-	if attempts < rbacMaxCleanupAttempts {
-		sandboxErr := r.Agent.ReleaseSandboxes(ctx, run)
-		rbacErr := cleanupExecutionRBAC(ctx, r.Client, run, r.Namespace)
-		if sandboxErr != nil || rbacErr != nil {
-			if sandboxErr != nil {
-				log.Error(sandboxErr, "sandbox release failed, will retry", "attempt", attempts+1, "max", rbacMaxCleanupAttempts)
-			}
-			if rbacErr != nil {
-				log.Error(rbacErr, "RBAC cleanup failed, will retry", "attempt", attempts+1, "max", rbacMaxCleanupAttempts)
-			}
-			original := run.DeepCopy()
-			if run.Annotations == nil {
-				run.Annotations = make(map[string]string)
-			}
-			run.Annotations[rbacCleanupAttemptsAnnotation] = fmt.Sprintf("%d", attempts+1)
-			if patchErr := r.Patch(ctx, run, client.MergeFrom(original)); patchErr != nil {
-				return ctrl.Result{}, fmt.Errorf("%s: %w", ErrPatchRBACCleanupAttempts, patchErr)
-			}
-			return ctrl.Result{RequeueAfter: rbacCleanupRequeueAfter}, nil
-		}
-	} else {
-		log.Info("RBAC cleanup exhausted retries, removing finalizer with orphaned resources", "attempts", attempts)
-	}
-
-	original := run.DeepCopy()
-	controllerutil.RemoveFinalizer(run, rbacCleanupFinalizer)
-	if err := r.Patch(ctx, run, client.MergeFrom(original)); err != nil {
-		return ctrl.Result{}, fmt.Errorf("%s: %w", ErrRemoveFinalizer, err)
-	}
-	// Requeue so templog cleanup Patches a fresh object (avoids conflict
-	// from two sequential Patches in one reconcile).
-	return ctrl.Result{Requeue: true}, nil
 }

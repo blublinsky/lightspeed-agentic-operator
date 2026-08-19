@@ -141,7 +141,7 @@ func TestTrimNonSelectedOptions_SingleOptionNoop(t *testing.T) {
 	fc := fake.NewClientBuilder().WithScheme(scheme).WithObjects(analysisResult).WithStatusSubresource(analysisResult).Build()
 	r := &AgenticRunReconciler{Client: fc, Namespace: "default"}
 
-	got, err := r.trimNonSelectedOptions(context.Background(), run, approval, nil)
+	got, err := r.trimNonSelectedOptions(context.Background(), run, approval)
 	if err != nil {
 		t.Fatalf("trimNonSelectedOptions() error: %v", err)
 	}
@@ -190,7 +190,7 @@ func TestTrimThenSelectedOption_EndToEnd(t *testing.T) {
 			fc := fake.NewClientBuilder().WithScheme(scheme).WithObjects(analysisResult).WithStatusSubresource(analysisResult).Build()
 			r := &AgenticRunReconciler{Client: fc, Namespace: "default"}
 
-			got, err := r.trimNonSelectedOptions(context.Background(), run, approval, nil)
+			got, err := r.trimNonSelectedOptions(context.Background(), run, approval)
 			if err != nil {
 				t.Fatalf("trim error: %v", err)
 			}
@@ -277,7 +277,7 @@ func TestTrimNonSelectedOptions_OutOfRange(t *testing.T) {
 	fc := fake.NewClientBuilder().WithScheme(scheme).WithObjects(analysisResult).WithStatusSubresource(analysisResult).Build()
 	r := &AgenticRunReconciler{Client: fc, Namespace: "default"}
 
-	_, err := r.trimNonSelectedOptions(context.Background(), run, approval, nil)
+	_, err := r.trimNonSelectedOptions(context.Background(), run, approval)
 	if err == nil {
 		t.Fatal("expected error for out-of-range option index")
 	}

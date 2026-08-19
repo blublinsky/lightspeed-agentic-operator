@@ -130,13 +130,12 @@ func main() {
 	auditLogger := agenticrun.NewProductionAuditLogger(zapLogger, telemetryProvider)
 
 	// --- Create sandbox manager and agent caller ---
-	sandboxMgr := agenticrun.NewSandboxManager(mgr.GetClient(), cfgCache, namespace)
+	sandboxMgr := agenticrun.NewSandboxManager(mgr.GetClient(), cfgCache, namespace, auditLogger)
 	agentCaller := &agenticrun.SandboxAgentCaller{
-		Sandbox:       sandboxMgr,
-		K8sClient:     mgr.GetClient(),
-		ClientFactory: agenticrun.NewAgentHTTPClient,
-		Namespace:     namespace,
-		Audit:         auditLogger,
+		Sandbox:   sandboxMgr,
+		K8sClient: mgr.GetClient(),
+		Namespace: namespace,
+		Audit:     auditLogger,
 	}
 
 	// --- Register controllers ---

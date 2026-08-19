@@ -4,12 +4,10 @@ import (
 	"context"
 	"fmt"
 
-	"go.opentelemetry.io/otel/trace"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	ctrl "sigs.k8s.io/controller-runtime"
-	"sigs.k8s.io/controller-runtime/pkg/client"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 
 	agenticv1alpha1 "github.com/openshift/lightspeed-agentic-operator/api/v1alpha1"
@@ -17,29 +15,17 @@ import (
 
 const (
 	ErrUpdateToAnalyzing         = "update to Analyzing"
-	ErrCreateAnalysisResult      = "create analysis result"
-	ErrUpdateAfterAnalysis       = "update after analysis"
 	ErrUpdateToAnalyzingRevision = "update to Analyzing (revision)"
-	ErrUpdateAfterRevision       = "update after revision"
 	ErrUpdateToCompletedAdvisory = "update to Completed (advisory)"
 	ErrUpdateAfterExecSkip       = "update after execution skip"
-	ErrEnsureExecutionRBAC       = "ensure execution RBAC"
-	ErrPersistRBACAnnotation     = "persist RBAC annotation"
-	ErrUpdateToExecuting         = "update to Executing"
-	ErrCreateExecutionResult     = "create execution result"
-	ErrUpdateToCompletedTrust    = "update to Completed (trust-mode)"
-	ErrUpdateToVerifying         = "update to Verifying"
-	ErrResolveSelectedOption     = "resolve selected option"
-	ErrCreateVerificationResult  = "create verification result"
-	ErrUpdateForExecRetry        = "update for execution retry"
-	ErrUpdateRetriesExhausted    = "update (retries exhausted)"
-	ErrUpdateToCompleted         = "update to Completed"
-	ErrGetOverrideAgent          = "get override Agent"
-	ErrGetEscalationLLMProvider  = "get LLMProvider"
-	ErrUpdateToEscalating        = "update to Escalating"
-	ErrCreateEscalationResult    = "create escalation result"
-	ErrUpdateToEscalated         = "update to Escalated"
-	ErrUpdateToDenied            = "update to Denied"
+
+	ErrUpdateToExecuting        = "update to Executing"
+	ErrUpdateToVerifying        = "update to Verifying"
+	ErrResolveSelectedOption    = "resolve selected option"
+	ErrGetOverrideAgent         = "get override Agent"
+	ErrGetEscalationLLMProvider = "get LLMProvider"
+	ErrUpdateToEscalating       = "update to Escalating"
+	ErrUpdateToDenied           = "update to Denied"
 )
 
 // handleAnalysis checks approval for the analysis step and runs it.
@@ -89,51 +75,11 @@ func (r *AgenticRunReconciler) handleAnalysis(
 		return ctrl.Result{}, fmt.Errorf("%s: %w", ErrUpdateToAnalyzing, err)
 	}
 
-	spanCtx := ctx
-	var span trace.Span
-	if r.Audit != nil {
-		spanCtx, span = r.Audit.StartAnalysisSpan(ctx, run)
-		if span != nil {
-			defer span.End()
-		}
-		r.Audit.EmitAgenticRunReceived(spanCtx, run)
+	if err := r.Agent.Analyze(ctx, run, resolved.Analysis, run.Spec.Request); err != nil {
+		return r.failStep(ctx, run, agenticv1alpha1.AgenticRunConditionAnalyzed, err)
 	}
 
-	analysisResult, err := r.Agent.Analyze(spanCtx, run, resolved.Analysis, run.Spec.Request, defaultSandboxSA)
-	if err != nil {
-		return r.failStep(spanCtx, run, agenticv1alpha1.AgenticRunConditionAnalyzed, err)
-	}
-	if !analysisResult.Success {
-		return r.failStep(spanCtx, run, agenticv1alpha1.AgenticRunConditionAnalyzed, fmt.Errorf("%s", analysisFailureMessage(analysisResult)))
-	}
-	base = run.DeepCopy()
-	completedAt := metav1.Now()
-	startTime := conditionTime(run.Status.Conditions, agenticv1alpha1.AgenticRunConditionAnalyzed)
-	crName, analysisCR, crErr := r.createAnalysisResult(spanCtx, run, analysisResult, run.Status.Steps.Analysis.Sandbox, startTime, &completedAt, "")
-	if crErr != nil {
-		return r.failStep(spanCtx, run, agenticv1alpha1.AgenticRunConditionAnalyzed, fmt.Errorf("%s: %w", ErrCreateAnalysisResult, crErr))
-	}
-	if r.Audit != nil {
-		r.Audit.EmitAnalysisCompleted(spanCtx, run, analysisCR)
-	}
-	run.Status.Steps.Analysis.Results = append(run.Status.Steps.Analysis.Results, agenticv1alpha1.StepResultRef{Name: crName, Outcome: agenticv1alpha1.ActionOutcomeFromBool(analysisResult.Success)})
-
-	if !analysisResult.IsActionRequired() {
-		return r.setNoActionRequired(ctx, run, base, ErrUpdateAfterAnalysis, "Analysis determined no remediation action is required")
-	}
-
-	meta.SetStatusCondition(&run.Status.Conditions, metav1.Condition{
-		Type:               agenticv1alpha1.AgenticRunConditionAnalyzed,
-		Status:             metav1.ConditionTrue,
-		Reason:             reasonComplete,
-		Message:            fmt.Sprintf("Analysis complete with %d option(s)", len(analysisResult.Options)),
-		ObservedGeneration: run.Generation,
-	})
-	if err := r.statusPatch(ctx, run, base); err != nil {
-		return ctrl.Result{}, fmt.Errorf("%s: %w", ErrUpdateAfterAnalysis, err)
-	}
-
-	log.Info("analysis complete", "options", len(analysisResult.Options))
+	log.Info("analysis sandbox launched")
 	return ctrl.Result{}, nil
 }
 
@@ -175,54 +121,14 @@ func (r *AgenticRunReconciler) handleRevision(
 		return ctrl.Result{}, fmt.Errorf("%s: %w", ErrUpdateToAnalyzingRevision, err)
 	}
 
-	spanCtx := ctx
-	var span trace.Span
-	if r.Audit != nil {
-		spanCtx, span = r.Audit.StartAnalysisSpan(ctx, run)
-		if span != nil {
-			defer span.End()
-		}
-	}
-
 	revisionSuffix := buildRevisionContext(run)
 	requestWithRevision := run.Spec.Request + "\n\n" + revisionSuffix
 
-	analysisResult, err := r.Agent.Analyze(spanCtx, run, resolved.Analysis, requestWithRevision, defaultSandboxSA)
-	if err != nil {
-		return r.failStep(spanCtx, run, agenticv1alpha1.AgenticRunConditionAnalyzed, err)
-	}
-	if !analysisResult.Success {
-		return r.failStep(spanCtx, run, agenticv1alpha1.AgenticRunConditionAnalyzed, fmt.Errorf("%s", analysisFailureMessage(analysisResult)))
+	if err := r.Agent.Analyze(ctx, run, resolved.Analysis, requestWithRevision); err != nil {
+		return r.failStep(ctx, run, agenticv1alpha1.AgenticRunConditionAnalyzed, err)
 	}
 
-	base = run.DeepCopy()
-	completedAt := metav1.Now()
-	startTime := conditionTime(run.Status.Conditions, agenticv1alpha1.AgenticRunConditionAnalyzed)
-	crName, analysisCR, crErr := r.createAnalysisResult(spanCtx, run, analysisResult, run.Status.Steps.Analysis.Sandbox, startTime, &completedAt, "")
-	if crErr != nil {
-		return r.failStep(spanCtx, run, agenticv1alpha1.AgenticRunConditionAnalyzed, fmt.Errorf("%s: %w", ErrCreateAnalysisResult, crErr))
-	}
-	if r.Audit != nil {
-		r.Audit.EmitAnalysisCompleted(spanCtx, run, analysisCR)
-	}
-	run.Status.Steps.Analysis.Results = append(run.Status.Steps.Analysis.Results, agenticv1alpha1.StepResultRef{Name: crName, Outcome: agenticv1alpha1.ActionOutcomeFromBool(analysisResult.Success)})
-
-	if !analysisResult.IsActionRequired() {
-		return r.setNoActionRequired(ctx, run, base, ErrUpdateAfterRevision, "Revision analysis determined no remediation action is required")
-	}
-
-	meta.SetStatusCondition(&run.Status.Conditions, metav1.Condition{
-		Type:               agenticv1alpha1.AgenticRunConditionAnalyzed,
-		Status:             metav1.ConditionTrue,
-		Reason:             reasonRevisionComplete,
-		Message:            fmt.Sprintf("Revision complete (generation %d) with %d option(s)", generation, len(analysisResult.Options)),
-		ObservedGeneration: generation,
-	})
-	if err := r.statusPatch(ctx, run, base); err != nil {
-		return ctrl.Result{}, fmt.Errorf("%s: %w", ErrUpdateAfterRevision, err)
-	}
-
-	log.Info("revision analysis complete", "generation", generation, "options", len(analysisResult.Options))
+	log.Info("revision sandbox launched", "generation", generation)
 	return ctrl.Result{}, nil
 }
 
@@ -286,7 +192,7 @@ func (r *AgenticRunReconciler) handleExecution(
 		}
 	}
 
-	selectedOption, trimErr := r.trimNonSelectedOptions(ctx, run, approval, policy)
+	selectedOption, trimErr := r.trimNonSelectedOptions(ctx, run, approval)
 	if trimErr != nil {
 		return r.failStep(ctx, run, agenticv1alpha1.AgenticRunConditionExecuted, trimErr)
 	}
@@ -299,20 +205,7 @@ func (r *AgenticRunReconciler) handleExecution(
 		r.Audit.EmitApprovalSpan(ctx, run, approval, optTitle)
 	}
 
-	// Determine which SA the execution pod should run as.
-	execSA := defaultSandboxSA
 	base := run.DeepCopy()
-	if selectedOption != nil && (len(selectedOption.RBAC.NamespaceScoped) > 0 || len(selectedOption.RBAC.ClusterScoped) > 0) {
-		if err := ensureExecutionRBAC(ctx, r.Client, run, &selectedOption.RBAC, r.Namespace); err != nil {
-			return r.failStep(ctx, run, agenticv1alpha1.AgenticRunConditionExecuted, fmt.Errorf("%s: %w", ErrEnsureExecutionRBAC, err))
-		}
-		if err := r.Patch(ctx, run, client.MergeFrom(base)); err != nil {
-			return ctrl.Result{}, fmt.Errorf("%s: %w", ErrPersistRBACAnnotation, err)
-		}
-		base = run.DeepCopy()
-		execSA = executionSAName(run)
-	}
-
 	meta.RemoveStatusCondition(&run.Status.Conditions, agenticv1alpha1.AgenticRunConditionVerified)
 	meta.SetStatusCondition(&run.Status.Conditions, metav1.Condition{
 		Type:               agenticv1alpha1.AgenticRunConditionExecuted,
@@ -325,67 +218,11 @@ func (r *AgenticRunReconciler) handleExecution(
 		return ctrl.Result{}, fmt.Errorf("%s: %w", ErrUpdateToExecuting, err)
 	}
 
-	spanCtx := ctx
-	var span trace.Span
-	if r.Audit != nil {
-		spanCtx, span = r.Audit.StartExecutionSpan(ctx, run)
-		if span != nil {
-			defer span.End()
-		}
+	if err := r.Agent.Execute(ctx, run, *resolved.Execution, selectedOption); err != nil {
+		return r.failStep(ctx, run, agenticv1alpha1.AgenticRunConditionExecuted, err)
 	}
 
-	execResult, err := r.Agent.Execute(spanCtx, run, *resolved.Execution, selectedOption, execSA)
-	if err != nil {
-		return r.failStep(spanCtx, run, agenticv1alpha1.AgenticRunConditionExecuted, err)
-	}
-	if !execResult.Success {
-		if !hasMutationSuccess(execResult.ActionsTaken) {
-			return r.failStep(spanCtx, run, agenticv1alpha1.AgenticRunConditionExecuted, fmt.Errorf("%s", executionFailureMessage(execResult)))
-		}
-		log.Info("execution agent reported success=false but all mutations succeeded; deferring outcome to verification step")
-		execResult.Success = true
-	}
-
-	base = run.DeepCopy()
-	completedAt := metav1.Now()
-	startTime := conditionTime(run.Status.Conditions, agenticv1alpha1.AgenticRunConditionExecuted)
-	execCRName, execCR, execCRErr := r.createExecutionResult(spanCtx, run, execResult, run.Status.Steps.Execution.Sandbox, startTime, &completedAt, "")
-	if execCRErr != nil {
-		return r.failStep(spanCtx, run, agenticv1alpha1.AgenticRunConditionExecuted, fmt.Errorf("%s: %w", ErrCreateExecutionResult, execCRErr))
-	}
-	if r.Audit != nil {
-		r.Audit.EmitExecutionCompleted(spanCtx, run, execCR)
-	}
-	run.Status.Steps.Execution.Results = append(run.Status.Steps.Execution.Results, agenticv1alpha1.StepResultRef{Name: execCRName, Outcome: agenticv1alpha1.ActionOutcomeFromBool(execResult.Success)})
-	meta.SetStatusCondition(&run.Status.Conditions, metav1.Condition{
-		Type:               agenticv1alpha1.AgenticRunConditionExecuted,
-		Status:             metav1.ConditionTrue,
-		Reason:             reasonComplete,
-		Message:            "Execution completed",
-		ObservedGeneration: run.Generation,
-	})
-
-	if resolved.Verification == nil {
-		setVerificationSkipped(run)
-		if err := r.statusPatch(ctx, run, base); err != nil {
-			return ctrl.Result{}, fmt.Errorf("%s: %w", ErrUpdateToCompletedTrust, err)
-		}
-		log.Info("execution complete, verification skipped")
-	} else {
-		if err := r.statusPatch(ctx, run, base); err != nil {
-			return ctrl.Result{}, fmt.Errorf("%s: %w", ErrUpdateToVerifying, err)
-		}
-		log.Info("execution complete, verifying")
-	}
-
-	// Clean up per-run execution SA + Roles if one was created.
-	if execSA != defaultSandboxSA {
-		if err := cleanupExecutionRBAC(ctx, r.Client, run, r.Namespace); err != nil {
-			log.Error(err, "RBAC cleanup after execution, retrying")
-			return ctrl.Result{Requeue: true}, nil
-		}
-	}
-
+	log.Info("execution sandbox launched")
 	return ctrl.Result{}, nil
 }
 
@@ -398,13 +235,6 @@ func (r *AgenticRunReconciler) handleVerification(
 	policy *agenticv1alpha1.ApprovalPolicy,
 ) (ctrl.Result, error) {
 	log := logf.FromContext(ctx)
-	// Retry execution RBAC cleanup if it failed during handleExecution transition.
-	// Always attempt — idempotent; covers both namespace-scoped and cluster-scoped-only cases.
-	if err := cleanupExecutionRBAC(ctx, r.Client, run, r.Namespace); err != nil {
-		log.Error(err, "RBAC cleanup retry in verification, requeuing")
-		return ctrl.Result{Requeue: true}, nil
-	}
-
 	log.Info("verifying")
 
 	base := run.DeepCopy()
@@ -456,7 +286,7 @@ func (r *AgenticRunReconciler) handleVerification(
 	if refs := run.Status.Steps.Execution.Results; len(refs) > 0 {
 		latestRef := refs[len(refs)-1]
 		var execCR agenticv1alpha1.ExecutionResult
-		if err := r.Get(ctx, types.NamespacedName{Name: latestRef.Name, Namespace: run.Namespace}, &execCR); err == nil {
+		if err := r.Get(ctx, types.NamespacedName{Name: latestRef.Name, Namespace: r.Namespace}, &execCR); err == nil {
 			execOutput = &ExecutionOutput{
 				Success:      latestRef.Outcome == agenticv1alpha1.ActionOutcomeSucceeded,
 				ActionsTaken: execCR.Status.ActionsTaken,
@@ -464,106 +294,11 @@ func (r *AgenticRunReconciler) handleVerification(
 		}
 	}
 
-	spanCtx := ctx
-	var span trace.Span
-	if r.Audit != nil {
-		spanCtx, span = r.Audit.StartVerificationSpan(ctx, run)
-		if span != nil {
-			defer span.End()
-		}
+	if err := r.Agent.Verify(ctx, run, *resolved.Verification, selectedOption, execOutput); err != nil {
+		return r.failStep(ctx, run, agenticv1alpha1.AgenticRunConditionVerified, err)
 	}
 
-	verifyResult, err := r.Agent.Verify(spanCtx, run, *resolved.Verification, selectedOption, execOutput, defaultSandboxSA)
-	if err != nil {
-		return r.failStep(spanCtx, run, agenticv1alpha1.AgenticRunConditionVerified, err)
-	}
-
-	base = run.DeepCopy()
-	completedAt := metav1.Now()
-	startTime := conditionTime(run.Status.Conditions, agenticv1alpha1.AgenticRunConditionVerified)
-	verifyCRName, verifyCR, verifyCRErr := r.createVerificationResult(spanCtx, run, verifyResult, run.Status.Steps.Verification.Sandbox, startTime, &completedAt, "")
-	if verifyCRErr != nil {
-		return r.failStep(spanCtx, run, agenticv1alpha1.AgenticRunConditionVerified, fmt.Errorf("%s: %w", ErrCreateVerificationResult, verifyCRErr))
-	}
-	run.Status.Steps.Verification.Results = append(run.Status.Steps.Verification.Results, agenticv1alpha1.StepResultRef{Name: verifyCRName, Outcome: agenticv1alpha1.ActionOutcomeFromBool(verifyResult.Success)})
-
-	allPassed := verifyResult.Success
-	for _, check := range verifyResult.Checks {
-		if check.Result != agenticv1alpha1.CheckResultPassed {
-			allPassed = false
-			break
-		}
-	}
-
-	if !allPassed {
-		retryCount := int32(0)
-		if run.Status.Steps.Execution.RetryCount != nil {
-			retryCount = *run.Status.Steps.Execution.RetryCount
-		}
-		maxRetries := maxAttempts(approval, policy)
-
-		if int(retryCount) < maxRetries-1 {
-			next := retryCount + 1
-			log.Info("verification failed, retrying execution", "attempt", next+1, "maxAttempts", maxRetries, LogKeySummary, verifyResult.Summary)
-			if r.Audit != nil {
-				r.Audit.EmitVerificationRetry(spanCtx, run, verifyCR, int(next))
-			}
-			run.Status.Steps.Execution.RetryCount = &next
-			resetExecutionAndVerification(&run.Status.Steps)
-			meta.RemoveStatusCondition(&run.Status.Conditions, agenticv1alpha1.AgenticRunConditionExecuted)
-			meta.SetStatusCondition(&run.Status.Conditions, metav1.Condition{
-				Type:               agenticv1alpha1.AgenticRunConditionVerified,
-				Status:             metav1.ConditionFalse,
-				Reason:             reasonRetryingExecution,
-				Message:            fmt.Sprintf("Verification failed (attempt %d/%d): %s", next+1, maxRetries, verifyResult.Summary),
-				ObservedGeneration: run.Generation,
-			})
-			if err := r.statusPatch(spanCtx, run, base); err != nil {
-				return ctrl.Result{}, fmt.Errorf("%s: %w", ErrUpdateForExecRetry, err)
-			}
-			return ctrl.Result{}, nil
-		}
-
-		log.Info("verification retries exhausted, escalating", "retryCount", retryCount, LogKeySummary, verifyResult.Summary)
-		if r.Audit != nil {
-			r.Audit.EmitVerificationCompleted(spanCtx, run, verifyCR)
-		}
-		meta.SetStatusCondition(&run.Status.Conditions, metav1.Condition{
-			Type:               agenticv1alpha1.AgenticRunConditionVerified,
-			Status:             metav1.ConditionFalse,
-			Reason:             reasonRetriesExhausted,
-			Message:            fmt.Sprintf("Verification failed after %d attempt(s): %s", retryCount+1, verifyResult.Summary),
-			ObservedGeneration: run.Generation,
-		})
-		meta.SetStatusCondition(&run.Status.Conditions, metav1.Condition{
-			Type:               agenticv1alpha1.AgenticRunConditionEscalated,
-			Status:             metav1.ConditionUnknown,
-			Reason:             reasonRetriesExhausted,
-			Message:            fmt.Sprintf("Verification failed after %d attempt(s), escalating", retryCount+1),
-			ObservedGeneration: run.Generation,
-		})
-		if err := r.statusPatch(ctx, run, base); err != nil {
-			return ctrl.Result{}, fmt.Errorf("%s: %w", ErrUpdateRetriesExhausted, err)
-		}
-		return ctrl.Result{}, nil
-	}
-
-	if r.Audit != nil {
-		r.Audit.EmitVerificationCompleted(spanCtx, run, verifyCR)
-	}
-
-	meta.SetStatusCondition(&run.Status.Conditions, metav1.Condition{
-		Type:               agenticv1alpha1.AgenticRunConditionVerified,
-		Status:             metav1.ConditionTrue,
-		Reason:             reasonPassed,
-		Message:            verifyResult.Summary,
-		ObservedGeneration: run.Generation,
-	})
-	if err := r.statusPatch(spanCtx, run, base); err != nil {
-		return ctrl.Result{}, fmt.Errorf("%s: %w", ErrUpdateToCompleted, err)
-	}
-
-	log.Info("verification passed", LogKeySummary, verifyResult.Summary)
+	log.Info("verification sandbox launched")
 	return ctrl.Result{}, nil
 }
 
@@ -577,7 +312,7 @@ func (r *AgenticRunReconciler) handleFailed(
 	log.Info("handling system failure (terminal)")
 
 	if run.Annotations[rbacNamespacesAnnotation] != "" {
-		if err := cleanupExecutionRBAC(ctx, r.Client, run, r.Namespace); err != nil {
+		if err := cleanupExecutionRBAC(ctx, r.Client, run); err != nil {
 			log.Error(err, "RBAC cleanup on failure")
 		}
 	}
@@ -596,12 +331,6 @@ func (r *AgenticRunReconciler) handleSuspension(
 	if hasSandboxClaims(run) {
 		if err := r.Agent.ReleaseSandboxes(ctx, run); err != nil {
 			log.Error(err, "best-effort sandbox release during suspension")
-		}
-	}
-
-	if run.Annotations[rbacNamespacesAnnotation] != "" {
-		if err := cleanupExecutionRBAC(ctx, r.Client, run, r.Namespace); err != nil {
-			log.Error(err, "best-effort RBAC cleanup during suspension")
 		}
 	}
 
@@ -685,104 +414,13 @@ func (r *AgenticRunReconciler) handleEscalation(
 		return ctrl.Result{}, fmt.Errorf("%s: %w", ErrUpdateToEscalating, err)
 	}
 
-	spanCtx := ctx
-	var span trace.Span
-	if r.Audit != nil {
-		spanCtx, span = r.Audit.StartEscalationSpan(ctx, run)
-		if span != nil {
-			defer span.End()
-		}
+	escalationText := buildEscalationRequest(run, r.Namespace)
+	if err := r.Agent.Escalate(ctx, run, step, escalationText); err != nil {
+		return r.failStep(ctx, run, agenticv1alpha1.AgenticRunConditionEscalated, err)
 	}
 
-	escalationText := buildEscalationRequest(run)
-	escalationResult, err := r.Agent.Escalate(spanCtx, run, step, escalationText, defaultSandboxSA)
-	if err != nil {
-		return r.failStep(spanCtx, run, agenticv1alpha1.AgenticRunConditionEscalated, err)
-	}
-
-	base = run.DeepCopy()
-	completedAt := metav1.Now()
-	startTime := conditionTime(run.Status.Conditions, agenticv1alpha1.AgenticRunConditionEscalated)
-	crName, escalationCR, crErr := r.createEscalationResult(spanCtx, run, escalationResult, run.Status.Steps.Escalation.Sandbox, startTime, &completedAt, "")
-	if crErr != nil {
-		return r.failStep(spanCtx, run, agenticv1alpha1.AgenticRunConditionEscalated, fmt.Errorf("%s: %w", ErrCreateEscalationResult, crErr))
-	}
-	if r.Audit != nil {
-		r.Audit.EmitEscalationCompleted(spanCtx, run, escalationCR)
-	}
-	run.Status.Steps.Escalation.Results = append(run.Status.Steps.Escalation.Results, agenticv1alpha1.StepResultRef{Name: crName, Outcome: agenticv1alpha1.ActionOutcomeFromBool(escalationResult.Success)})
-
-	if run.Annotations[rbacNamespacesAnnotation] != "" {
-		if cleanErr := cleanupExecutionRBAC(ctx, r.Client, run, r.Namespace); cleanErr != nil {
-			log.Error(cleanErr, "RBAC cleanup on escalation")
-		}
-	}
-
-	meta.SetStatusCondition(&run.Status.Conditions, metav1.Condition{
-		Type:               agenticv1alpha1.AgenticRunConditionEscalated,
-		Status:             metav1.ConditionTrue,
-		Reason:             reasonComplete,
-		Message:            escalationResult.Summary,
-		ObservedGeneration: run.Generation,
-	})
-	if err := r.statusPatch(ctx, run, base); err != nil {
-		return ctrl.Result{}, fmt.Errorf("%s: %w", ErrUpdateToEscalated, err)
-	}
-
-	log.Info("escalation complete", LogKeySummary, escalationResult.Summary)
+	log.Info("escalation sandbox launched")
 	return ctrl.Result{}, nil
-}
-
-func (r *AgenticRunReconciler) setNoActionRequired(ctx context.Context, run *agenticv1alpha1.AgenticRun, base *agenticv1alpha1.AgenticRun, errSentinel, message string) (ctrl.Result, error) {
-	log := logf.FromContext(ctx)
-	meta.SetStatusCondition(&run.Status.Conditions, metav1.Condition{
-		Type:               agenticv1alpha1.AgenticRunConditionAnalyzed,
-		Status:             metav1.ConditionTrue,
-		Reason:             reasonNoActionRequired,
-		Message:            message,
-		ObservedGeneration: run.Generation,
-	})
-	if err := r.statusPatch(ctx, run, base); err != nil {
-		return ctrl.Result{}, fmt.Errorf("%s: %w", errSentinel, err)
-	}
-	log.Info("no action required", "message", message)
-	return ctrl.Result{}, nil
-}
-
-// analysisFailureMessage builds a descriptive failure message from the
-// analysis output, preferring the sandbox summary when available.
-func analysisFailureMessage(result *AnalysisOutput) string {
-	if result.Summary != "" {
-		return fmt.Sprintf("Analysis failed: %s", result.Summary)
-	}
-	if result.Diagnosis != nil && result.Diagnosis.Summary != "" {
-		return fmt.Sprintf("Analysis failed: %s", result.Diagnosis.Summary)
-	}
-	for _, opt := range result.Options {
-		if opt.Diagnosis.Summary != "" {
-			return fmt.Sprintf("Analysis failed: %s", opt.Diagnosis.Summary)
-		}
-	}
-	return "Analysis agent reported failure"
-}
-
-// executionFailureMessage builds a descriptive failure message from the
-// execution output, preferring the sandbox summary when available.
-func executionFailureMessage(result *ExecutionOutput) string {
-	if result.Summary != "" {
-		return fmt.Sprintf("Execution failed: %s", result.Summary)
-	}
-	for _, action := range result.ActionsTaken {
-		if action.Outcome == agenticv1alpha1.ActionOutcomeFailed {
-			if action.Error != "" {
-				return fmt.Sprintf("Execution failed: %s — %s", action.Description, action.Error)
-			}
-			if action.Description != "" {
-				return fmt.Sprintf("Execution failed: %s", action.Description)
-			}
-		}
-	}
-	return "Execution agent reported failure"
 }
 
 func conditionTime(conditions []metav1.Condition, condType string) *metav1.Time {
@@ -790,34 +428,6 @@ func conditionTime(conditions []metav1.Condition, condType string) *metav1.Time 
 		return &c.LastTransitionTime
 	}
 	return nil
-}
-
-// hasMutationSuccess returns true if at least one mutating action succeeded
-// and none failed. Returns false when no mutating actions exist (the agent
-// never attempted the fix) or when any mutation was rejected.
-// Non-mutating action types (pre-check, post-check, verification, check, wait)
-// are skipped — their outcome reflects observation, not execution success.
-func hasMutationSuccess(actions []agenticv1alpha1.ExecutionAction) bool {
-	found := false
-	for i := range actions {
-		if isObservationAction(actions[i].Type) {
-			continue
-		}
-		if actions[i].Outcome != agenticv1alpha1.ActionOutcomeSucceeded {
-			return false
-		}
-		found = true
-	}
-	return found
-}
-
-func isObservationAction(actionType string) bool {
-	switch actionType {
-	case "pre-check", "post-check", "verification", "check", "wait":
-		return true
-	default:
-		return false
-	}
 }
 
 // denyAgenticRun transitions the run to Denied (terminal).

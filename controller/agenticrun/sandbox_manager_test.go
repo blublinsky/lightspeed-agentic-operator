@@ -6,6 +6,7 @@ import (
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
+	rbacv1 "k8s.io/api/rbac/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime/schema"
@@ -83,7 +84,20 @@ func testLLMForManager() *agenticv1alpha1.LLMProvider {
 	}
 }
 
+func testReaderCRB() *rbacv1.ClusterRoleBinding {
+	return &rbacv1.ClusterRoleBinding{
+		ObjectMeta: metav1.ObjectMeta{Name: defaultReaderClusterRoleBinding},
+		RoleRef:    rbacv1.RoleRef{APIGroup: rbacv1.GroupName, Kind: "ClusterRole", Name: "cluster-reader"},
+		Subjects: []rbacv1.Subject{{
+			Kind:      rbacv1.ServiceAccountKind,
+			Name:      defaultSandboxSA,
+			Namespace: "test-ns",
+		}},
+	}
+}
+
 func newTestSandboxManager(fc client.Client, cache *configuration.Cache) *SandboxManager {
+	resetReaderBindings()
 	return &SandboxManager{
 		client:          fc,
 		config:          cache,
@@ -97,10 +111,10 @@ func newTestSandboxManager(fc client.Client, cache *configuration.Cache) *Sandbo
 
 func TestCreate_BarePod(t *testing.T) {
 	cache := testCache(t, "bare-pod")
-	fc := fake.NewClientBuilder().WithScheme(testScheme()).Build()
+	fc := fake.NewClientBuilder().WithScheme(testScheme()).WithObjects(testReaderCRB()).Build()
 	mgr := newTestSandboxManager(fc, cache)
 
-	name, err := mgr.Create(context.Background(), testSMRun(), "analysis", testSMAgent(), testLLMForManager(), nil, "test-sa", 15*time.Minute)
+	name, err := mgr.Create(context.Background(), testSMRun(), "analysis", testSMAgent(), testLLMForManager(), nil, 15*time.Minute, "test query", nil)
 	if err != nil {
 		t.Fatalf("Create failed: %v", err)
 	}
@@ -127,14 +141,39 @@ func TestCreate_BarePod(t *testing.T) {
 	if *pod.Spec.ActiveDeadlineSeconds != int64(15*time.Minute/time.Second) {
 		t.Fatalf("expected ActiveDeadlineSeconds=%d, got %d", int64(15*time.Minute/time.Second), *pod.Spec.ActiveDeadlineSeconds)
 	}
+
+	var cm corev1.ConfigMap
+	run := testSMRun()
+	if err := fc.Get(context.Background(), types.NamespacedName{Name: string(run.UID), Namespace: "test-ns"}, &cm); err != nil {
+		t.Fatalf("input ConfigMap not found: %v", err)
+	}
+	if cm.Data[inputConfigMapKeyQuery] != "test query" {
+		t.Errorf("ConfigMap query = %q", cm.Data[inputConfigMapKeyQuery])
+	}
+	if len(cm.OwnerReferences) == 0 {
+		t.Fatal("expected OwnerReferences on input ConfigMap")
+	}
+	if cm.OwnerReferences[0].Kind != "Pod" || cm.OwnerReferences[0].Name != name {
+		t.Fatalf("expected ConfigMap owned by Pod %q, got %s/%s", name, cm.OwnerReferences[0].Kind, cm.OwnerReferences[0].Name)
+	}
+	foundMount := false
+	for _, m := range pod.Spec.Containers[0].VolumeMounts {
+		if m.Name == inputConfigMapVolumeName && m.MountPath == inputConfigMapMountPath {
+			foundMount = true
+			break
+		}
+	}
+	if !foundMount {
+		t.Error("pod missing /input ConfigMap mount")
+	}
 }
 
 func TestCreate_SandboxClaim(t *testing.T) {
 	cache := testCache(t, "sandbox-claim")
-	fc := fake.NewClientBuilder().WithScheme(testScheme()).Build()
+	fc := fake.NewClientBuilder().WithScheme(testScheme()).WithObjects(testReaderCRB()).Build()
 	mgr := newTestSandboxManager(fc, cache)
 
-	name, err := mgr.Create(context.Background(), testSMRun(), "analysis", testSMAgent(), testLLMForManager(), nil, "test-sa", 15*time.Minute)
+	name, err := mgr.Create(context.Background(), testSMRun(), "analysis", testSMAgent(), testLLMForManager(), nil, 15*time.Minute, "test query", nil)
 	if err != nil {
 		t.Fatalf("Create failed: %v", err)
 	}
@@ -160,10 +199,10 @@ func TestCreate_SandboxClaim(t *testing.T) {
 
 func TestCreate_ConfigNotAvailable(t *testing.T) {
 	cache := &configuration.Cache{} // empty — no ConfigMap loaded
-	fc := fake.NewClientBuilder().WithScheme(testScheme()).Build()
+	fc := fake.NewClientBuilder().WithScheme(testScheme()).WithObjects(testReaderCRB()).Build()
 	mgr := newTestSandboxManager(fc, cache)
 
-	_, err := mgr.Create(context.Background(), testSMRun(), "analysis", testSMAgent(), testLLMForManager(), nil, "test-sa", 15*time.Minute)
+	_, err := mgr.Create(context.Background(), testSMRun(), "analysis", testSMAgent(), testLLMForManager(), nil, 15*time.Minute, "test query", nil)
 	if err == nil {
 		t.Fatal("expected error when config is not available")
 	}
@@ -171,14 +210,14 @@ func TestCreate_ConfigNotAvailable(t *testing.T) {
 
 func TestCreate_Idempotent_BarePod(t *testing.T) {
 	cache := testCache(t, "bare-pod")
-	fc := fake.NewClientBuilder().WithScheme(testScheme()).Build()
+	fc := fake.NewClientBuilder().WithScheme(testScheme()).WithObjects(testReaderCRB()).Build()
 	mgr := newTestSandboxManager(fc, cache)
 
-	name1, err := mgr.Create(context.Background(), testSMRun(), "analysis", testSMAgent(), testLLMForManager(), nil, "test-sa", 15*time.Minute)
+	name1, err := mgr.Create(context.Background(), testSMRun(), "analysis", testSMAgent(), testLLMForManager(), nil, 15*time.Minute, "test query", nil)
 	if err != nil {
 		t.Fatalf("first Create failed: %v", err)
 	}
-	name2, err := mgr.Create(context.Background(), testSMRun(), "analysis", testSMAgent(), testLLMForManager(), nil, "test-sa", 15*time.Minute)
+	name2, err := mgr.Create(context.Background(), testSMRun(), "analysis", testSMAgent(), testLLMForManager(), nil, 15*time.Minute, "test query", nil)
 	if err != nil {
 		t.Fatalf("second Create failed: %v", err)
 	}
@@ -189,14 +228,14 @@ func TestCreate_Idempotent_BarePod(t *testing.T) {
 
 func TestCreate_Idempotent_SandboxClaim(t *testing.T) {
 	cache := testCache(t, "sandbox-claim")
-	fc := fake.NewClientBuilder().WithScheme(testScheme()).Build()
+	fc := fake.NewClientBuilder().WithScheme(testScheme()).WithObjects(testReaderCRB()).Build()
 	mgr := newTestSandboxManager(fc, cache)
 
-	name1, err := mgr.Create(context.Background(), testSMRun(), "analysis", testSMAgent(), testLLMForManager(), nil, "test-sa", 15*time.Minute)
+	name1, err := mgr.Create(context.Background(), testSMRun(), "analysis", testSMAgent(), testLLMForManager(), nil, 15*time.Minute, "test query", nil)
 	if err != nil {
 		t.Fatalf("first Create failed: %v", err)
 	}
-	name2, err := mgr.Create(context.Background(), testSMRun(), "analysis", testSMAgent(), testLLMForManager(), nil, "test-sa", 15*time.Minute)
+	name2, err := mgr.Create(context.Background(), testSMRun(), "analysis", testSMAgent(), testLLMForManager(), nil, 15*time.Minute, "test query", nil)
 	if err != nil {
 		t.Fatalf("second Create failed: %v", err)
 	}
@@ -207,11 +246,11 @@ func TestCreate_Idempotent_SandboxClaim(t *testing.T) {
 
 func TestCreate_OTELEnvVars(t *testing.T) {
 	cache := testCacheWithOTEL(t, "bare-pod", "dns:///otel-collector.ns.svc:4317", "https://otel-collector.ns.svc:8080", "otel-ca-secret")
-	fc := fake.NewClientBuilder().WithScheme(testScheme()).Build()
+	fc := fake.NewClientBuilder().WithScheme(testScheme()).WithObjects(testReaderCRB()).Build()
 	mgr := newTestSandboxManager(fc, cache)
 
 	run := testSMRun()
-	name, err := mgr.Create(context.Background(), run, "analysis", testSMAgent(), testLLMForManager(), nil, "test-sa", 15*time.Minute)
+	name, err := mgr.Create(context.Background(), run, "analysis", testSMAgent(), testLLMForManager(), nil, 15*time.Minute, "test query", nil)
 	if err != nil {
 		t.Fatalf("Create failed: %v", err)
 	}
@@ -231,9 +270,6 @@ func TestCreate_OTELEnvVars(t *testing.T) {
 	}
 	if v := envMap["LIGHTSPEED_AGENTICRUN_UID"]; v != string(run.UID) {
 		t.Fatalf("expected run UID %q, got %q", run.UID, v)
-	}
-	if v := envMap["LIGHTSPEED_AGENTICRUN_STEP"]; v != "analysis" {
-		t.Fatalf("expected step 'analysis', got %q", v)
 	}
 	if v := envMap["OTEL_EXPORTER_OTLP_CERTIFICATE"]; v != otelCAMountPath+"/"+otelCASecretKey {
 		t.Fatalf("expected OTEL CA cert path, got %q", v)
@@ -268,10 +304,10 @@ func TestCreate_OTELEnvVars(t *testing.T) {
 
 func TestCreate_NoOTEL_NoEnvVars(t *testing.T) {
 	cache := testCache(t, "bare-pod")
-	fc := fake.NewClientBuilder().WithScheme(testScheme()).Build()
+	fc := fake.NewClientBuilder().WithScheme(testScheme()).WithObjects(testReaderCRB()).Build()
 	mgr := newTestSandboxManager(fc, cache)
 
-	name, err := mgr.Create(context.Background(), testSMRun(), "analysis", testSMAgent(), testLLMForManager(), nil, "test-sa", 15*time.Minute)
+	name, err := mgr.Create(context.Background(), testSMRun(), "analysis", testSMAgent(), testLLMForManager(), nil, 15*time.Minute, "test query", nil)
 	if err != nil {
 		t.Fatalf("Create failed: %v", err)
 	}
@@ -290,11 +326,11 @@ func TestCreate_NoOTEL_NoEnvVars(t *testing.T) {
 
 func TestCreate_OTELEnvVars_SandboxClaim(t *testing.T) {
 	cache := testCacheWithOTEL(t, "sandbox-claim", "dns:///otel-collector.ns.svc:4317", "https://otel-collector.ns.svc:8080", "otel-ca-secret")
-	fc := fake.NewClientBuilder().WithScheme(testScheme()).Build()
+	fc := fake.NewClientBuilder().WithScheme(testScheme()).WithObjects(testReaderCRB()).Build()
 	mgr := newTestSandboxManager(fc, cache)
 
 	run := testSMRun()
-	name, err := mgr.Create(context.Background(), run, "execution", testSMAgent(), testLLMForManager(), nil, "test-sa", 15*time.Minute)
+	name, err := mgr.Create(context.Background(), run, "analysis", testSMAgent(), testLLMForManager(), nil, 15*time.Minute, "test query", nil)
 	if err != nil {
 		t.Fatalf("Create failed: %v", err)
 	}
@@ -333,9 +369,6 @@ func TestCreate_OTELEnvVars_SandboxClaim(t *testing.T) {
 	if v := envMap["LIGHTSPEED_AGENTICRUN_UID"]; v != string(run.UID) {
 		t.Fatalf("expected run UID %q in SandboxTemplate, got %q", run.UID, v)
 	}
-	if v := envMap["LIGHTSPEED_AGENTICRUN_STEP"]; v != "execution" {
-		t.Fatalf("expected step 'execution' in SandboxTemplate, got %q", v)
-	}
 	if v := envMap["OTEL_EXPORTER_OTLP_CERTIFICATE"]; v != otelCAMountPath+"/"+otelCASecretKey {
 		t.Fatalf("expected OTEL CA cert path in SandboxTemplate, got %q", v)
 	}
@@ -349,71 +382,19 @@ func TestCreate_OTELEnvVars_SandboxClaim(t *testing.T) {
 	}
 }
 
-// --- Name prefix routing ---
-
-func TestWaitReady_RoutesToPod(t *testing.T) {
-	cache := testCache(t, "bare-pod")
-	fc := fake.NewClientBuilder().WithScheme(testScheme()).Build()
-	mgr := newTestSandboxManager(fc, cache)
-
-	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
-	defer cancel()
-
-	// Pod doesn't exist — should fail with NotFound, not hang
-	_, err := mgr.WaitReady(ctx, "p-analysis-test-run", 100*time.Millisecond)
-	if err == nil {
-		t.Fatal("expected error waiting for non-existent pod")
-	}
-}
-
-func TestWaitReady_RoutesToSandboxClaim(t *testing.T) {
-	cache := testCache(t, "sandbox-claim")
-	fc := fake.NewClientBuilder().WithScheme(testScheme()).Build()
-	mgr := newTestSandboxManager(fc, cache)
-
-	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
-	defer cancel()
-
-	_, err := mgr.WaitReady(ctx, "s-analysis-test-run", 100*time.Millisecond)
-	if err == nil {
-		t.Fatal("expected error waiting for non-existent sandbox claim")
-	}
-}
-
-func TestWaitReady_PodBecomesReady(t *testing.T) {
-	cache := testCache(t, "bare-pod")
-	pod := &corev1.Pod{
-		ObjectMeta: metav1.ObjectMeta{Name: "p-analysis-test-run", Namespace: "test-ns"},
-		Status: corev1.PodStatus{
-			PodIP: "10.0.0.1",
-			Conditions: []corev1.PodCondition{
-				{Type: corev1.PodReady, Status: corev1.ConditionTrue},
-			},
-		},
-	}
-	fc := fake.NewClientBuilder().WithScheme(testScheme()).WithObjects(pod).Build()
-	mgr := newTestSandboxManager(fc, cache)
-
-	endpoint, err := mgr.WaitReady(context.Background(), "p-analysis-test-run", 5*time.Second)
-	if err != nil {
-		t.Fatalf("WaitReady failed: %v", err)
-	}
-	if endpoint != "10.0.0.1" {
-		t.Fatalf("expected endpoint '10.0.0.1', got %q", endpoint)
-	}
-}
-
 // --- Release tests ---
 
 func TestRelease_BarePod(t *testing.T) {
 	cache := testCache(t, "bare-pod")
+	run := testSMRun()
+	run.Status.Steps.Analysis.Sandbox.ClaimName = "p-analysis-test-run"
 	pod := &corev1.Pod{
 		ObjectMeta: metav1.ObjectMeta{Name: "p-analysis-test-run", Namespace: "test-ns"},
 	}
 	fc := fake.NewClientBuilder().WithScheme(testScheme()).WithObjects(pod).Build()
 	mgr := newTestSandboxManager(fc, cache)
 
-	if err := mgr.Release(context.Background(), "p-analysis-test-run"); err != nil {
+	if err := mgr.Release(context.Background(), run, "analysis"); err != nil {
 		t.Fatalf("Release failed: %v", err)
 	}
 
@@ -426,20 +407,22 @@ func TestRelease_BarePod(t *testing.T) {
 
 func TestRelease_BarePod_Idempotent(t *testing.T) {
 	cache := testCache(t, "bare-pod")
-	fc := fake.NewClientBuilder().WithScheme(testScheme()).Build()
+	run := testSMRun()
+	fc := fake.NewClientBuilder().WithScheme(testScheme()).WithObjects(testReaderCRB()).Build()
 	mgr := newTestSandboxManager(fc, cache)
 
-	if err := mgr.Release(context.Background(), "p-nonexistent"); err != nil {
+	if err := mgr.Release(context.Background(), run, "analysis"); err != nil {
 		t.Fatalf("Release of non-existent pod should succeed, got: %v", err)
 	}
 }
 
 func TestRelease_SandboxClaim_Idempotent(t *testing.T) {
 	cache := testCache(t, "sandbox-claim")
-	fc := fake.NewClientBuilder().WithScheme(testScheme()).Build()
+	run := testSMRun()
+	fc := fake.NewClientBuilder().WithScheme(testScheme()).WithObjects(testReaderCRB()).Build()
 	mgr := newTestSandboxManager(fc, cache)
 
-	if err := mgr.Release(context.Background(), "s-nonexistent"); err != nil {
+	if err := mgr.Release(context.Background(), run, "analysis"); err != nil {
 		t.Fatalf("Release of non-existent claim should succeed, got: %v", err)
 	}
 }
@@ -450,10 +433,10 @@ func TestNamePrefix_LSPrefix(t *testing.T) {
 	for _, mode := range []string{"bare-pod", "sandbox-claim", ""} {
 		t.Run(mode, func(t *testing.T) {
 			cache := testCache(t, mode)
-			fc := fake.NewClientBuilder().WithScheme(testScheme()).Build()
+			fc := fake.NewClientBuilder().WithScheme(testScheme()).WithObjects(testReaderCRB()).Build()
 			mgr := newTestSandboxManager(fc, cache)
 
-			name, err := mgr.Create(context.Background(), testSMRun(), "analysis", testSMAgent(), testLLMForManager(), nil, "test-sa", 15*time.Minute)
+			name, err := mgr.Create(context.Background(), testSMRun(), "analysis", testSMAgent(), testLLMForManager(), nil, 15*time.Minute, "test query", nil)
 			if err != nil {
 				t.Fatalf("Create failed: %v", err)
 			}
@@ -466,13 +449,13 @@ func TestNamePrefix_LSPrefix(t *testing.T) {
 
 func TestNamePrefix_LongNameTruncated(t *testing.T) {
 	cache := testCache(t, "bare-pod")
-	fc := fake.NewClientBuilder().WithScheme(testScheme()).Build()
+	fc := fake.NewClientBuilder().WithScheme(testScheme()).WithObjects(testReaderCRB()).Build()
 	mgr := newTestSandboxManager(fc, cache)
 
 	longRun := testSMRun()
 	longRun.Name = "a-very-long-run-name-that-exceeds-sixty-three-characters-in-total-length"
 
-	name, err := mgr.Create(context.Background(), longRun, "analysis", testSMAgent(), testLLMForManager(), nil, "test-sa", 15*time.Minute)
+	name, err := mgr.Create(context.Background(), longRun, "analysis", testSMAgent(), testLLMForManager(), nil, 15*time.Minute, "test query", nil)
 	if err != nil {
 		t.Fatalf("Create failed: %v", err)
 	}
@@ -503,156 +486,5 @@ func TestPodSpecToUnstructured(t *testing.T) {
 	arr, ok := containers.([]any)
 	if !ok || len(arr) == 0 {
 		t.Fatal("expected non-empty containers array")
-	}
-}
-
-// --- waitSandboxClaimReady tests ---
-
-func readySandbox(name, ns, fqdn string) *unstructured.Unstructured {
-	return &unstructured.Unstructured{Object: map[string]any{
-		"apiVersion": smSandboxGVK.Group + "/" + smSandboxGVK.Version,
-		"kind":       smSandboxGVK.Kind,
-		"metadata":   map[string]any{"name": name, "namespace": ns},
-		"status": map[string]any{
-			"serviceFQDN": fqdn,
-			"conditions": []any{
-				map[string]any{"type": "Ready", "status": "True"},
-			},
-		},
-	}}
-}
-
-func readyClaim(name, ns, sandboxName string) *unstructured.Unstructured {
-	return &unstructured.Unstructured{Object: map[string]any{
-		"apiVersion": smClaimGVK.Group + "/" + smClaimGVK.Version,
-		"kind":       smClaimGVK.Kind,
-		"metadata":   map[string]any{"name": name, "namespace": ns},
-		"status": map[string]any{
-			"sandbox": map[string]any{"name": sandboxName},
-		},
-	}}
-}
-
-func TestWaitSandboxClaimReady_ImmediateReady(t *testing.T) {
-	claim := readyClaim("test-claim", "test-ns", "my-sandbox")
-	sb := readySandbox("my-sandbox", "test-ns", "sb.test.svc:8080")
-
-	fc := fake.NewClientBuilder().WithScheme(testScheme()).Build()
-	if err := fc.Create(context.Background(), claim); err != nil {
-		t.Fatalf("create claim: %v", err)
-	}
-	if err := fc.Create(context.Background(), sb); err != nil {
-		t.Fatalf("create sandbox: %v", err)
-	}
-
-	m := &SandboxManager{client: fc, namespace: "test-ns"}
-
-	fqdn, err := m.waitSandboxClaimReady(context.Background(), "test-claim", 5*time.Second)
-	if err != nil {
-		t.Fatalf("waitSandboxClaimReady: %v", err)
-	}
-	if fqdn != "sb.test.svc:8080" {
-		t.Errorf("fqdn = %q, want sb.test.svc:8080", fqdn)
-	}
-}
-
-func TestWaitSandboxClaimReady_ClaimNotFound(t *testing.T) {
-	fc := fake.NewClientBuilder().WithScheme(testScheme()).Build()
-	m := &SandboxManager{client: fc, namespace: "test-ns"}
-
-	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
-	defer cancel()
-
-	_, err := m.waitSandboxClaimReady(ctx, "missing", 200*time.Millisecond)
-	if err == nil {
-		t.Fatal("expected error for missing claim")
-	}
-}
-
-func TestWaitSandboxClaimReady_SandboxNotReady(t *testing.T) {
-	claim := readyClaim("test-claim", "test-ns", "pending-sandbox")
-	sb := &unstructured.Unstructured{Object: map[string]any{
-		"apiVersion": smSandboxGVK.Group + "/" + smSandboxGVK.Version,
-		"kind":       smSandboxGVK.Kind,
-		"metadata":   map[string]any{"name": "pending-sandbox", "namespace": "test-ns"},
-		"status": map[string]any{
-			"conditions": []any{
-				map[string]any{"type": "Ready", "status": "False"},
-			},
-		},
-	}}
-
-	fc := fake.NewClientBuilder().WithScheme(testScheme()).Build()
-	if err := fc.Create(context.Background(), claim); err != nil {
-		t.Fatalf("create claim: %v", err)
-	}
-	if err := fc.Create(context.Background(), sb); err != nil {
-		t.Fatalf("create sandbox: %v", err)
-	}
-
-	m := &SandboxManager{client: fc, namespace: "test-ns"}
-
-	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
-	defer cancel()
-
-	_, err := m.waitSandboxClaimReady(ctx, "test-claim", 200*time.Millisecond)
-	if err == nil {
-		t.Fatal("expected error for not-ready sandbox")
-	}
-}
-
-func TestWaitSandboxClaimReady_NoSandboxName(t *testing.T) {
-	claim := &unstructured.Unstructured{Object: map[string]any{
-		"apiVersion": smClaimGVK.Group + "/" + smClaimGVK.Version,
-		"kind":       smClaimGVK.Kind,
-		"metadata":   map[string]any{"name": "empty-claim", "namespace": "test-ns"},
-		"status":     map[string]any{},
-	}}
-
-	fc := fake.NewClientBuilder().WithScheme(testScheme()).Build()
-	if err := fc.Create(context.Background(), claim); err != nil {
-		t.Fatalf("create claim: %v", err)
-	}
-
-	m := &SandboxManager{client: fc, namespace: "test-ns"}
-
-	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
-	defer cancel()
-
-	_, err := m.waitSandboxClaimReady(ctx, "empty-claim", 200*time.Millisecond)
-	if err == nil {
-		t.Fatal("expected error when sandbox name is not set")
-	}
-}
-
-func TestWaitSandboxClaimReady_ReadyNoFQDN(t *testing.T) {
-	claim := readyClaim("test-claim", "test-ns", "no-fqdn-sb")
-	sb := &unstructured.Unstructured{Object: map[string]any{
-		"apiVersion": smSandboxGVK.Group + "/" + smSandboxGVK.Version,
-		"kind":       smSandboxGVK.Kind,
-		"metadata":   map[string]any{"name": "no-fqdn-sb", "namespace": "test-ns"},
-		"status": map[string]any{
-			"conditions": []any{
-				map[string]any{"type": "Ready", "status": "True"},
-			},
-		},
-	}}
-
-	fc := fake.NewClientBuilder().WithScheme(testScheme()).Build()
-	if err := fc.Create(context.Background(), claim); err != nil {
-		t.Fatalf("create claim: %v", err)
-	}
-	if err := fc.Create(context.Background(), sb); err != nil {
-		t.Fatalf("create sandbox: %v", err)
-	}
-
-	m := &SandboxManager{client: fc, namespace: "test-ns"}
-
-	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
-	defer cancel()
-
-	_, err := m.waitSandboxClaimReady(ctx, "test-claim", 200*time.Millisecond)
-	if err == nil {
-		t.Fatal("expected timeout when sandbox is ready but FQDN is empty")
 	}
 }
