@@ -44,10 +44,6 @@ const (
 	templogMaxCleanupAttempts        = 3
 	templogCleanupRequeueAfter       = 5 * time.Second
 
-	rbacCleanupAttemptsAnnotation = "agentic.openshift.io/rbac-cleanup-attempts"
-	rbacMaxCleanupAttempts        = 3
-	rbacCleanupRequeueAfter       = 1 * time.Second
-
 	reasonInProgress       = "InProgress"
 	reasonComplete         = "Complete"
 	reasonFailed           = "Failed"
@@ -65,8 +61,6 @@ const (
 	LogKeyStep      = "step"
 	LogKeyPhase     = "phase"
 	LogKeyClaim     = "claimName"
-	LogKeyTemplate  = "template"
-	LogKeySummary   = "summary"
 	LogKeyCondition = "condition"
 )
 
@@ -79,6 +73,19 @@ func isSuspended(ctx context.Context, c client.Client) (bool, error) {
 		return false, err
 	}
 	return config.Spec.Suspended, nil
+}
+
+// getTerminalTTL returns the cluster-wide default TTL from AgenticOLSConfig,
+// or nil if no config exists or no TTL is configured.
+func getTerminalTTL(ctx context.Context, c client.Client) (*int32, error) {
+	var config agenticv1alpha1.AgenticOLSConfig
+	if err := c.Get(ctx, client.ObjectKey{Name: "cluster"}, &config); err != nil {
+		if client.IgnoreNotFound(err) == nil {
+			return nil, nil
+		}
+		return nil, err
+	}
+	return config.Spec.Lifecycle.TerminalTTL, nil
 }
 
 // failStep marks a step as failed and creates a failure result CR.
@@ -180,7 +187,7 @@ func (r *AgenticRunReconciler) getLatestAnalysisResult(ctx context.Context, run 
 	}
 	latestRef := analysis.Results[len(analysis.Results)-1]
 	var result agenticv1alpha1.AnalysisResult
-	if err := r.Get(ctx, types.NamespacedName{Name: latestRef.Name, Namespace: run.Namespace}, &result); err != nil {
+	if err := r.Get(ctx, types.NamespacedName{Name: latestRef.Name, Namespace: r.Namespace}, &result); err != nil {
 		return nil, fmt.Errorf("%s %s: %w", ErrGetAnalysisResult, latestRef.Name, err)
 	}
 	return &result, nil
@@ -200,7 +207,7 @@ func (r *AgenticRunReconciler) selectedOption(ctx context.Context, run *agenticv
 // trimNonSelectedOptions keeps only the user-approved option on the
 // AnalysisResult, discarding the rest, and returns it. The selected
 // index comes from the AgenticRunApproval's execution stage.
-func (r *AgenticRunReconciler) trimNonSelectedOptions(ctx context.Context, run *agenticv1alpha1.AgenticRun, approval *agenticv1alpha1.AgenticRunApproval, policy *agenticv1alpha1.ApprovalPolicy) (*agenticv1alpha1.RemediationOption, error) {
+func (r *AgenticRunReconciler) trimNonSelectedOptions(ctx context.Context, run *agenticv1alpha1.AgenticRun, approval *agenticv1alpha1.AgenticRunApproval) (*agenticv1alpha1.RemediationOption, error) {
 	result, err := r.getLatestAnalysisResult(ctx, run)
 	if err != nil {
 		return nil, err
@@ -213,7 +220,7 @@ func (r *AgenticRunReconciler) trimNonSelectedOptions(ctx context.Context, run *
 		return &result.Status.Options[0], nil
 	}
 
-	idx := int(*getStageOption(approval, policy))
+	idx := int(*getStageOption(approval))
 	if idx < 0 || idx >= len(result.Status.Options) {
 		return nil, fmt.Errorf("selected option index %d out of range (have %d options)", idx, len(result.Status.Options))
 	}
@@ -235,16 +242,18 @@ func resetExecutionAndVerification(steps *agenticv1alpha1.StepsStatus) {
 type escalationData struct {
 	Name                string
 	Namespace           string
+	ResultNamespace     string
 	Request             string
 	AnalysisResults     []agenticv1alpha1.StepResultRef
 	ExecutionResults    []agenticv1alpha1.StepResultRef
 	VerificationResults []agenticv1alpha1.StepResultRef
 }
 
-func buildEscalationRequest(run *agenticv1alpha1.AgenticRun) string {
+func buildEscalationRequest(run *agenticv1alpha1.AgenticRun, resultNamespace string) string {
 	data := escalationData{
 		Name:                run.Name,
 		Namespace:           run.Namespace,
+		ResultNamespace:     resultNamespace,
 		Request:             run.Spec.Request,
 		AnalysisResults:     run.Status.Steps.Analysis.Results,
 		ExecutionResults:    run.Status.Steps.Execution.Results,

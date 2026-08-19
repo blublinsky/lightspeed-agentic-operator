@@ -41,7 +41,8 @@ func TestVerificationFlow_VerifyingToCompleted(t *testing.T) {
 	t.Logf("AgenticRun created: %s/%s", testNS, prop.Name)
 
 	t.Log("Waiting for phase: Proposed (analysis complete)")
-	waitForPhase(t, c, prop.Name, agenticv1alpha1.AgenticRunPhaseProposed)
+	proposed := waitForPhase(t, c, prop.Name, agenticv1alpha1.AgenticRunPhaseProposed)
+	runUID := string(proposed.UID)
 	t.Log("Phase reached: Proposed")
 
 	t.Log("Approving execution with option 0")
@@ -75,7 +76,7 @@ func TestVerificationFlow_VerifyingToCompleted(t *testing.T) {
 
 	// --- Verify: VerificationResult exists ---
 	var verifyList agenticv1alpha1.VerificationResultList
-	if err := c.List(ctx, &verifyList, client.InNamespace(testNS), client.MatchingLabels{"agentic.openshift.io/run": prop.Name}); err != nil {
+	if err := c.List(ctx, &verifyList, client.InNamespace(testNS), client.MatchingLabels{"agentic.openshift.io/run": runUID}); err != nil {
 		t.Fatalf("list VerificationResult: %v", err)
 	}
 	if len(verifyList.Items) == 0 {
@@ -93,7 +94,7 @@ func TestVerificationFlow_VerifyingToCompleted(t *testing.T) {
 	t.Logf("Verified: verification sandbox info recorded, claimName=%s", updated.Status.Steps.Verification.Sandbox.ClaimName)
 
 	// --- Cleanup and verify RBAC removed ---
-	roleName := "ls-exec-" + prop.Name
+	roleName := "ls-exec-" + runUID
 	t.Log("Deleting AgenticRun — verifying RBAC cleanup")
 	if err := c.Delete(ctx, prop); err != nil {
 		t.Fatalf("delete AgenticRun: %v", err)

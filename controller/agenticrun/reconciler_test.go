@@ -2,13 +2,12 @@ package agenticrun
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"testing"
-	"time"
 
 	corev1 "k8s.io/api/core/v1"
 	rbacv1 "k8s.io/api/rbac/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
@@ -31,47 +30,313 @@ type testAgentCaller struct {
 	verifyErr   error
 	escalateErr error
 
+	// Optional result content — when set AND fc is non-nil, the step method
+	// simulates sandbox completion by creating a Result CR, recording a
+	// StepResultRef, and patching the step condition to True.
 	analyzeResult  *AnalysisOutput
 	executeResult  *ExecutionOutput
 	verifyResult   *VerificationOutput
 	escalateResult *EscalationOutput
+
+	fc client.Client
+	ns string
+	t  *testing.T
+
+	releaseAllCount int
+	releasedSteps   []string
+}
+
+func (ta *testAgentCaller) record(err error) bool {
+	if err == nil || apierrors.IsAlreadyExists(err) || apierrors.IsConflict(err) {
+		return true
+	}
+	if ta.t != nil {
+		ta.t.Helper()
+		ta.t.Errorf("testAgentCaller simulation error: %v", err)
+	}
+	return false
 }
 
 func newTestAgentCaller() *testAgentCaller {
-	stub := &StubAgentCaller{}
-	a, _ := stub.Analyze(context.Background(), nil, resolvedStep{}, "", "")
-	e, _ := stub.Execute(context.Background(), nil, resolvedStep{}, nil, "")
-	v, _ := stub.Verify(context.Background(), nil, resolvedStep{}, nil, nil, "")
-	esc, _ := stub.Escalate(context.Background(), nil, resolvedStep{}, "", "")
-	return &testAgentCaller{analyzeResult: a, executeResult: e, verifyResult: v, escalateResult: esc}
+	actionRequired := true
+	return &testAgentCaller{
+		analyzeResult: &AnalysisOutput{
+			Success:        true,
+			ActionRequired: &actionRequired,
+			Options: []agenticv1alpha1.RemediationOption{{
+				Title: "Stub remediation",
+				Diagnosis: agenticv1alpha1.DiagnosisResult{
+					Summary:   "Stub diagnosis",
+					RootCause: "Stub root cause",
+				},
+				RemediationPlan: agenticv1alpha1.RemediationPlan{
+					Description: "Stub remediation plan",
+					Actions:     []agenticv1alpha1.ProposedAction{{Command: "kubectl get pods -n default", Type: "pre-check", Description: "Stub action"}},
+					Reversible:  agenticv1alpha1.ReversibilityReversible,
+				},
+			}},
+		},
+		executeResult: &ExecutionOutput{
+			Success: true,
+			ActionsTaken: []agenticv1alpha1.ExecutionAction{{
+				Type: "stub", Description: "Stub execution action", Outcome: agenticv1alpha1.ActionOutcomeSucceeded,
+			}},
+		},
+		verifyResult: &VerificationOutput{
+			Success: true,
+			Checks:  []agenticv1alpha1.VerifyCheck{{Name: "stub-check", Source: "stub", Value: "ok", Result: agenticv1alpha1.CheckResultPassed}},
+			Summary: "Stub verification passed",
+		},
+		escalateResult: &EscalationOutput{Success: true, Summary: "Stub escalation", Content: "Stub content"},
+	}
 }
 
-func (ta *testAgentCaller) Analyze(_ context.Context, _ *agenticv1alpha1.AgenticRun, _ resolvedStep, _ string, _ string) (*AnalysisOutput, error) {
+// withClient wires the fake client so that step methods simulate sandbox
+// completion inline (create Result CR + patch condition True).
+func (ta *testAgentCaller) withClient(t *testing.T, fc client.Client, ns string) *testAgentCaller {
+	t.Helper()
+	ta.fc = fc
+	ta.ns = ns
+	ta.t = t
+	return ta
+}
+
+func (ta *testAgentCaller) Analyze(ctx context.Context, run *agenticv1alpha1.AgenticRun, _ resolvedStep, _ string) error {
 	if ta.analyzeErr != nil {
-		return nil, ta.analyzeErr
+		return ta.analyzeErr
 	}
-	return ta.analyzeResult, nil
-}
-func (ta *testAgentCaller) Execute(_ context.Context, _ *agenticv1alpha1.AgenticRun, _ resolvedStep, _ *agenticv1alpha1.RemediationOption, _ string) (*ExecutionOutput, error) {
-	if ta.executeErr != nil {
-		return nil, ta.executeErr
-	}
-	return ta.executeResult, nil
-}
-func (ta *testAgentCaller) Verify(_ context.Context, _ *agenticv1alpha1.AgenticRun, _ resolvedStep, _ *agenticv1alpha1.RemediationOption, _ *ExecutionOutput, _ string) (*VerificationOutput, error) {
-	if ta.verifyErr != nil {
-		return nil, ta.verifyErr
-	}
-	return ta.verifyResult, nil
-}
-func (ta *testAgentCaller) Escalate(_ context.Context, _ *agenticv1alpha1.AgenticRun, _ resolvedStep, _ string, _ string) (*EscalationOutput, error) {
-	if ta.escalateErr != nil {
-		return nil, ta.escalateErr
-	}
-	return ta.escalateResult, nil
-}
-func (ta *testAgentCaller) ReleaseSandboxes(_ context.Context, _ *agenticv1alpha1.AgenticRun) error {
+	ta.completeAnalysis(ctx, run)
 	return nil
+}
+
+func (ta *testAgentCaller) Execute(ctx context.Context, run *agenticv1alpha1.AgenticRun, _ resolvedStep, _ *agenticv1alpha1.RemediationOption) error {
+	if ta.executeErr != nil {
+		return ta.executeErr
+	}
+	ta.completeExecution(ctx, run)
+	return nil
+}
+
+func (ta *testAgentCaller) Verify(ctx context.Context, run *agenticv1alpha1.AgenticRun, _ resolvedStep, _ *agenticv1alpha1.RemediationOption, _ *ExecutionOutput) error {
+	if ta.verifyErr != nil {
+		return ta.verifyErr
+	}
+	ta.completeVerification(ctx, run)
+	return nil
+}
+
+func (ta *testAgentCaller) Escalate(ctx context.Context, run *agenticv1alpha1.AgenticRun, _ resolvedStep, _ string) error {
+	if ta.escalateErr != nil {
+		return ta.escalateErr
+	}
+	ta.completeEscalation(ctx, run)
+	return nil
+}
+
+func (ta *testAgentCaller) ReleaseSandboxes(_ context.Context, _ *agenticv1alpha1.AgenticRun) error {
+	ta.releaseAllCount++
+	return nil
+}
+
+func (ta *testAgentCaller) ReleaseSandbox(_ context.Context, _ *agenticv1alpha1.AgenticRun, step string) error {
+	ta.releasedSteps = append(ta.releasedSteps, step)
+	return nil
+}
+
+// --- Inline sandbox completion simulation ---
+// These methods create Result CRs and patch step conditions to True,
+// simulating what the real sandbox + pod handler would do asynchronously.
+
+func (ta *testAgentCaller) completeAnalysis(ctx context.Context, run *agenticv1alpha1.AgenticRun) {
+	if ta.fc == nil || ta.analyzeResult == nil {
+		return
+	}
+	var fresh agenticv1alpha1.AgenticRun
+	if !ta.record(ta.fc.Get(ctx, client.ObjectKeyFromObject(run), &fresh)) {
+		return
+	}
+
+	now := metav1.Now()
+	outcome := agenticv1alpha1.ActionOutcomeFromBool(ta.analyzeResult.Success)
+	crName := resultCRName(fresh.Name, "analysis", len(fresh.Status.Steps.Analysis.Results))
+	cr := &agenticv1alpha1.AnalysisResult{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: crName, Namespace: fresh.Namespace,
+			Labels:          resultLabels(string(fresh.UID), "analysis"),
+			OwnerReferences: []metav1.OwnerReference{agenticRunOwnerRef(&fresh)},
+		},
+	}
+	ta.record(ta.fc.Create(ctx, cr))
+	cr.Status = agenticv1alpha1.AnalysisResultStatus{
+		Options:    ta.analyzeResult.Options,
+		Conditions: resultConditions(&now, now, outcome),
+	}
+	if ta.analyzeResult.Diagnosis != nil {
+		cr.Status.Diagnosis = *ta.analyzeResult.Diagnosis
+	}
+	if ta.analyzeResult.ActionRequired != nil {
+		cr.Status.ActionRequired = agenticv1alpha1.ActionRequiredFromBool(*ta.analyzeResult.ActionRequired)
+	}
+	ta.record(ta.fc.Status().Update(ctx, cr))
+
+	base := fresh.DeepCopy()
+	fresh.Status.Steps.Analysis.Results = append(fresh.Status.Steps.Analysis.Results,
+		agenticv1alpha1.StepResultRef{Name: crName, Outcome: outcome})
+
+	reason := reasonComplete
+	msg := fmt.Sprintf("Analysis complete with %d option(s)", len(ta.analyzeResult.Options))
+	status := metav1.ConditionTrue
+	if !ta.analyzeResult.Success {
+		reason = reasonFailed
+		msg = "Analysis failed"
+		status = metav1.ConditionFalse
+	} else if ta.analyzeResult.ActionRequired != nil && !*ta.analyzeResult.ActionRequired {
+		reason = reasonNoActionRequired
+		msg = "No action required"
+	}
+	meta.SetStatusCondition(&fresh.Status.Conditions, metav1.Condition{
+		Type: agenticv1alpha1.AgenticRunConditionAnalyzed, Status: status, Reason: reason, Message: msg,
+		ObservedGeneration: fresh.Generation,
+	})
+	ta.record(ta.fc.Status().Patch(ctx, &fresh, client.MergeFrom(base)))
+}
+
+func (ta *testAgentCaller) completeExecution(ctx context.Context, run *agenticv1alpha1.AgenticRun) {
+	if ta.fc == nil || ta.executeResult == nil {
+		return
+	}
+	var fresh agenticv1alpha1.AgenticRun
+	if !ta.record(ta.fc.Get(ctx, client.ObjectKeyFromObject(run), &fresh)) {
+		return
+	}
+
+	now := metav1.Now()
+	outcome := agenticv1alpha1.ActionOutcomeFromBool(ta.executeResult.Success)
+	idx := len(fresh.Status.Steps.Execution.Results)
+	crName := resultCRName(fresh.Name, "execution", idx)
+	cr := &agenticv1alpha1.ExecutionResult{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: crName, Namespace: fresh.Namespace,
+			Labels:          resultLabels(string(fresh.UID), "execution"),
+			OwnerReferences: []metav1.OwnerReference{agenticRunOwnerRef(&fresh)},
+		},
+	}
+	ta.record(ta.fc.Create(ctx, cr))
+	cr.Status = agenticv1alpha1.ExecutionResultStatus{
+		ActionsTaken: ta.executeResult.ActionsTaken,
+		Conditions:   resultConditions(&now, now, outcome),
+	}
+	ta.record(ta.fc.Status().Update(ctx, cr))
+
+	base := fresh.DeepCopy()
+	fresh.Status.Steps.Execution.Results = append(fresh.Status.Steps.Execution.Results,
+		agenticv1alpha1.StepResultRef{Name: crName, Outcome: outcome})
+
+	if ta.executeResult.Success || hasMutationSuccess(ta.executeResult.ActionsTaken) {
+		meta.SetStatusCondition(&fresh.Status.Conditions, metav1.Condition{
+			Type: agenticv1alpha1.AgenticRunConditionExecuted, Status: metav1.ConditionTrue, Reason: reasonComplete, Message: "Execution completed",
+			ObservedGeneration: fresh.Generation,
+		})
+	} else {
+		meta.SetStatusCondition(&fresh.Status.Conditions, metav1.Condition{
+			Type: agenticv1alpha1.AgenticRunConditionExecuted, Status: metav1.ConditionFalse, Reason: reasonFailed, Message: executionFailureMessage(ta.executeResult),
+			ObservedGeneration: fresh.Generation,
+		})
+	}
+	ta.record(ta.fc.Status().Patch(ctx, &fresh, client.MergeFrom(base)))
+}
+
+func (ta *testAgentCaller) completeVerification(ctx context.Context, run *agenticv1alpha1.AgenticRun) {
+	if ta.fc == nil || ta.verifyResult == nil {
+		return
+	}
+	var fresh agenticv1alpha1.AgenticRun
+	if !ta.record(ta.fc.Get(ctx, client.ObjectKeyFromObject(run), &fresh)) {
+		return
+	}
+
+	now := metav1.Now()
+	outcome := agenticv1alpha1.ActionOutcomeFromBool(ta.verifyResult.Success)
+	crName := resultCRName(fresh.Name, "verification", len(fresh.Status.Steps.Verification.Results))
+	cr := &agenticv1alpha1.VerificationResult{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: crName, Namespace: fresh.Namespace,
+			Labels:          resultLabels(string(fresh.UID), "verification"),
+			OwnerReferences: []metav1.OwnerReference{agenticRunOwnerRef(&fresh)},
+		},
+	}
+	ta.record(ta.fc.Create(ctx, cr))
+	cr.Status = agenticv1alpha1.VerificationResultStatus{
+		Checks:     ta.verifyResult.Checks,
+		Summary:    ta.verifyResult.Summary,
+		Conditions: resultConditions(&now, now, outcome),
+	}
+	ta.record(ta.fc.Status().Update(ctx, cr))
+
+	base := fresh.DeepCopy()
+	fresh.Status.Steps.Verification.Results = append(fresh.Status.Steps.Verification.Results,
+		agenticv1alpha1.StepResultRef{Name: crName, Outcome: outcome})
+
+	if !ta.verifyResult.Success {
+		// Mirror pod_handler.patchVerificationFailedEscalating (OLS-3817): an
+		// objective verification failure escalates directly instead of
+		// terminating. Verified=False/VerificationFailed plus
+		// Escalated=Unknown/VerificationFailed makes DerivePhase yield Escalating.
+		meta.SetStatusCondition(&fresh.Status.Conditions, metav1.Condition{
+			Type: agenticv1alpha1.AgenticRunConditionVerified, Status: metav1.ConditionFalse,
+			Reason: agenticv1alpha1.ReasonVerificationFailed, Message: fmt.Sprintf("Verification failed: %s", ta.verifyResult.Summary),
+			ObservedGeneration: fresh.Generation,
+		})
+		meta.SetStatusCondition(&fresh.Status.Conditions, metav1.Condition{
+			Type: agenticv1alpha1.AgenticRunConditionEscalated, Status: metav1.ConditionUnknown,
+			Reason: agenticv1alpha1.ReasonVerificationFailed, Message: "Verification failed, escalating",
+			ObservedGeneration: fresh.Generation,
+		})
+	} else {
+		meta.SetStatusCondition(&fresh.Status.Conditions, metav1.Condition{
+			Type: agenticv1alpha1.AgenticRunConditionVerified, Status: metav1.ConditionTrue,
+			Reason: reasonPassed, Message: ta.verifyResult.Summary,
+			ObservedGeneration: fresh.Generation,
+		})
+	}
+	ta.record(ta.fc.Status().Patch(ctx, &fresh, client.MergeFrom(base)))
+}
+
+func (ta *testAgentCaller) completeEscalation(ctx context.Context, run *agenticv1alpha1.AgenticRun) {
+	if ta.fc == nil || ta.escalateResult == nil {
+		return
+	}
+	var fresh agenticv1alpha1.AgenticRun
+	if !ta.record(ta.fc.Get(ctx, client.ObjectKeyFromObject(run), &fresh)) {
+		return
+	}
+
+	now := metav1.Now()
+	outcome := agenticv1alpha1.ActionOutcomeFromBool(ta.escalateResult.Success)
+	crName := resultCRName(fresh.Name, "escalation", len(fresh.Status.Steps.Escalation.Results))
+	cr := &agenticv1alpha1.EscalationResult{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: crName, Namespace: fresh.Namespace,
+			Labels:          resultLabels(string(fresh.UID), "escalation"),
+			OwnerReferences: []metav1.OwnerReference{agenticRunOwnerRef(&fresh)},
+		},
+	}
+	ta.record(ta.fc.Create(ctx, cr))
+	cr.Status = agenticv1alpha1.EscalationResultStatus{
+		Summary:    ta.escalateResult.Summary,
+		Content:    ta.escalateResult.Content,
+		Conditions: resultConditions(&now, now, outcome),
+	}
+	ta.record(ta.fc.Status().Update(ctx, cr))
+
+	base := fresh.DeepCopy()
+	fresh.Status.Steps.Escalation.Results = append(fresh.Status.Steps.Escalation.Results,
+		agenticv1alpha1.StepResultRef{Name: crName, Outcome: outcome})
+	meta.SetStatusCondition(&fresh.Status.Conditions, metav1.Condition{
+		Type: agenticv1alpha1.AgenticRunConditionEscalated, Status: metav1.ConditionTrue, Reason: reasonComplete, Message: ta.escalateResult.Summary,
+		ObservedGeneration: fresh.Generation,
+	})
+	ta.record(ta.fc.Status().Patch(ctx, &fresh, client.MergeFrom(base)))
 }
 
 // --- Test fixtures ---
@@ -170,6 +435,13 @@ func reconcileOnce(r *AgenticRunReconciler, name string) (ctrl.Result, error) {
 	})
 }
 
+func mustReconcile(t *testing.T, r *AgenticRunReconciler, name string) {
+	t.Helper()
+	if _, err := reconcileOnce(r, name); err != nil {
+		t.Fatalf("reconcile %q: %v", name, err)
+	}
+}
+
 func getAgenticRun(r *AgenticRunReconciler, name string) (*agenticv1alpha1.AgenticRun, error) {
 	var p agenticv1alpha1.AgenticRun
 	err := r.Get(context.Background(), types.NamespacedName{Name: name, Namespace: "default"}, &p)
@@ -239,30 +511,6 @@ func fakeBaseTemplate() *unstructured.Unstructured {
 	}
 }
 
-func newMockSandboxAgent(analysisJSON, executionJSON, verificationJSON string) (*SandboxAgentCaller, *mockSandboxProvider) {
-	sandbox := &mockSandboxProvider{claimName: "ls-test-claim", endpoint: "http://sandbox:8080"}
-
-	fc := fake.NewClientBuilder().WithScheme(testScheme()).Build()
-	_ = fc.Create(context.Background(), fakeBaseTemplate())
-
-	callCount := 0
-	responses := []string{analysisJSON, executionJSON, verificationJSON}
-
-	httpClient := &mockHTTPClient{}
-	caller := &SandboxAgentCaller{
-		Sandbox:   sandbox,
-		K8sClient: fc,
-		ClientFactory: func(_ string, _ time.Duration) AgentHTTPClientInterface {
-			resp := responses[callCount%len(responses)]
-			callCount++
-			httpClient.response = &agentRunResponse{Response: json.RawMessage(resp)}
-			return httpClient
-		},
-		Namespace: "test-ns",
-	}
-	return caller, sandbox
-}
-
 // --- Reconciler-level tests ---
 
 func TestReconcile_StatusInitialization(t *testing.T) {
@@ -282,7 +530,7 @@ func TestReconcile_StatusInitialization(t *testing.T) {
 	fc := fake.NewClientBuilder().WithScheme(scheme).WithObjects(objs...).
 		WithStatusSubresource(run, &agenticv1alpha1.AnalysisResult{}, &agenticv1alpha1.ExecutionResult{}, &agenticv1alpha1.VerificationResult{}, &agenticv1alpha1.EscalationResult{}).Build()
 
-	r := &AgenticRunReconciler{Client: fc, Agent: newTestAgentCaller(), Namespace: "default"}
+	r := &AgenticRunReconciler{Client: fc, Agent: newTestAgentCaller().withClient(t, fc, "default"), Namespace: "default"}
 
 	_, err := reconcileOnce(r, "fresh")
 	if err != nil {
@@ -308,7 +556,7 @@ func TestReconcile_Denied_Terminal(t *testing.T) {
 	}
 
 	fc := fake.NewClientBuilder().WithScheme(scheme).WithObjects(run).WithStatusSubresource(run, &agenticv1alpha1.AnalysisResult{}, &agenticv1alpha1.ExecutionResult{}, &agenticv1alpha1.VerificationResult{}, &agenticv1alpha1.EscalationResult{}).Build()
-	r := &AgenticRunReconciler{Client: fc, Agent: newTestAgentCaller(), Namespace: "default"}
+	r := &AgenticRunReconciler{Client: fc, Agent: newTestAgentCaller().withClient(t, fc, "default"), Namespace: "default"}
 
 	result, err := reconcileOnce(r, "fix-crash")
 	if err != nil {
@@ -527,9 +775,9 @@ func TestTemplogCleanup_HappyPath(t *testing.T) {
 		WithStatusSubresource(run).Build()
 
 	cleaner := &mockTempLogCleaner{}
-	r := &AgenticRunReconciler{Client: fc, Agent: newTestAgentCaller(), Namespace: "default", TempLog: cleaner}
+	r := &AgenticRunReconciler{Client: fc, Agent: newTestAgentCaller().withClient(t, fc, "default"), Namespace: "default", TempLog: cleaner}
 
-	reconcileOnce(r, "fix-crash")
+	mustReconcile(t, r, "fix-crash")
 
 	var updated agenticv1alpha1.AgenticRun
 	_ = fc.Get(context.Background(), types.NamespacedName{Name: "fix-crash", Namespace: "default"}, &updated)
@@ -554,7 +802,7 @@ func TestTemplogCleanup_RetryOnFailure(t *testing.T) {
 		WithStatusSubresource(run).Build()
 
 	cleaner := &mockTempLogCleaner{err: fmt.Errorf("collector unavailable")}
-	r := &AgenticRunReconciler{Client: fc, Agent: newTestAgentCaller(), Namespace: "default", TempLog: cleaner}
+	r := &AgenticRunReconciler{Client: fc, Agent: newTestAgentCaller().withClient(t, fc, "default"), Namespace: "default", TempLog: cleaner}
 
 	result, _ := reconcileOnce(r, "fix-crash")
 	if result.RequeueAfter != templogCleanupRequeueAfter {
@@ -587,9 +835,9 @@ func TestTemplogCleanup_ExhaustedRetries(t *testing.T) {
 		WithStatusSubresource(run).Build()
 
 	cleaner := &mockTempLogCleaner{err: fmt.Errorf("still failing")}
-	r := &AgenticRunReconciler{Client: fc, Agent: newTestAgentCaller(), Namespace: "default", TempLog: cleaner}
+	r := &AgenticRunReconciler{Client: fc, Agent: newTestAgentCaller().withClient(t, fc, "default"), Namespace: "default", TempLog: cleaner}
 
-	reconcileOnce(r, "fix-crash")
+	mustReconcile(t, r, "fix-crash")
 
 	var updated agenticv1alpha1.AgenticRun
 	_ = fc.Get(context.Background(), types.NamespacedName{Name: "fix-crash", Namespace: "default"}, &updated)
@@ -617,7 +865,7 @@ func TestTemplogCleanup_InvalidAttemptsAnnotationResets(t *testing.T) {
 		WithStatusSubresource(run).Build()
 
 	cleaner := &mockTempLogCleaner{}
-	r := &AgenticRunReconciler{Client: fc, Agent: newTestAgentCaller(), Namespace: "default", TempLog: cleaner}
+	r := &AgenticRunReconciler{Client: fc, Agent: newTestAgentCaller().withClient(t, fc, "default"), Namespace: "default", TempLog: cleaner}
 
 	if _, err := reconcileOnce(r, "fix-crash"); err != nil {
 		t.Fatalf("reconcile: %v", err)
@@ -639,7 +887,7 @@ func TestReconcile_AddsFinalizersOnTerminalRun(t *testing.T) {
 	fc := fake.NewClientBuilder().WithScheme(testScheme()).WithObjects(objs...).
 		WithStatusSubresource(run).Build()
 
-	r := &AgenticRunReconciler{Client: fc, Agent: newTestAgentCaller(), Namespace: "default"}
+	r := &AgenticRunReconciler{Client: fc, Agent: newTestAgentCaller().withClient(t, fc, "default"), Namespace: "default"}
 	if _, err := reconcileOnce(r, "fix-crash"); err != nil {
 		t.Fatalf("reconcile: %v", err)
 	}
@@ -698,7 +946,7 @@ func TestReconcile_MigratesLeftoverRetryRunToEscalation(t *testing.T) {
 	}
 }
 
-func TestDeletion_RequeuesAfterRBACFinalizerBeforeTemplog(t *testing.T) {
+func TestDeletion_BothFinalizersInOneReconcile(t *testing.T) {
 	now := metav1.Now()
 	run := testAgenticRun()
 	run.UID = "a1b2c3d4-e5f6-7890-abcd-ef1234567890"
@@ -710,46 +958,31 @@ func TestDeletion_RequeuesAfterRBACFinalizerBeforeTemplog(t *testing.T) {
 		WithStatusSubresource(run).Build()
 
 	cleaner := &mockTempLogCleaner{}
-	r := &AgenticRunReconciler{Client: fc, Agent: newTestAgentCaller(), Namespace: "default", TempLog: cleaner}
+	r := &AgenticRunReconciler{Client: fc, Agent: newTestAgentCaller().withClient(t, fc, "default"), Namespace: "default", TempLog: cleaner}
 
 	result, err := reconcileOnce(r, "fix-crash")
 	if err != nil {
-		t.Fatalf("first reconcile: %v", err)
-	}
-	if !result.Requeue {
-		t.Error("expected requeue after removing rbac finalizer")
-	}
-	if cleaner.callCount != 0 {
-		t.Errorf("DeleteLogs should not run until next reconcile, got %d calls", cleaner.callCount)
-	}
-
-	var updated agenticv1alpha1.AgenticRun
-	if err := fc.Get(context.Background(), types.NamespacedName{Name: "fix-crash", Namespace: "default"}, &updated); err != nil {
-		t.Fatalf("get after first reconcile: %v", err)
-	}
-	if controllerutil.ContainsFinalizer(&updated, rbacCleanupFinalizer) {
-		t.Error("rbac finalizer should be removed")
-	}
-	if !controllerutil.ContainsFinalizer(&updated, templogCleanupFinalizer) {
-		t.Error("templog finalizer should still be present")
-	}
-
-	result, err = reconcileOnce(r, "fix-crash")
-	if err != nil {
-		t.Fatalf("second reconcile: %v", err)
+		t.Fatalf("reconcile: %v", err)
 	}
 	if result.Requeue || result.RequeueAfter != 0 {
-		t.Errorf("expected no requeue after templog cleanup, got %+v", result)
+		t.Errorf("expected no requeue, got %+v", result)
 	}
 	if cleaner.callCount != 1 {
 		t.Errorf("DeleteLogs called %d times, want 1", cleaner.callCount)
 	}
+
+	var updated agenticv1alpha1.AgenticRun
 	err = fc.Get(context.Background(), types.NamespacedName{Name: "fix-crash", Namespace: "default"}, &updated)
 	if client.IgnoreNotFound(err) != nil {
-		t.Fatalf("get after second reconcile: %v", err)
+		t.Fatalf("get after reconcile: %v", err)
 	}
-	if err == nil && controllerutil.ContainsFinalizer(&updated, templogCleanupFinalizer) {
-		t.Error("templog finalizer should be removed after cleanup")
+	if err == nil {
+		if controllerutil.ContainsFinalizer(&updated, rbacCleanupFinalizer) {
+			t.Error("rbac finalizer should be removed")
+		}
+		if controllerutil.ContainsFinalizer(&updated, templogCleanupFinalizer) {
+			t.Error("templog finalizer should be removed")
+		}
 	}
 }
 
@@ -862,139 +1095,5 @@ func TestCopyResultStatus_TypeMismatch(t *testing.T) {
 
 	if dst.Status.FailureReason != "" {
 		t.Error("mismatched types should not copy anything")
-	}
-}
-
-// --- handleRBACCleanup tests ---
-
-type failingAgentCaller struct {
-	testAgentCaller
-	releaseErr error
-}
-
-func (f *failingAgentCaller) ReleaseSandboxes(_ context.Context, _ *agenticv1alpha1.AgenticRun) error {
-	return f.releaseErr
-}
-
-func TestHandleRBACCleanup_HappyPath(t *testing.T) {
-	now := metav1.Now()
-	run := testAgenticRun()
-	run.DeletionTimestamp = &now
-	run.Finalizers = []string{rbacCleanupFinalizer}
-
-	objs := append([]client.Object{run}, defaultObjects()...)
-	fc := fake.NewClientBuilder().WithScheme(testScheme()).WithObjects(objs...).
-		WithStatusSubresource(run).Build()
-
-	r := &AgenticRunReconciler{Client: fc, Agent: newTestAgentCaller(), Namespace: "default"}
-	result, err := r.handleRBACCleanup(context.Background(), run)
-	if err != nil {
-		t.Fatalf("handleRBACCleanup: %v", err)
-	}
-	if !result.Requeue {
-		t.Error("expected requeue after removing RBAC finalizer")
-	}
-
-	var updated agenticv1alpha1.AgenticRun
-	err = fc.Get(context.Background(), types.NamespacedName{Name: "fix-crash", Namespace: "default"}, &updated)
-	if client.IgnoreNotFound(err) != nil {
-		t.Fatalf("get updated run: %v", err)
-	}
-	if err == nil && controllerutil.ContainsFinalizer(&updated, rbacCleanupFinalizer) {
-		t.Error("rbac finalizer should be removed on success")
-	}
-}
-
-func TestHandleRBACCleanup_RetryOnSandboxError(t *testing.T) {
-	now := metav1.Now()
-	run := testAgenticRun()
-	run.DeletionTimestamp = &now
-	run.Finalizers = []string{rbacCleanupFinalizer}
-
-	objs := append([]client.Object{run}, defaultObjects()...)
-	fc := fake.NewClientBuilder().WithScheme(testScheme()).WithObjects(objs...).
-		WithStatusSubresource(run).Build()
-
-	agent := &failingAgentCaller{
-		testAgentCaller: *newTestAgentCaller(),
-		releaseErr:      fmt.Errorf("sandbox unreachable"),
-	}
-	r := &AgenticRunReconciler{Client: fc, Agent: agent, Namespace: "default"}
-	result, err := r.handleRBACCleanup(context.Background(), run)
-	if err != nil {
-		t.Fatalf("handleRBACCleanup: %v", err)
-	}
-	if result.RequeueAfter != rbacCleanupRequeueAfter {
-		t.Errorf("RequeueAfter = %v, want %v", result.RequeueAfter, rbacCleanupRequeueAfter)
-	}
-
-	var updated agenticv1alpha1.AgenticRun
-	if err := fc.Get(context.Background(), types.NamespacedName{Name: "fix-crash", Namespace: "default"}, &updated); err != nil {
-		t.Fatalf("get updated run: %v", err)
-	}
-	if !controllerutil.ContainsFinalizer(&updated, rbacCleanupFinalizer) {
-		t.Error("finalizer should remain on failure")
-	}
-	if updated.Annotations[rbacCleanupAttemptsAnnotation] != "1" {
-		t.Errorf("attempts = %q, want '1'", updated.Annotations[rbacCleanupAttemptsAnnotation])
-	}
-}
-
-func TestHandleRBACCleanup_ExhaustedRetries(t *testing.T) {
-	now := metav1.Now()
-	run := testAgenticRun()
-	run.DeletionTimestamp = &now
-	run.Finalizers = []string{rbacCleanupFinalizer}
-	run.Annotations = map[string]string{
-		rbacCleanupAttemptsAnnotation: fmt.Sprintf("%d", rbacMaxCleanupAttempts),
-	}
-
-	objs := append([]client.Object{run}, defaultObjects()...)
-	fc := fake.NewClientBuilder().WithScheme(testScheme()).WithObjects(objs...).
-		WithStatusSubresource(run).Build()
-
-	agent := &failingAgentCaller{
-		testAgentCaller: *newTestAgentCaller(),
-		releaseErr:      fmt.Errorf("still broken"),
-	}
-	r := &AgenticRunReconciler{Client: fc, Agent: agent, Namespace: "default"}
-	result, err := r.handleRBACCleanup(context.Background(), run)
-	if err != nil {
-		t.Fatalf("handleRBACCleanup: %v", err)
-	}
-	if !result.Requeue {
-		t.Error("expected Requeue after removing finalizer")
-	}
-
-	var updated agenticv1alpha1.AgenticRun
-	err = fc.Get(context.Background(), types.NamespacedName{Name: "fix-crash", Namespace: "default"}, &updated)
-	if client.IgnoreNotFound(err) != nil {
-		t.Fatalf("get updated run: %v", err)
-	}
-	if err == nil && controllerutil.ContainsFinalizer(&updated, rbacCleanupFinalizer) {
-		t.Error("finalizer should be removed after exhausting retries")
-	}
-}
-
-func TestHandleRBACCleanup_InvalidAnnotation(t *testing.T) {
-	now := metav1.Now()
-	run := testAgenticRun()
-	run.DeletionTimestamp = &now
-	run.Finalizers = []string{rbacCleanupFinalizer}
-	run.Annotations = map[string]string{
-		rbacCleanupAttemptsAnnotation: "garbage",
-	}
-
-	objs := append([]client.Object{run}, defaultObjects()...)
-	fc := fake.NewClientBuilder().WithScheme(testScheme()).WithObjects(objs...).
-		WithStatusSubresource(run).Build()
-
-	r := &AgenticRunReconciler{Client: fc, Agent: newTestAgentCaller(), Namespace: "default"}
-	result, err := r.handleRBACCleanup(context.Background(), run)
-	if err != nil {
-		t.Fatalf("handleRBACCleanup: %v", err)
-	}
-	if !result.Requeue {
-		t.Error("expected Requeue (cleanup succeeded, annotation reset to 0)")
 	}
 }

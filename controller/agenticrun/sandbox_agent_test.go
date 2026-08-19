@@ -2,10 +2,7 @@ package agenticrun
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
-	"net/http"
-	"strings"
 	"testing"
 	"time"
 
@@ -21,62 +18,35 @@ import (
 type mockSandboxProvider struct {
 	claimName    string
 	claimErr     error
-	endpoint     string
-	readyErr     error
 	releaseErr   error
 	claimCalls   int
 	releaseCalls int
 }
 
-func (m *mockSandboxProvider) Create(_ context.Context, _ *agenticv1alpha1.AgenticRun, _ string, _ *agenticv1alpha1.Agent, _ *agenticv1alpha1.LLMProvider, _ *agenticv1alpha1.ToolsSpec, _ string, _ time.Duration) (string, error) {
+func (m *mockSandboxProvider) Create(_ context.Context, _ *agenticv1alpha1.AgenticRun, _ string, _ *agenticv1alpha1.Agent, _ *agenticv1alpha1.LLMProvider, _ *agenticv1alpha1.ToolsSpec, _ time.Duration, _ string, _ *agentContext) (string, error) {
 	m.claimCalls++
 	return m.claimName, m.claimErr
 }
-func (m *mockSandboxProvider) WaitReady(_ context.Context, _ string, _ time.Duration) (string, error) {
-	return m.endpoint, m.readyErr
-}
-func (m *mockSandboxProvider) Release(_ context.Context, _ string) error {
+func (m *mockSandboxProvider) Release(_ context.Context, _ *agenticv1alpha1.AgenticRun, _ string) error {
 	m.releaseCalls++
 	return m.releaseErr
 }
 
-type mockHTTPClient struct {
-	response   *agentRunResponse
-	err        error
-	lastQuery  string
-	lastPrompt string
-	lastCtx    *agentContext
+func newTestSandboxAgentCaller(sandbox *mockSandboxProvider) *SandboxAgentCaller {
+	run := testSandboxAgenticRun()
+	return newTestSandboxAgentCallerWithAgenticRun(sandbox, run)
 }
 
-func (m *mockHTTPClient) Run(_ context.Context, systemPrompt, query string, _ json.RawMessage, agentCtx *agentContext, _ http.Header, _ time.Duration) (*agentRunResponse, error) {
-	m.lastQuery = query
-	m.lastPrompt = systemPrompt
-	m.lastCtx = agentCtx
-	return m.response, m.err
-}
-
-func newTestSandboxAgentCaller(sandbox *mockSandboxProvider, httpClient *mockHTTPClient) *SandboxAgentCaller {
-	fc := fake.NewClientBuilder().WithScheme(testScheme()).Build()
-	_ = fc.Create(context.Background(), fakeBaseTemplate())
-	return &SandboxAgentCaller{
-		Sandbox:       sandbox,
-		K8sClient:     fc,
-		ClientFactory: func(_ string, _ time.Duration) AgentHTTPClientInterface { return httpClient },
-		Namespace:     "test-ns",
-	}
-}
-
-func newTestSandboxAgentCallerWithAgenticRun(sandbox *mockSandboxProvider, httpClient *mockHTTPClient, run *agenticv1alpha1.AgenticRun) *SandboxAgentCaller {
+func newTestSandboxAgentCallerWithAgenticRun(sandbox *mockSandboxProvider, run *agenticv1alpha1.AgenticRun) *SandboxAgentCaller {
 	fc := fake.NewClientBuilder().WithScheme(testScheme()).
 		WithObjects(run).
 		WithStatusSubresource(run, &agenticv1alpha1.AnalysisResult{}, &agenticv1alpha1.ExecutionResult{}, &agenticv1alpha1.VerificationResult{}, &agenticv1alpha1.EscalationResult{}).
 		Build()
 	_ = fc.Create(context.Background(), fakeBaseTemplate())
 	return &SandboxAgentCaller{
-		Sandbox:       sandbox,
-		K8sClient:     fc,
-		ClientFactory: func(_ string, _ time.Duration) AgentHTTPClientInterface { return httpClient },
-		Namespace:     "test-ns",
+		Sandbox:   sandbox,
+		K8sClient: fc,
+		Namespace: "test-ns",
 	}
 }
 
@@ -93,635 +63,192 @@ func testSandboxStep() resolvedStep {
 	}
 }
 
-// --- Happy path tests ---
+// --- Launch tests ---
 
-func TestSandboxAgentCaller_Analyze_HappyPath(t *testing.T) {
-	sandbox := &mockSandboxProvider{claimName: "ls-analysis-fix-crash", endpoint: "http://sandbox:8080"}
-	httpClient := &mockHTTPClient{
-		response: &agentRunResponse{
-			Response: json.RawMessage(`{"success": true, "options": [{"title": "Increase memory", "diagnosis": {"summary": "OOM", "rootCause": "memory limit"}, "run": {"description": "Bump memory", "actions": [{"type": "patch", "description": "patch deploy"}]}}]}`),
-		},
-	}
+func TestSandboxAgentCaller_Analyze_CreatesSandbox(t *testing.T) {
+	sandbox := &mockSandboxProvider{claimName: "ls-analysis-fix-crash"}
+	caller := newTestSandboxAgentCaller(sandbox)
 
-	caller := newTestSandboxAgentCaller(sandbox, httpClient)
-	result, err := caller.Analyze(context.Background(), testSandboxAgenticRun(), testSandboxStep(), "Pod crashing", defaultSandboxSA)
+	err := caller.Analyze(context.Background(), testSandboxAgenticRun(), testSandboxStep(), "Pod crashing")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if len(result.Options) != 1 {
-		t.Fatalf("expected 1 option, got %d", len(result.Options))
-	}
-	if result.Options[0].Title != "Increase memory" {
-		t.Errorf("title = %q", result.Options[0].Title)
-	}
-}
-
-func TestSandboxAgentCaller_Execute_HappyPath(t *testing.T) {
-	sandbox := &mockSandboxProvider{claimName: "ls-execution-fix-crash", endpoint: "http://sandbox:8080"}
-	httpClient := &mockHTTPClient{
-		response: &agentRunResponse{
-			Response: json.RawMessage(`{"success": true, "actionsTaken": [{"type": "patch", "description": "Patched deployment", "outcome": "Succeeded"}]}`),
-		},
-	}
-
-	caller := newTestSandboxAgentCaller(sandbox, httpClient)
-	option := &agenticv1alpha1.RemediationOption{Title: "Fix it"}
-	result, err := caller.Execute(context.Background(), testSandboxAgenticRun(), testSandboxStep(), option, defaultSandboxSA)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if len(result.ActionsTaken) != 1 {
-		t.Fatalf("expected 1 action, got %d", len(result.ActionsTaken))
-	}
-	if result.ActionsTaken[0].Outcome != agenticv1alpha1.ActionOutcomeSucceeded {
-		t.Errorf("outcome = %q", result.ActionsTaken[0].Outcome)
-	}
-}
-
-func TestSandboxAgentCaller_Verify_HappyPath(t *testing.T) {
-	sandbox := &mockSandboxProvider{claimName: "ls-verification-fix-crash", endpoint: "http://sandbox:8080"}
-	httpClient := &mockHTTPClient{
-		response: &agentRunResponse{
-			Response: json.RawMessage(`{"success": true, "checks": [{"name": "pod-running", "source": "oc", "value": "Running", "result": "Passed"}], "summary": "All checks passed"}`),
-		},
-	}
-
-	caller := newTestSandboxAgentCaller(sandbox, httpClient)
-	result, err := caller.Verify(context.Background(), testSandboxAgenticRun(), testSandboxStep(), nil, nil, defaultSandboxSA)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if len(result.Checks) != 1 {
-		t.Fatalf("expected 1 check, got %d", len(result.Checks))
-	}
-	if result.Checks[0].Result != agenticv1alpha1.CheckResultPassed {
-		t.Errorf("result = %q", result.Checks[0].Result)
-	}
-	if result.Summary != "All checks passed" {
-		t.Errorf("summary = %q", result.Summary)
-	}
-}
-
-// --- Error handling tests ---
-
-func TestSandboxAgentCaller_ClaimError(t *testing.T) {
-	sandbox := &mockSandboxProvider{claimErr: fmt.Errorf("quota exceeded")}
-	httpClient := &mockHTTPClient{}
-
-	caller := newTestSandboxAgentCaller(sandbox, httpClient)
-	_, err := caller.Analyze(context.Background(), testSandboxAgenticRun(), testSandboxStep(), "test", defaultSandboxSA)
-	if err == nil {
-		t.Fatal("expected error")
-	}
-	if httpClient.lastQuery != "" {
-		t.Error("HTTP client should not have been called")
-	}
-	if sandbox.releaseCalls != 0 {
-		t.Errorf("Release should not be called on Claim failure, got %d calls", sandbox.releaseCalls)
-	}
-}
-
-func TestSandboxAgentCaller_WaitReadyError(t *testing.T) {
-	sandbox := &mockSandboxProvider{claimName: "claim-1", readyErr: fmt.Errorf("timeout")}
-	httpClient := &mockHTTPClient{}
-
-	caller := newTestSandboxAgentCaller(sandbox, httpClient)
-	_, err := caller.Execute(context.Background(), testSandboxAgenticRun(), testSandboxStep(), nil, defaultSandboxSA)
-	if err == nil {
-		t.Fatal("expected error")
-	}
-	if sandbox.releaseCalls != 0 {
-		t.Errorf("Release calls = %d, want 0 (reconciler handles release)", sandbox.releaseCalls)
-	}
-}
-
-func TestSandboxAgentCaller_HTTPError(t *testing.T) {
-	sandbox := &mockSandboxProvider{claimName: "claim-1", endpoint: "http://sandbox:8080"}
-	httpClient := &mockHTTPClient{err: fmt.Errorf("connection refused")}
-
-	caller := newTestSandboxAgentCaller(sandbox, httpClient)
-	_, err := caller.Verify(context.Background(), testSandboxAgenticRun(), testSandboxStep(), nil, nil, defaultSandboxSA)
-	if err == nil {
-		t.Fatal("expected error")
-	}
-	if sandbox.releaseCalls != 0 {
-		t.Errorf("Release calls = %d, want 0 (reconciler handles release)", sandbox.releaseCalls)
-	}
-}
-
-func TestSandboxAgentCaller_ParseError(t *testing.T) {
-	sandbox := &mockSandboxProvider{claimName: "claim-1", endpoint: "http://sandbox:8080"}
-	httpClient := &mockHTTPClient{
-		response: &agentRunResponse{Response: json.RawMessage("not valid json")},
-	}
-
-	caller := newTestSandboxAgentCaller(sandbox, httpClient)
-	_, err := caller.Analyze(context.Background(), testSandboxAgenticRun(), testSandboxStep(), "test", defaultSandboxSA)
-	if err == nil {
-		t.Fatal("expected parse error")
-	}
-	if sandbox.releaseCalls != 0 {
-		t.Errorf("Release calls = %d, want 0 (reconciler handles release)", sandbox.releaseCalls)
-	}
-}
-
-func TestSandboxAgentCaller_SandboxNotReleasedAfterCall(t *testing.T) {
-	sandbox := &mockSandboxProvider{claimName: "claim-1", endpoint: "http://sandbox:8080"}
-	httpClient := &mockHTTPClient{
-		response: &agentRunResponse{Response: json.RawMessage(`{"success": true, "options": []}`)},
-	}
-
-	caller := newTestSandboxAgentCaller(sandbox, httpClient)
-	_, _ = caller.Analyze(context.Background(), testSandboxAgenticRun(), testSandboxStep(), "test", defaultSandboxSA)
-
 	if sandbox.claimCalls != 1 {
-		t.Errorf("Claim calls = %d, want 1", sandbox.claimCalls)
-	}
-	if sandbox.releaseCalls != 0 {
-		t.Errorf("Release calls = %d, want 0 (reconciler handles release at terminal phase)", sandbox.releaseCalls)
+		t.Errorf("expected 1 Create call, got %d", sandbox.claimCalls)
 	}
 }
 
-// --- Context propagation tests ---
+func TestSandboxAgentCaller_Execute_CreatesSandbox(t *testing.T) {
+	sandbox := &mockSandboxProvider{claimName: "ls-execution-fix-crash"}
+	caller := newTestSandboxAgentCaller(sandbox)
 
-func TestSandboxAgentCaller_ContextPropagation(t *testing.T) {
-	sandbox := &mockSandboxProvider{claimName: "claim-1", endpoint: "http://sandbox:8080"}
-	httpClient := &mockHTTPClient{
-		response: &agentRunResponse{Response: json.RawMessage(`{"success": true, "options": []}`)},
-	}
-
-	caller := newTestSandboxAgentCaller(sandbox, httpClient)
-
-	run := &agenticv1alpha1.AgenticRun{
-		ObjectMeta: metav1.ObjectMeta{Name: "fix-crash", Namespace: "default"},
-		Spec: agenticv1alpha1.AgenticRunSpec{
-			Request:          "Pod crashing",
-			Tools:            testTools(),
-			TargetNamespaces: []string{"production", "staging"},
-			Analysis:         agenticv1alpha1.AgenticRunStep{Agent: "default"},
-			Execution:        agenticv1alpha1.AgenticRunStep{Agent: "default"},
-			Verification:     agenticv1alpha1.AgenticRunStep{Agent: "default"},
-		},
-		Status: agenticv1alpha1.AgenticRunStatus{
-			Steps: agenticv1alpha1.StepsStatus{
-				Execution: agenticv1alpha1.ExecutionStepStatus{
-					Results: []agenticv1alpha1.StepResultRef{
-						{Name: "fix-crash-execution-1", Outcome: agenticv1alpha1.ActionOutcomeFailed},
-					},
-				},
-			},
-		},
-	}
-
-	_, _ = caller.Analyze(context.Background(), run, testSandboxStep(), "test", defaultSandboxSA)
-
-	if httpClient.lastCtx == nil {
-		t.Fatal("expected context to be set")
-	}
-	if len(httpClient.lastCtx.TargetNamespaces) != 2 {
-		t.Errorf("targetNamespaces count = %d, want 2", len(httpClient.lastCtx.TargetNamespaces))
-	}
-	if len(httpClient.lastCtx.PreviousAttempts) != 1 {
-		t.Fatalf("previousAttempts count = %d, want 1", len(httpClient.lastCtx.PreviousAttempts))
-	}
-	if httpClient.lastCtx.PreviousAttempts[0].FailureReason != "execution attempt 1 failed" {
-		t.Errorf("failureReason = %q", httpClient.lastCtx.PreviousAttempts[0].FailureReason)
-	}
-}
-
-func TestSandboxAgentCaller_VerifyPassesExecutionResult(t *testing.T) {
-	sandbox := &mockSandboxProvider{claimName: "claim-1", endpoint: "http://sandbox:8080"}
-	httpClient := &mockHTTPClient{
-		response: &agentRunResponse{Response: json.RawMessage(`{"success": true, "checks": [], "summary": "ok"}`)},
-	}
-
-	caller := newTestSandboxAgentCaller(sandbox, httpClient)
-	option := &agenticv1alpha1.RemediationOption{Title: "Scale up replicas"}
-	exec := &ExecutionOutput{
-		Success: true,
-		ActionsTaken: []agenticv1alpha1.ExecutionAction{
-			{Type: "patch", Description: "Patched deployment", Outcome: agenticv1alpha1.ActionOutcomeSucceeded, Output: "deployment.apps/nginx patched"},
-			{Type: "scale", Description: "Scaled to 3 replicas", Outcome: agenticv1alpha1.ActionOutcomeSucceeded},
-		},
-	}
-
-	_, _ = caller.Verify(context.Background(), testSandboxAgenticRun(), testSandboxStep(), option, exec, defaultSandboxSA)
-
-	if httpClient.lastCtx == nil {
-		t.Fatal("expected context to be set")
-	}
-	if httpClient.lastCtx.ApprovedOption == nil || httpClient.lastCtx.ApprovedOption.Title != "Scale up replicas" {
-		t.Errorf("approvedOption.title = %v", httpClient.lastCtx.ApprovedOption)
-	}
-	if httpClient.lastCtx.ExecutionResult == nil {
-		t.Fatal("expected executionResult in context")
-	}
-	if !httpClient.lastCtx.ExecutionResult.Success {
-		t.Error("executionResult.success should be true")
-	}
-	if len(httpClient.lastCtx.ExecutionResult.ActionsTaken) != 2 {
-		t.Errorf("executionResult.actionsTaken count = %d, want 2", len(httpClient.lastCtx.ExecutionResult.ActionsTaken))
-	}
-	if httpClient.lastCtx.ExecutionResult.ActionsTaken[0].Description != "Patched deployment" {
-		t.Errorf("actionsTaken[0].description = %q", httpClient.lastCtx.ExecutionResult.ActionsTaken[0].Description)
-	}
-}
-
-func TestSandboxAgentCaller_VerifyNilExecLeavesExecutionResultNil(t *testing.T) {
-	sandbox := &mockSandboxProvider{claimName: "claim-1", endpoint: "http://sandbox:8080"}
-	httpClient := &mockHTTPClient{
-		response: &agentRunResponse{Response: json.RawMessage(`{"success": true, "checks": [], "summary": "ok"}`)},
-	}
-
-	caller := newTestSandboxAgentCaller(sandbox, httpClient)
-	_, _ = caller.Verify(context.Background(), testSandboxAgenticRun(), testSandboxStep(), nil, nil, defaultSandboxSA)
-
-	if httpClient.lastCtx == nil {
-		t.Fatal("expected context to be set")
-	}
-	if httpClient.lastCtx.ExecutionResult != nil {
-		t.Errorf("executionResult should be nil when exec is nil, got %+v", httpClient.lastCtx.ExecutionResult)
-	}
-}
-
-func TestSandboxAgentCaller_ExecutePassesApprovedOption(t *testing.T) {
-	sandbox := &mockSandboxProvider{claimName: "claim-1", endpoint: "http://sandbox:8080"}
-	httpClient := &mockHTTPClient{
-		response: &agentRunResponse{Response: json.RawMessage(`{"success": true, "actionsTaken": []}`)},
-	}
-
-	caller := newTestSandboxAgentCaller(sandbox, httpClient)
-	option := &agenticv1alpha1.RemediationOption{Title: "Scale up replicas"}
-	_, _ = caller.Execute(context.Background(), testSandboxAgenticRun(), testSandboxStep(), option, defaultSandboxSA)
-
-	if httpClient.lastCtx == nil || httpClient.lastCtx.ApprovedOption == nil {
-		t.Fatal("expected approved option in context")
-	}
-	if httpClient.lastCtx.ApprovedOption.Title != "Scale up replicas" {
-		t.Errorf("approvedOption.title = %q", httpClient.lastCtx.ApprovedOption.Title)
-	}
-}
-
-// --- OLS-3654: empty top-level diagnosis parsing ---
-
-func TestSandboxAgentCaller_Analyze_EmptyTopLevelDiagnosis(t *testing.T) {
-	cases := []struct {
-		name      string
-		diagnosis string
-	}{
-		{"both empty", `{"rootCause": "", "summary": ""}`},
-		{"summary only empty", `{"rootCause": "some cause", "summary": ""}`},
-		{"rootCause only empty", `{"rootCause": "", "summary": "some summary"}`},
-	}
-
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			sandbox := &mockSandboxProvider{claimName: "ls-analysis-fix-crash", endpoint: "http://sandbox:8080"}
-			httpClient := &mockHTTPClient{
-				response: &agentRunResponse{
-					Response: json.RawMessage(fmt.Sprintf(`{
-						"success": true,
-						"actionRequired": true,
-						"diagnosis": %s,
-						"options": [{
-							"title": "Increase connection pool limits",
-							"diagnosis": {"rootCause": "reporting-service opens too many connections", "summary": "PostgresqlTooManyConnections firing"},
-							"remediationPlan": {"description": "Increase limits", "actions": [{"command": "kubectl patch", "type": "patch", "description": "patch configmap"}]}
-						}]
-					}`, tc.diagnosis)),
-				},
-			}
-
-			caller := newTestSandboxAgentCaller(sandbox, httpClient)
-			result, err := caller.Analyze(context.Background(), testSandboxAgenticRun(), testSandboxStep(), "Too many connections", defaultSandboxSA)
-			if err != nil {
-				t.Fatalf("unexpected error: %v", err)
-			}
-
-			if result.Diagnosis != nil {
-				t.Errorf("expected nil Diagnosis, got confidence=%q summary=%q rootCause=%q",
-					result.Diagnosis.Confidence, result.Diagnosis.Summary, result.Diagnosis.RootCause)
-			}
-			if len(result.Options) != 1 {
-				t.Fatalf("expected 1 option, got %d", len(result.Options))
-			}
-			if result.Options[0].Diagnosis.RootCause == "" {
-				t.Error("per-option diagnosis should be preserved")
-			}
-		})
-	}
-}
-
-// --- Per-phase query construction tests ---
-
-func TestSandboxAgentCaller_AnalysisQueryFraming(t *testing.T) {
-	sandbox := &mockSandboxProvider{claimName: "claim-1", endpoint: "http://sandbox:8080"}
-	httpClient := &mockHTTPClient{
-		response: &agentRunResponse{Response: json.RawMessage(`{"success": true, "options": []}`)},
-	}
-
-	caller := newTestSandboxAgentCaller(sandbox, httpClient)
-	_, _ = caller.Analyze(context.Background(), testSandboxAgenticRun(), testSandboxStep(), "Pod crashing with OOMKilled", defaultSandboxSA)
-
-	if !strings.Contains(httpClient.lastQuery, "analysis agent") {
-		t.Error("analysis query should contain role framing")
-	}
-	if !strings.Contains(httpClient.lastQuery, "Pod crashing with OOMKilled") {
-		t.Error("analysis query should contain the original request")
-	}
-	if !strings.Contains(httpClient.lastQuery, "Do NOT run commands that change the cluster state") {
-		t.Error("analysis query should instruct agent not to mutate")
-	}
-}
-
-func TestSandboxAgentCaller_ExecutionQueryFraming(t *testing.T) {
-	sandbox := &mockSandboxProvider{claimName: "claim-1", endpoint: "http://sandbox:8080"}
-	httpClient := &mockHTTPClient{
-		response: &agentRunResponse{Response: json.RawMessage(`{"success": true, "actionsTaken": []}`)},
-	}
-
-	caller := newTestSandboxAgentCaller(sandbox, httpClient)
 	option := &agenticv1alpha1.RemediationOption{
-		Title: "Increase memory limit",
+		Title: "Scale up",
 		RemediationPlan: agenticv1alpha1.RemediationPlan{
-			Description: "Patch deployment memory",
-			Actions:     []agenticv1alpha1.ProposedAction{{Command: "kubectl set resources deployment/web -n production --limits=memory=512Mi", Type: "mutation", Description: "Set memory to 512Mi"}},
+			Description: "Increase replicas",
+			Actions:     []agenticv1alpha1.ProposedAction{{Command: "kubectl scale deploy/app --replicas=3", Type: "command", Description: "scale"}},
 		},
 	}
-	run := testSandboxAgenticRun()
-	run.Spec.Request = "Pod crashing with OOMKilled"
-	_, _ = caller.Execute(context.Background(), run, testSandboxStep(), option, defaultSandboxSA)
-
-	if !strings.Contains(httpClient.lastQuery, "execution agent") {
-		t.Error("execution query should contain role framing")
-	}
-	if !strings.Contains(httpClient.lastQuery, "Increase memory limit") {
-		t.Error("execution query should contain approved option title")
-	}
-	if strings.Contains(httpClient.lastQuery, "Pod crashing with OOMKilled") {
-		t.Error("execution query should NOT contain the original request")
-	}
-	if !strings.Contains(httpClient.lastQuery, "dry-run") {
-		t.Error("execution query should instruct dry-run before mutations")
-	}
-}
-
-func TestSandboxAgentCaller_VerificationQueryFraming(t *testing.T) {
-	sandbox := &mockSandboxProvider{claimName: "claim-1", endpoint: "http://sandbox:8080"}
-	httpClient := &mockHTTPClient{
-		response: &agentRunResponse{Response: json.RawMessage(`{"success": true, "checks": [], "summary": "ok"}`)},
-	}
-
-	caller := newTestSandboxAgentCaller(sandbox, httpClient)
-	option := &agenticv1alpha1.RemediationOption{Title: "Increase memory limit"}
-	exec := &ExecutionOutput{
-		Success: true,
-		ActionsTaken: []agenticv1alpha1.ExecutionAction{
-			{Type: "patch", Description: "Patched deployment memory", Outcome: agenticv1alpha1.ActionOutcomeSucceeded},
-		},
-	}
-	run := testSandboxAgenticRun()
-	run.Spec.Request = "Pod crashing with OOMKilled"
-	_, _ = caller.Verify(context.Background(), run, testSandboxStep(), option, exec, defaultSandboxSA)
-
-	if !strings.Contains(httpClient.lastQuery, "verification agent") {
-		t.Error("verification query should contain role framing")
-	}
-	if !strings.Contains(httpClient.lastQuery, "Increase memory limit") {
-		t.Error("verification query should contain approved option")
-	}
-	if !strings.Contains(httpClient.lastQuery, "Patched deployment memory") {
-		t.Error("verification query should contain execution results")
-	}
-	if strings.Contains(httpClient.lastQuery, "Pod crashing with OOMKilled") {
-		t.Error("verification query should NOT contain the original request")
-	}
-	if !strings.Contains(httpClient.lastQuery, "Convergence-dependent checks") {
-		t.Error("verification query should contain convergence retry guidance")
-	}
-	if !strings.Contains(httpClient.lastQuery, "before you are permitted to report Failed") {
-		t.Error("verification query should instruct agent to retry convergence checks")
-	}
-}
-
-func TestSandboxAgentCaller_ExecutionQueryNilOption(t *testing.T) {
-	sandbox := &mockSandboxProvider{claimName: "claim-1", endpoint: "http://sandbox:8080"}
-	httpClient := &mockHTTPClient{
-		response: &agentRunResponse{Response: json.RawMessage(`{"success": true, "actionsTaken": []}`)},
-	}
-
-	caller := newTestSandboxAgentCaller(sandbox, httpClient)
-	_, _ = caller.Execute(context.Background(), testSandboxAgenticRun(), testSandboxStep(), nil, defaultSandboxSA)
-
-	if !strings.Contains(httpClient.lastQuery, "execution agent") {
-		t.Error("execution query should still contain role framing with nil option")
-	}
-	if !strings.Contains(httpClient.lastQuery, "{}") {
-		t.Error("execution query should contain empty JSON object for nil option")
-	}
-}
-
-// --- Sandbox info patching tests ---
-
-func TestSandboxAgentCaller_Analyze_PatchesSandboxInfo(t *testing.T) {
-	sandbox := &mockSandboxProvider{claimName: "ls-analysis-fix-crash", endpoint: "http://sandbox:8080"}
-	httpClient := &mockHTTPClient{
-		response: &agentRunResponse{
-			Response: json.RawMessage(`{"success": true, "options": [{"title": "Fix it", "diagnosis": {"summary": "broken", "rootCause": "bug"}, "run": {"description": "fix", "actions": [{"type": "patch", "description": "patch"}]}}]}`),
-		},
-	}
-
-	run := testSandboxAgenticRun()
-	caller := newTestSandboxAgentCallerWithAgenticRun(sandbox, httpClient, run)
-
-	_, err := caller.Analyze(context.Background(), run, testSandboxStep(), "Pod crashing", defaultSandboxSA)
+	err := caller.Execute(context.Background(), testSandboxAgenticRun(), testSandboxStep(), option)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-
-	var updated agenticv1alpha1.AgenticRun
-	if err := caller.K8sClient.Get(context.Background(), client.ObjectKeyFromObject(run), &updated); err != nil {
-		t.Fatalf("get run: %v", err)
-	}
-
-	if updated.Status.Steps.Analysis.Sandbox.ClaimName != "ls-analysis-fix-crash" {
-		t.Errorf("sandbox claimName = %q, want %q", updated.Status.Steps.Analysis.Sandbox.ClaimName, "ls-analysis-fix-crash")
-	}
-	if updated.Status.Steps.Analysis.Sandbox.Namespace != "test-ns" {
-		t.Errorf("sandbox namespace = %q, want %q", updated.Status.Steps.Analysis.Sandbox.Namespace, "test-ns")
+	if sandbox.claimCalls != 1 {
+		t.Errorf("expected 1 Create call, got %d", sandbox.claimCalls)
 	}
 }
 
-func TestSandboxAgentCaller_Execute_PatchesSandboxInfo(t *testing.T) {
-	sandbox := &mockSandboxProvider{claimName: "ls-execution-fix-crash", endpoint: "http://sandbox:8080"}
-	httpClient := &mockHTTPClient{
-		response: &agentRunResponse{
-			Response: json.RawMessage(`{"success": true, "actionsTaken": [{"type": "patch", "description": "patched deploy"}]}`),
-		},
-	}
+func TestSandboxAgentCaller_Verify_CreatesSandbox(t *testing.T) {
+	sandbox := &mockSandboxProvider{claimName: "ls-verification-fix-crash"}
+	caller := newTestSandboxAgentCaller(sandbox)
 
-	run := testSandboxAgenticRun()
-	caller := newTestSandboxAgentCallerWithAgenticRun(sandbox, httpClient, run)
-
-	_, err := caller.Execute(context.Background(), run, testSandboxStep(), nil, defaultSandboxSA)
+	err := caller.Verify(context.Background(), testSandboxAgenticRun(), testSandboxStep(), nil, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-
-	var updated agenticv1alpha1.AgenticRun
-	if err := caller.K8sClient.Get(context.Background(), client.ObjectKeyFromObject(run), &updated); err != nil {
-		t.Fatalf("get run: %v", err)
-	}
-
-	if updated.Status.Steps.Execution.Sandbox.ClaimName != "ls-execution-fix-crash" {
-		t.Errorf("sandbox claimName = %q, want %q", updated.Status.Steps.Execution.Sandbox.ClaimName, "ls-execution-fix-crash")
+	if sandbox.claimCalls != 1 {
+		t.Errorf("expected 1 Create call, got %d", sandbox.claimCalls)
 	}
 }
 
-func TestSandboxAgentCaller_Verify_PatchesSandboxInfo(t *testing.T) {
-	sandbox := &mockSandboxProvider{claimName: "ls-verification-fix-crash", endpoint: "http://sandbox:8080"}
-	httpClient := &mockHTTPClient{
-		response: &agentRunResponse{
-			Response: json.RawMessage(`{"success": true, "checks": [{"name": "pod-running", "source": "oc", "value": "Running", "result": "Passed"}], "summary": "All checks passed"}`),
-		},
-	}
+func TestSandboxAgentCaller_Escalate_CreatesSandbox(t *testing.T) {
+	sandbox := &mockSandboxProvider{claimName: "ls-escalation-fix-crash"}
+	caller := newTestSandboxAgentCaller(sandbox)
 
-	run := testSandboxAgenticRun()
-	caller := newTestSandboxAgentCallerWithAgenticRun(sandbox, httpClient, run)
-
-	_, err := caller.Verify(context.Background(), run, testSandboxStep(), nil, nil, defaultSandboxSA)
+	err := caller.Escalate(context.Background(), testSandboxAgenticRun(), testSandboxStep(), "Pod crashing")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-
-	var updated agenticv1alpha1.AgenticRun
-	if err := caller.K8sClient.Get(context.Background(), client.ObjectKeyFromObject(run), &updated); err != nil {
-		t.Fatalf("get run: %v", err)
-	}
-
-	if updated.Status.Steps.Verification.Sandbox.ClaimName != "ls-verification-fix-crash" {
-		t.Errorf("sandbox claimName = %q, want %q", updated.Status.Steps.Verification.Sandbox.ClaimName, "ls-verification-fix-crash")
+	if sandbox.claimCalls != 1 {
+		t.Errorf("expected 1 Create call, got %d", sandbox.claimCalls)
 	}
 }
 
-func TestSandboxAgentCaller_SandboxInfoPatch_DoesNotBlockOnError(t *testing.T) {
-	sandbox := &mockSandboxProvider{claimName: "ls-analysis-fix-crash", endpoint: "http://sandbox:8080"}
-	httpClient := &mockHTTPClient{
-		response: &agentRunResponse{
-			Response: json.RawMessage(`{"success": true, "options": []}`),
-		},
-	}
+func TestSandboxAgentCaller_Analyze_CreateError(t *testing.T) {
+	sandbox := &mockSandboxProvider{claimErr: fmt.Errorf("sandbox unavailable")}
+	caller := newTestSandboxAgentCaller(sandbox)
 
-	// Use caller WITHOUT run in the fake client — patchSandboxInfo will fail to Get
-	// but the analysis call should still succeed
-	caller := newTestSandboxAgentCaller(sandbox, httpClient)
-	run := testSandboxAgenticRun()
-
-	_, err := caller.Analyze(context.Background(), run, testSandboxStep(), "test", defaultSandboxSA)
-	if err != nil {
-		t.Fatalf("analysis should succeed even when sandbox info patch fails: %v", err)
-	}
-}
-
-func TestReleaseSandboxes_ReleasesAllSteps(t *testing.T) {
-	releasedClaims := []string{}
-	tracker := &trackingMockSandbox{released: &releasedClaims}
-
-	caller := &SandboxAgentCaller{
-		Sandbox:   tracker,
-		Namespace: "test-ns",
-	}
-
-	run := &agenticv1alpha1.AgenticRun{
-		Status: agenticv1alpha1.AgenticRunStatus{
-			Steps: agenticv1alpha1.StepsStatus{
-				Analysis: agenticv1alpha1.AnalysisStepStatus{
-					Sandbox: agenticv1alpha1.SandboxInfo{ClaimName: "claim-analysis"},
-				},
-				Execution: agenticv1alpha1.ExecutionStepStatus{
-					Sandbox: agenticv1alpha1.SandboxInfo{ClaimName: "claim-execution"},
-				},
-				Verification: agenticv1alpha1.VerificationStepStatus{
-					Sandbox: agenticv1alpha1.SandboxInfo{ClaimName: "claim-verification"},
-				},
-			},
-		},
-	}
-
-	err := caller.ReleaseSandboxes(context.Background(), run)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-
-	if len(*tracker.released) != 3 {
-		t.Fatalf("expected 3 releases, got %d", len(*tracker.released))
-	}
-	expected := []string{"claim-analysis", "claim-execution", "claim-verification"}
-	for i, name := range expected {
-		if (*tracker.released)[i] != name {
-			t.Errorf("release[%d] = %q, want %q", i, (*tracker.released)[i], name)
-		}
-	}
-}
-
-func TestReleaseSandboxes_SkipsEmptyClaims(t *testing.T) {
-	releasedClaims := []string{}
-	tracker := &trackingMockSandbox{released: &releasedClaims}
-
-	caller := &SandboxAgentCaller{Sandbox: tracker, Namespace: "test-ns"}
-
-	run := &agenticv1alpha1.AgenticRun{
-		Status: agenticv1alpha1.AgenticRunStatus{
-			Steps: agenticv1alpha1.StepsStatus{
-				Analysis: agenticv1alpha1.AnalysisStepStatus{
-					Sandbox: agenticv1alpha1.SandboxInfo{ClaimName: "claim-analysis"},
-				},
-			},
-		},
-	}
-
-	err := caller.ReleaseSandboxes(context.Background(), run)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-
-	if len(*tracker.released) != 1 {
-		t.Fatalf("expected 1 release, got %d", len(*tracker.released))
-	}
-}
-
-func TestReleaseSandboxes_ContinuesOnError(t *testing.T) {
-	releasedClaims := []string{}
-	tracker := &trackingMockSandbox{
-		released:   &releasedClaims,
-		errOnClaim: "claim-execution",
-	}
-
-	caller := &SandboxAgentCaller{Sandbox: tracker, Namespace: "test-ns"}
-
-	run := &agenticv1alpha1.AgenticRun{
-		Status: agenticv1alpha1.AgenticRunStatus{
-			Steps: agenticv1alpha1.StepsStatus{
-				Analysis: agenticv1alpha1.AnalysisStepStatus{
-					Sandbox: agenticv1alpha1.SandboxInfo{ClaimName: "claim-analysis"},
-				},
-				Execution: agenticv1alpha1.ExecutionStepStatus{
-					Sandbox: agenticv1alpha1.SandboxInfo{ClaimName: "claim-execution"},
-				},
-				Verification: agenticv1alpha1.VerificationStepStatus{
-					Sandbox: agenticv1alpha1.SandboxInfo{ClaimName: "claim-verification"},
-				},
-			},
-		},
-	}
-
-	err := caller.ReleaseSandboxes(context.Background(), run)
+	err := caller.Analyze(context.Background(), testSandboxAgenticRun(), testSandboxStep(), "Pod crashing")
 	if err == nil {
-		t.Fatal("expected error from failing release")
+		t.Fatal("expected error on sandbox create failure")
 	}
-	// Should still attempt all three
+}
+
+func TestSandboxAgentCaller_Execute_CreateError(t *testing.T) {
+	sandbox := &mockSandboxProvider{claimErr: fmt.Errorf("sandbox unavailable")}
+	caller := newTestSandboxAgentCaller(sandbox)
+
+	err := caller.Execute(context.Background(), testSandboxAgenticRun(), testSandboxStep(), nil)
+	if err == nil {
+		t.Fatal("expected error on sandbox create failure")
+	}
+}
+
+func TestSandboxAgentCaller_PatchesSandboxInfo(t *testing.T) {
+	sandbox := &mockSandboxProvider{claimName: "ls-analysis-fix-crash"}
+	run := testSandboxAgenticRun()
+	caller := newTestSandboxAgentCallerWithAgenticRun(sandbox, run)
+
+	err := caller.Analyze(context.Background(), run, testSandboxStep(), "Pod crashing")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	var updated agenticv1alpha1.AgenticRun
+	if err := caller.K8sClient.Get(context.Background(), client.ObjectKeyFromObject(run), &updated); err != nil {
+		t.Fatalf("get run: %v", err)
+	}
+	if updated.Status.Steps.Analysis.Sandbox.ClaimName != "ls-analysis-fix-crash" {
+		t.Errorf("expected sandbox claim name 'ls-analysis-fix-crash', got %q", updated.Status.Steps.Analysis.Sandbox.ClaimName)
+	}
+}
+
+func TestSandboxAgentCaller_ReleaseSandbox(t *testing.T) {
+	sandbox := &mockSandboxProvider{}
+	caller := newTestSandboxAgentCaller(sandbox)
+
+	run := testSandboxAgenticRun()
+	run.Status.Steps.Analysis.Sandbox.ClaimName = "test-claim"
+	if err := caller.ReleaseSandbox(context.Background(), run, "analysis"); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if sandbox.releaseCalls != 1 {
+		t.Errorf("expected 1 Release call, got %d", sandbox.releaseCalls)
+	}
+}
+
+func TestSandboxAgentCaller_ReleaseSandboxes(t *testing.T) {
+	run := testSandboxAgenticRun()
+	run.Status.Steps = agenticv1alpha1.StepsStatus{
+		Analysis:     agenticv1alpha1.AnalysisStepStatus{Sandbox: agenticv1alpha1.SandboxInfo{ClaimName: "ls-analysis-test"}},
+		Execution:    agenticv1alpha1.ExecutionStepStatus{Sandbox: agenticv1alpha1.SandboxInfo{ClaimName: "ls-execution-test"}},
+		Verification: agenticv1alpha1.VerificationStepStatus{Sandbox: agenticv1alpha1.SandboxInfo{ClaimName: "ls-verification-test"}},
+	}
+	sandbox := &mockSandboxProvider{}
+	caller := newTestSandboxAgentCaller(sandbox)
+
+	if err := caller.ReleaseSandboxes(context.Background(), run); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if sandbox.releaseCalls != 3 {
+		t.Errorf("expected 3 Release calls, got %d", sandbox.releaseCalls)
+	}
+}
+
+func TestSandboxAgentCaller_ReleaseSandboxes_PartialError(t *testing.T) {
+	run := testSandboxAgenticRun()
+	run.Status.Steps = agenticv1alpha1.StepsStatus{
+		Analysis:     agenticv1alpha1.AnalysisStepStatus{Sandbox: agenticv1alpha1.SandboxInfo{ClaimName: "ls-analysis-test"}},
+		Execution:    agenticv1alpha1.ExecutionStepStatus{Sandbox: agenticv1alpha1.SandboxInfo{ClaimName: "ls-execution-test"}},
+		Verification: agenticv1alpha1.VerificationStepStatus{Sandbox: agenticv1alpha1.SandboxInfo{ClaimName: "ls-verification-test"}},
+	}
+
+	released := []string{}
+	tracker := &trackingMockSandbox{released: &released, errOnClaim: "ls-execution-test"}
+	fc := fake.NewClientBuilder().WithScheme(testScheme()).Build()
+	_ = fc.Create(context.Background(), fakeBaseTemplate())
+	caller := &SandboxAgentCaller{Sandbox: tracker, K8sClient: fc, Namespace: "test-ns"}
+
+	if err := caller.ReleaseSandboxes(context.Background(), run); err == nil {
+		t.Fatal("expected error when one release fails")
+	}
 	if len(*tracker.released) != 3 {
 		t.Fatalf("expected 3 release attempts, got %d", len(*tracker.released))
+	}
+}
+
+func TestBuildAgentContext_TargetNamespaces(t *testing.T) {
+	run := testSandboxAgenticRun()
+	run.Spec.TargetNamespaces = []string{"payments", "frontend"}
+	ctx := buildAgentContext(run)
+	if len(ctx.TargetNamespaces) != 2 || ctx.TargetNamespaces[0] != "payments" {
+		t.Errorf("expected target namespaces [payments frontend], got %v", ctx.TargetNamespaces)
+	}
+}
+
+func TestBuildAgentContext_PreviousAttempts(t *testing.T) {
+	run := testSandboxAgenticRun()
+	run.Status.Steps.Execution.Results = []agenticv1alpha1.StepResultRef{
+		{Name: "exec-1", Outcome: agenticv1alpha1.ActionOutcomeFailed},
+	}
+	run.Status.Conditions = []metav1.Condition{
+		{Type: agenticv1alpha1.AgenticRunConditionVerified, Status: metav1.ConditionFalse, Message: "check failed"},
+	}
+	ctx := buildAgentContext(run)
+	if len(ctx.PreviousAttempts) != 1 {
+		t.Errorf("expected 1 previous attempt, got %d", len(ctx.PreviousAttempts))
+	}
+}
+
+func TestStepTimeout_Values(t *testing.T) {
+	if got := stepTimeout("analysis"); got != analysisStepTimeout {
+		t.Errorf("analysis timeout = %v, want %v", got, analysisStepTimeout)
+	}
+	if got := stepTimeout("execution"); got != executionStepTimeout {
+		t.Errorf("execution timeout = %v, want %v", got, executionStepTimeout)
+	}
+	if got := stepTimeout("verification"); got != verificationStepTimeout {
+		t.Errorf("verification timeout = %v, want %v", got, verificationStepTimeout)
 	}
 }
 
@@ -730,13 +257,11 @@ type trackingMockSandbox struct {
 	errOnClaim string
 }
 
-func (m *trackingMockSandbox) Create(_ context.Context, _ *agenticv1alpha1.AgenticRun, _ string, _ *agenticv1alpha1.Agent, _ *agenticv1alpha1.LLMProvider, _ *agenticv1alpha1.ToolsSpec, _ string, _ time.Duration) (string, error) {
+func (m *trackingMockSandbox) Create(_ context.Context, _ *agenticv1alpha1.AgenticRun, _ string, _ *agenticv1alpha1.Agent, _ *agenticv1alpha1.LLMProvider, _ *agenticv1alpha1.ToolsSpec, _ time.Duration, _ string, _ *agentContext) (string, error) {
 	return "", nil
 }
-func (m *trackingMockSandbox) WaitReady(_ context.Context, _ string, _ time.Duration) (string, error) {
-	return "", nil
-}
-func (m *trackingMockSandbox) Release(_ context.Context, claimName string) error {
+func (m *trackingMockSandbox) Release(_ context.Context, run *agenticv1alpha1.AgenticRun, step string) error {
+	claimName := sandboxClaimName(run, step)
 	*m.released = append(*m.released, claimName)
 	if m.errOnClaim != "" && claimName == m.errOnClaim {
 		return fmt.Errorf("simulated release error for %s", claimName)

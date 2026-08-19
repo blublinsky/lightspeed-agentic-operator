@@ -34,7 +34,8 @@ func TestExecutionFlow_ProposedToVerifying(t *testing.T) {
 	t.Logf("AgenticRun created: %s/%s", testNS, prop.Name)
 
 	t.Log("Waiting for phase: Proposed (analysis complete)")
-	waitForPhase(t, c, prop.Name, agenticv1alpha1.AgenticRunPhaseProposed)
+	proposed := waitForPhase(t, c, prop.Name, agenticv1alpha1.AgenticRunPhaseProposed)
+	runUID := string(proposed.UID)
 	t.Log("Phase reached: Proposed")
 
 	t.Log("Approving execution with option 0")
@@ -45,7 +46,7 @@ func TestExecutionFlow_ProposedToVerifying(t *testing.T) {
 	t.Log("Phase reached: Executing — checking RBAC")
 
 	// --- Verify: RBAC created ---
-	roleName := "ls-exec-" + prop.Name
+	roleName := "ls-exec-" + runUID
 	var role rbacv1.Role
 	if err := c.Get(ctx, types.NamespacedName{Name: roleName, Namespace: "staging"}, &role); err != nil {
 		t.Fatalf("get Role %s in staging: %v", roleName, err)
@@ -59,7 +60,7 @@ func TestExecutionFlow_ProposedToVerifying(t *testing.T) {
 	t.Logf("Verified: RoleBinding %s exists in staging", roleName)
 
 	// Verify: per-run execution SA created.
-	saName := "ls-exec-" + testNS + "-" + prop.Name
+	saName := "ls-exe-" + runUID
 	var sa corev1.ServiceAccount
 	if err := c.Get(ctx, types.NamespacedName{Name: saName, Namespace: testNS}, &sa); err != nil {
 		t.Fatalf("get execution SA %s: %v", saName, err)
@@ -103,7 +104,7 @@ func TestExecutionFlow_ProposedToVerifying(t *testing.T) {
 
 	// --- Verify: ExecutionResult exists ---
 	var execList agenticv1alpha1.ExecutionResultList
-	if err := c.List(ctx, &execList, client.InNamespace(testNS), client.MatchingLabels{"agentic.openshift.io/run": prop.Name}); err != nil {
+	if err := c.List(ctx, &execList, client.InNamespace(testNS), client.MatchingLabels{"agentic.openshift.io/run": runUID}); err != nil {
 		t.Fatalf("list ExecutionResult: %v", err)
 	}
 	if len(execList.Items) == 0 {

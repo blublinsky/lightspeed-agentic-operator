@@ -2,8 +2,6 @@ package agenticrun
 
 import (
 	"context"
-	"net/http"
-	"strings"
 	"testing"
 
 	"go.opentelemetry.io/otel"
@@ -111,21 +109,15 @@ func TestNoOpAuditLogger_NoPanic(t *testing.T) {
 	run := testRun()
 
 	logger.EmitAgenticRunReceived(context.Background(), run)
-	logger.EmitAnalysisCompleted(context.Background(), run, nil)
-	logger.EmitExecutionCompleted(context.Background(), run, nil)
-	logger.EmitVerificationCompleted(context.Background(), run, nil)
-	logger.EmitVerificationRetry(context.Background(), run, nil, 1)
-	logger.EmitEscalationCompleted(context.Background(), run, nil)
 	logger.EmitApprovalSpan(context.Background(), run, nil, "")
 	logger.EmitTerminalSpan(context.Background(), run, "Completed", "success")
-	logger.InjectTraceContext(context.Background(), run, http.Header{})
 	logger.Cleanup(run)
 
-	ctx, span := logger.StartAnalysisSpan(context.Background(), run)
+	ctx := logger.BeginStep(context.Background(), run, "analysis")
 	if ctx == nil {
-		t.Error("StartAnalysisSpan should return non-nil ctx")
+		t.Error("BeginStep should return non-nil ctx")
 	}
-	span.End()
+	logger.CompleteStep(run, "analysis", nil)
 }
 
 func TestStartPhaseSpan_IndependentTraces(t *testing.T) {
@@ -133,10 +125,10 @@ func TestStartPhaseSpan_IndependentTraces(t *testing.T) {
 	auditLogger := NewProductionAuditLogger(zap.NewNop(), NoOpLogEmitter{}).(*ProductionAuditLogger)
 	run := testRun()
 
-	_, s1 := auditLogger.StartAnalysisSpan(context.Background(), run)
+	_, s1 := auditLogger.startAnalysisSpan(context.Background(), run)
 	s1.End()
 
-	_, s2 := auditLogger.StartExecutionSpan(context.Background(), run)
+	_, s2 := auditLogger.startExecutionSpan(context.Background(), run)
 	s2.End()
 
 	spans := sr.Ended()
@@ -154,11 +146,11 @@ func TestStartPhaseSpan_SpanLinks(t *testing.T) {
 	auditLogger := NewProductionAuditLogger(zap.NewNop(), NoOpLogEmitter{}).(*ProductionAuditLogger)
 	run := testRun()
 
-	_, s1 := auditLogger.StartAnalysisSpan(context.Background(), run)
+	_, s1 := auditLogger.startAnalysisSpan(context.Background(), run)
 	s1.End()
 	analysisSpanCtx := s1.(sdktrace.ReadOnlySpan).SpanContext()
 
-	_, s2 := auditLogger.StartExecutionSpan(context.Background(), run)
+	_, s2 := auditLogger.startExecutionSpan(context.Background(), run)
 	s2.End()
 
 	spans := sr.Ended()
@@ -190,7 +182,7 @@ func TestStartPhaseSpan_StandardAttributes(t *testing.T) {
 	auditLogger := NewProductionAuditLogger(zap.NewNop(), NoOpLogEmitter{}).(*ProductionAuditLogger)
 	run := testRun()
 
-	_, span := auditLogger.StartAnalysisSpan(context.Background(), run)
+	_, span := auditLogger.startAnalysisSpan(context.Background(), run)
 	span.End()
 
 	spans := sr.Ended()
@@ -222,7 +214,7 @@ func TestStartPhaseSpan_KindInternal(t *testing.T) {
 	auditLogger := NewProductionAuditLogger(zap.NewNop(), NoOpLogEmitter{}).(*ProductionAuditLogger)
 	run := testRun()
 
-	_, span := auditLogger.StartAnalysisSpan(context.Background(), run)
+	_, span := auditLogger.startAnalysisSpan(context.Background(), run)
 	span.End()
 
 	spans := sr.Ended()
@@ -241,10 +233,10 @@ func TestAllPhaseSpanNames(t *testing.T) {
 		startFunc    func(context.Context, *agenticv1alpha1.AgenticRun) (context.Context, trace.Span)
 		expectedName string
 	}{
-		{"analysis", auditLogger.StartAnalysisSpan, "agenticrun.analyze"},
-		{"execution", auditLogger.StartExecutionSpan, "agenticrun.execute"},
-		{"verification", auditLogger.StartVerificationSpan, "agenticrun.verify"},
-		{"escalation", auditLogger.StartEscalationSpan, "agenticrun.escalate"},
+		{"analysis", auditLogger.startAnalysisSpan, "agenticrun.analyze"},
+		{"execution", auditLogger.startExecutionSpan, "agenticrun.execute"},
+		{"verification", auditLogger.startVerificationSpan, "agenticrun.verify"},
+		{"escalation", auditLogger.startEscalationSpan, "agenticrun.escalate"},
 	}
 
 	for _, tc := range tests {
@@ -390,7 +382,7 @@ func TestEmitAgenticRunReceived_OnPhaseSpan(t *testing.T) {
 	auditLogger := NewProductionAuditLogger(zap.NewNop(), NoOpLogEmitter{}).(*ProductionAuditLogger)
 	run := testRun()
 
-	spanCtx, span := auditLogger.StartAnalysisSpan(context.Background(), run)
+	spanCtx, span := auditLogger.startAnalysisSpan(context.Background(), run)
 	auditLogger.EmitAgenticRunReceived(spanCtx, run)
 	span.End()
 
@@ -419,127 +411,17 @@ func TestEmitAgenticRunReceived_OnPhaseSpan(t *testing.T) {
 	}
 }
 
-func TestEmitAnalysisCompleted_EventAttributes(t *testing.T) {
-	sr := setupRecorder(t)
-	auditLogger := NewProductionAuditLogger(zap.NewNop(), NoOpLogEmitter{}).(*ProductionAuditLogger)
-	run := testRun()
-
-	analysisResult := &agenticv1alpha1.AnalysisResult{
-		ObjectMeta: metav1.ObjectMeta{
-			Name: "test-analysis", Namespace: "test-ns",
-			UID: types.UID("b2c3d4e5-f6a7-8901-2345-67890abcdef0"),
-		},
-		Status: agenticv1alpha1.AnalysisResultStatus{
-			Options: []agenticv1alpha1.RemediationOption{
-				{Title: "Increase memory"},
-				{Title: "Restart pod"},
-			},
-		},
-	}
-
-	spanCtx, span := auditLogger.StartAnalysisSpan(context.Background(), run)
-	auditLogger.EmitAnalysisCompleted(spanCtx, run, analysisResult)
-	span.End()
-
-	spans := sr.Ended()
-	var analysisSpan sdktrace.ReadOnlySpan
-	for _, s := range spans {
-		if s.Name() == "agenticrun.analyze" {
-			analysisSpan = s
-			break
-		}
-	}
-	if analysisSpan == nil {
-		t.Fatal("agenticrun.analyze span not found")
-	}
-
-	var completedEvent *sdktrace.Event
-	for i := range analysisSpan.Events() {
-		if analysisSpan.Events()[i].Name == "agenticrun.analysis.completed" {
-			completedEvent = &analysisSpan.Events()[i]
-			break
-		}
-	}
-	if completedEvent == nil {
-		t.Fatal("agenticrun.analysis.completed event not found")
-	}
-
-	attrMap := make(map[string]string)
-	for _, a := range completedEvent.Attributes {
-		attrMap[string(a.Key)] = a.Value.Emit()
-	}
-
-	checks := map[string]string{
-		"agenticrun.name": "test-run",
-		"result.name":     "test-analysis",
-		"options.count":   "2",
-		"option.0.title":  "Increase memory",
-		"option.1.title":  "Restart pod",
-	}
-	for key, want := range checks {
-		if got, ok := attrMap[key]; !ok {
-			t.Errorf("missing attribute %q", key)
-		} else if got != want {
-			t.Errorf("attribute %q = %q, want %q", key, got, want)
-		}
-	}
-	for _, key := range []string{"option.0.risk", "option.1.risk"} {
-		if _, ok := attrMap[key]; ok {
-			t.Errorf("unexpected attribute %q", key)
-		}
-	}
-}
-
-func TestInjectTraceContext_W3CFormat(t *testing.T) {
-	sr := setupRecorder(t)
-	auditLogger := NewProductionAuditLogger(zap.NewNop(), NoOpLogEmitter{}).(*ProductionAuditLogger)
-	run := testRun()
-
-	t.Run("no_active_span_no_header", func(t *testing.T) {
-		headers := http.Header{}
-		auditLogger.InjectTraceContext(context.Background(), run, headers)
-		if headers.Get("traceparent") != "" {
-			t.Error("Should not inject header when no active span")
-		}
-	})
-
-	t.Run("active_span_injects_header", func(t *testing.T) {
-		spanCtx, span := auditLogger.StartAnalysisSpan(context.Background(), run)
-
-		headers := http.Header{}
-		auditLogger.InjectTraceContext(spanCtx, run, headers)
-
-		traceparent := headers.Get("traceparent")
-		if traceparent == "" {
-			t.Fatal("traceparent header missing")
-		}
-
-		parts := strings.Split(traceparent, "-")
-		if len(parts) != 4 {
-			t.Fatalf("Expected 4 parts in traceparent, got %d: %s", len(parts), traceparent)
-		}
-
-		activeSpanID := span.(sdktrace.ReadOnlySpan).SpanContext().SpanID().String()
-		if parts[2] != activeSpanID {
-			t.Errorf("Injected span ID = %s, want active span ID %s", parts[2], activeSpanID)
-		}
-		span.End()
-	})
-
-	_ = sr
-}
-
 func TestCleanup_RemovesPriorPhase(t *testing.T) {
 	sr := setupRecorder(t)
 	auditLogger := NewProductionAuditLogger(zap.NewNop(), NoOpLogEmitter{}).(*ProductionAuditLogger)
 	run := testRun()
 
-	_, s1 := auditLogger.StartAnalysisSpan(context.Background(), run)
+	_, s1 := auditLogger.startAnalysisSpan(context.Background(), run)
 	s1.End()
 
 	auditLogger.Cleanup(run)
 
-	_, s2 := auditLogger.StartExecutionSpan(context.Background(), run)
+	_, s2 := auditLogger.startExecutionSpan(context.Background(), run)
 	s2.End()
 
 	spans := sr.Ended()
@@ -563,7 +445,7 @@ func TestSpanServiceName(t *testing.T) {
 	auditLogger := NewProductionAuditLogger(zap.NewNop(), NoOpLogEmitter{}).(*ProductionAuditLogger)
 	run := testRun()
 
-	_, span := auditLogger.StartAnalysisSpan(context.Background(), run)
+	_, span := auditLogger.startAnalysisSpan(context.Background(), run)
 	span.End()
 
 	spans := sr.Ended()
@@ -586,7 +468,7 @@ func TestSpanInstrumentationScope(t *testing.T) {
 	auditLogger := NewProductionAuditLogger(zap.NewNop(), NoOpLogEmitter{}).(*ProductionAuditLogger)
 	run := testRun()
 
-	_, span := auditLogger.StartAnalysisSpan(context.Background(), run)
+	_, span := auditLogger.startAnalysisSpan(context.Background(), run)
 	span.End()
 
 	spans := sr.Ended()
@@ -604,33 +486,20 @@ func TestFullLifecycle_PerPhaseTraces(t *testing.T) {
 	auditLogger := NewProductionAuditLogger(zap.NewNop(), NoOpLogEmitter{}).(*ProductionAuditLogger)
 	run := testRun()
 
-	analysisResult := &agenticv1alpha1.AnalysisResult{
-		ObjectMeta: metav1.ObjectMeta{Name: "r-analysis", Namespace: "test-ns", UID: "uid-1"},
-	}
-	executionResult := &agenticv1alpha1.ExecutionResult{
-		ObjectMeta: metav1.ObjectMeta{Name: "r-execution", Namespace: "test-ns", UID: "uid-2"},
-	}
-	verificationResult := &agenticv1alpha1.VerificationResult{
-		ObjectMeta: metav1.ObjectMeta{Name: "r-verification", Namespace: "test-ns", UID: "uid-3"},
-	}
-
 	// 1. Analysis phase
-	ctx1, s1 := auditLogger.StartAnalysisSpan(context.Background(), run)
+	ctx1, s1 := auditLogger.startAnalysisSpan(context.Background(), run)
 	auditLogger.EmitAgenticRunReceived(ctx1, run)
-	auditLogger.EmitAnalysisCompleted(ctx1, run, analysisResult)
 	s1.End()
 
 	// 2. Approval
 	auditLogger.EmitApprovalSpan(context.Background(), run, nil, "")
 
 	// 3. Execution phase
-	ctx2, s2 := auditLogger.StartExecutionSpan(context.Background(), run)
-	auditLogger.EmitExecutionCompleted(ctx2, run, executionResult)
+	_, s2 := auditLogger.startExecutionSpan(context.Background(), run)
 	s2.End()
 
 	// 4. Verification phase
-	ctx3, s3 := auditLogger.StartVerificationSpan(context.Background(), run)
-	auditLogger.EmitVerificationCompleted(ctx3, run, verificationResult)
+	_, s3 := auditLogger.startVerificationSpan(context.Background(), run)
 	s3.End()
 
 	// 5. Terminal
@@ -753,17 +622,71 @@ func TestNoApprovalSpan_AutoApproveExecution(t *testing.T) {
 	auditLogger := NewProductionAuditLogger(zap.NewNop(), NoOpLogEmitter{}).(*ProductionAuditLogger)
 	run := testRun()
 
-	_, s1 := auditLogger.StartAnalysisSpan(context.Background(), run)
+	_, s1 := auditLogger.startAnalysisSpan(context.Background(), run)
 	s1.End()
 
 	// Auto-approve: skip EmitApprovalSpan
 
-	_, s2 := auditLogger.StartExecutionSpan(context.Background(), run)
+	_, s2 := auditLogger.startExecutionSpan(context.Background(), run)
 	s2.End()
 
 	for _, s := range sr.Ended() {
 		if s.Name() == "agenticrun.human_approval" {
 			t.Error("human_approval span should not exist when execution is auto-approved")
 		}
+	}
+}
+
+func TestBeginStep_CompleteStep(t *testing.T) {
+	sr := setupRecorder(t)
+	auditLogger := NewProductionAuditLogger(zap.NewNop(), nil)
+	run := testRun()
+
+	ctx := auditLogger.BeginStep(context.Background(), run, "analysis")
+	if ctx == nil {
+		t.Fatal("BeginStep returned nil context")
+	}
+
+	// Span should not be ended yet.
+	if len(sr.Ended()) != 0 {
+		t.Fatalf("expected 0 ended spans before CompleteStep, got %d", len(sr.Ended()))
+	}
+
+	result := &agenticv1alpha1.AnalysisResult{
+		ObjectMeta: metav1.ObjectMeta{Name: "r", Namespace: "test-ns"},
+		Status: agenticv1alpha1.AnalysisResultStatus{
+			Conditions: []metav1.Condition{{Type: "Completed", Status: metav1.ConditionTrue}},
+		},
+	}
+	auditLogger.CompleteStep(run, "analysis", result)
+
+	ended := sr.Ended()
+	if len(ended) != 1 {
+		t.Fatalf("expected 1 ended span after CompleteStep, got %d", len(ended))
+	}
+	if ended[0].Name() != "agenticrun.analyze" {
+		t.Errorf("span name = %q, want agenticrun.analyze", ended[0].Name())
+	}
+
+	var hasCompletedEvent bool
+	for _, e := range ended[0].Events() {
+		if e.Name == "agenticrun.analysis.completed" {
+			hasCompletedEvent = true
+		}
+	}
+	if !hasCompletedEvent {
+		t.Error("expected agenticrun.analysis.completed event on span")
+	}
+}
+
+func TestCompleteStep_WithoutBeginStep(t *testing.T) {
+	sr := setupRecorder(t)
+	auditLogger := NewProductionAuditLogger(zap.NewNop(), nil)
+	run := testRun()
+
+	auditLogger.CompleteStep(run, "analysis", nil)
+
+	if len(sr.Ended()) != 0 {
+		t.Error("CompleteStep without BeginStep should not produce a span")
 	}
 }

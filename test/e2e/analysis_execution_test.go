@@ -74,7 +74,7 @@ func TestAnalysisFlow_AgenticRunToProposed(t *testing.T) {
 
 	// AnalysisResult exists with owner reference and options.
 	var analysisList agenticv1alpha1.AnalysisResultList
-	if err := c.List(ctx, &analysisList, client.InNamespace(testNS), client.MatchingLabels{"agentic.openshift.io/run": prop.Name}); err != nil {
+	if err := c.List(ctx, &analysisList, client.InNamespace(testNS), client.MatchingLabels{"agentic.openshift.io/run": string(updated.UID)}); err != nil {
 		t.Fatalf("list AnalysisResult: %v", err)
 	}
 	if len(analysisList.Items) == 0 {

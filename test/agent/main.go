@@ -1,192 +1,118 @@
-// Mock agent HTTP server for e2e and local testing. Implements the same
-// contract as the in-sandbox agent service: POST /v1/agent/run with JSON
-// body matching controller/agenticrun/client.go (query, systemPrompt,
-// outputSchema, context, timeout_ms). Response body is raw JSON matching
-// controller/agenticrun/sandbox_agent.go expectations per step.
+// Mock agent for e2e and local testing (batch mode).
 //
-// Request JSON must stay in sync with agentRunRequest + agentContext in
-// controller/agenticrun/client.go. Response bodies must unmarshal into the
-// per-step structs in controller/agenticrun/sandbox_agent.go (analysisResponse,
-// executionResponse, verificationResponse, and the anonymous struct for
-// Escalate).
+// Contract: the operator mounts an input ConfigMap at /input/ with four keys:
 //
-// After editing this binary, rebuild and restart the process so callers hit
-// the new behavior.
+//	query          — the user's request text
+//	output-schema  — JSON schema identifying the step (analysis/execution/verification/escalation)
+//	context        — JSON with targetNamespaces, approvedOption, etc.
+//	result-template — JSON for the Result CR (apiVersion, kind, metadata, spec); sandbox fills status
 //
-// Run: go run ./test/agent -addr :8080
+// The mock reads /input/, creates the Result CR via the Kubernetes API, patches
+// its status subresource with a canned response + Completed=True condition,
+// and exits 0. For execution/verification steps it sleeps first so e2e tests
+// can observe in-flight RBAC.
+//
+// Build:  make -C test/agent docker-build
+// Image:  quay.io/openshift-lightspeed/ols-qe:lightspeed-mock-agent
 package main
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
-	"flag"
 	"fmt"
-	"io"
 	"log"
-	"net/http"
 	"os"
 	"strings"
 	"time"
+
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
+	"k8s.io/client-go/kubernetes/scheme"
+	"k8s.io/client-go/rest"
+	"k8s.io/client-go/tools/clientcmd"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	agenticv1alpha1 "github.com/openshift/lightspeed-agentic-operator/api/v1alpha1"
 	agenticrun "github.com/openshift/lightspeed-agentic-operator/controller/agenticrun"
 )
 
-// Per-phase response delays (hardcoded). Execution and verification get 60s delay so that
-// e2e tests can observe intermediate state (e.g. RBAC exists while execution is in-flight).
+const inputDir = "/input"
 
-type runRequest struct {
-	Query        string          `json:"query"`
-	SystemPrompt string          `json:"systemPrompt,omitempty"`
-	OutputSchema json.RawMessage `json:"outputSchema,omitempty"`
-	Context      *runContext     `json:"context,omitempty"`
-	TimeoutMs    *int64          `json:"timeout_ms,omitempty"`
-}
-
-// runContext mirrors controller/agenticrun/client.go agentContext JSON so the
-// operator's marshaled requests decode without dropping fields.
-type runContext struct {
-	TargetNamespaces []string                           `json:"targetNamespaces,omitempty"`
-	PreviousAttempts []runPreviousAttempt               `json:"previousAttempts,omitempty"`
-	ApprovedOption   *agenticv1alpha1.RemediationOption `json:"approvedOption,omitempty"`
-	ExecutionResult  *runExecutionResult                `json:"executionResult,omitempty"`
-}
-
-type runPreviousAttempt struct {
-	Attempt       int32  `json:"attempt"`
-	FailureReason string `json:"failureReason,omitempty"`
-}
-
-type runExecutionResult struct {
-	Success      bool                              `json:"success"`
-	ActionsTaken []agenticv1alpha1.ExecutionAction `json:"actionsTaken"`
-}
+// Mock behavior keywords — embed in the AgenticRun request text to
+// trigger failure modes in e2e tests.
+const (
+	MockTimeout   = "MOCK_TIMEOUT"    // sleep forever, never create Result CR → SandboxTimeout
+	MockCrash     = "MOCK_CRASH"      // exit 1 immediately, no Result CR → SandboxFailed
+	MockNoStatus  = "MOCK_NO_STATUS"  // create Result CR but don't patch status, exit 0 → SandboxFailed (partial write)
+	MockAgentFail = "MOCK_AGENT_FAIL" // exit 0, Result CR with failureReason + Completed=True → AgentFailed
+)
 
 func main() {
-	addr := flag.String("addr", ":8080", "listen address (e.g. :8080)")
-	flag.Parse()
+	log.SetFlags(log.LstdFlags | log.Lmicroseconds)
+	log.Println("mock agent starting (batch mode)")
 
-	listen := *addr
-	if v := os.Getenv("MOCK_AGENT_ADDR"); v != "" {
-		listen = v
-	}
+	query := mustReadFile(inputDir + "/query")
+	schemaRaw := mustReadFile(inputDir + "/output-schema")
+	ctxRaw := mustReadFile(inputDir + "/context")
+	tmplRaw := mustReadFile(inputDir + "/result-template")
 
-	mux := http.NewServeMux()
-	mux.HandleFunc("/v1/agent/run", handleRun)
-	mux.HandleFunc("/healthz", func(w http.ResponseWriter, _ *http.Request) {
-		w.WriteHeader(http.StatusOK)
-		_, _ = w.Write([]byte("ok"))
-	})
-	mux.HandleFunc("/health", func(w http.ResponseWriter, _ *http.Request) {
-		w.WriteHeader(http.StatusOK)
-		_, _ = w.Write([]byte("ok"))
-	})
-	mux.HandleFunc("/ready", func(w http.ResponseWriter, _ *http.Request) {
-		w.WriteHeader(http.StatusOK)
-		_, _ = w.Write([]byte("ok"))
-	})
-	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path == "/" && r.Method == http.MethodGet {
-			http.Redirect(w, r, "/healthz", http.StatusFound)
-			return
-		}
-		http.NotFound(w, r)
-	})
+	step := stepFromSchema(schemaRaw)
+	targetNS := pickNamespace(ctxRaw)
+	queryStr := string(query)
+	log.Printf("step=%s target_ns=%s query_len=%d", step, targetNS, len(query))
 
-	log.Printf("mock agent listening on %s (POST /v1/agent/run, GET /healthz, GET /health, GET /ready)", listen)
-	log.Printf("note: rebuild and restart this process after changing mock code or controller schemas")
-	if err := http.ListenAndServe(listen, logRequests(mux)); err != nil {
-		log.Fatalf("server: %v", err)
-	}
-}
-
-func logRequests(next http.Handler) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		log.Printf("%s %s", r.Method, r.URL.Path)
-		next.ServeHTTP(w, r)
-	})
-}
-
-const maxRequestLogBytes = 8192
-
-func handleRun(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
-		return
-	}
-	ct := r.Header.Get("Content-Type")
-	if !strings.HasPrefix(ct, "application/json") {
-		log.Printf("/v1/agent/run bad Content-Type remote=%s ct=%q", r.RemoteAddr, ct)
-		http.Error(w, "expected application/json", http.StatusBadRequest)
+	// Failure modes triggered by keywords in the query text.
+	switch {
+	case strings.Contains(queryStr, MockTimeout):
+		log.Println("MOCK_TIMEOUT: sleeping forever")
+		select {}
+	case strings.Contains(queryStr, MockCrash):
+		log.Fatalf("MOCK_CRASH: exiting without creating Result CR")
+	case strings.Contains(queryStr, MockAgentFail):
+		log.Println("MOCK_AGENT_FAIL: exiting 0 without creating Result CR")
 		return
 	}
 
-	const maxBodyBytes = 10 << 20 // 10 MB
-	rawBody, err := io.ReadAll(io.LimitReader(r.Body, maxBodyBytes))
-	if err != nil {
-		log.Printf("/v1/agent/run read body remote=%s err=%v", r.RemoteAddr, err)
-		http.Error(w, "read body", http.StatusBadRequest)
-		return
-	}
-	preview := string(rawBody)
-	if len(preview) > maxRequestLogBytes {
-		preview = preview[:maxRequestLogBytes] + fmt.Sprintf("… (%d bytes total)", len(rawBody))
-	}
-	log.Printf("/v1/agent/run remote=%s content-type=%q content-length=%d body_bytes=%d body=%s",
-		r.RemoteAddr, ct, r.ContentLength, len(rawBody), preview)
-
-	var req runRequest
-	if err := json.NewDecoder(bytes.NewReader(rawBody)).Decode(&req); err != nil {
-		http.Error(w, fmt.Sprintf("invalid json: %v", err), http.StatusBadRequest)
-		return
-	}
-
-	ns := pickNamespace(req.Context)
-	phase := phaseFromSchema(req.OutputSchema)
-	log.Printf("/v1/agent/run decoded query_len=%d phase=%s target_ns=%s", len(req.Query), phase, ns)
-
-	if d := phaseDelay(phase); d > 0 {
-		log.Printf("/v1/agent/run delaying %s for phase=%s", d, phase)
+	if d := stepDelay(step); d > 0 {
+		log.Printf("delaying %s for step=%s", d, step)
 		time.Sleep(d)
 	}
 
-	body := cannedResponse(phase, ns)
-
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(http.StatusOK)
-	if _, err := w.Write(body); err != nil {
-		log.Printf("write response: %v", err)
+	c := mustNewClient()
+	ctx := context.Background()
+	cr := newResultCR(step, tmplRaw)
+	if err := c.Create(ctx, cr); err != nil {
+		log.Fatalf("create %s %s/%s: %v", cr.GetObjectKind().GroupVersionKind().Kind, cr.GetNamespace(), cr.GetName(), err)
 	}
+	log.Printf("created %s %s/%s", cr.GetObjectKind().GroupVersionKind().Kind, cr.GetNamespace(), cr.GetName())
+
+	if strings.Contains(queryStr, MockNoStatus) {
+		log.Println("MOCK_NO_STATUS: CR created without status patch — exiting 0")
+		return
+	}
+
+	setStatus(cr, targetNS)
+	if err := c.Status().Update(ctx, cr); err != nil {
+		log.Fatalf("update status: %v", err)
+	}
+	log.Printf("status updated, step=%s — exiting 0", step)
 }
 
-// Hardcoded per-phase delays to simulate real agent work. Gives e2e tests a
-// window to observe intermediate state (e.g. RBAC exists while execution is in-flight).
-func phaseDelay(phase string) time.Duration {
-	switch phase {
-	case "execution", "verification":
-		return 60 * time.Second
-	default:
-		return 0
+// ---------------------------------------------------------------------------
+// Input helpers
+// ---------------------------------------------------------------------------
+
+func mustReadFile(path string) []byte {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		log.Fatalf("read %s: %v", path, err)
 	}
+	return data
 }
 
-func pickNamespace(ctx *runContext) string {
-	if ctx != nil && len(ctx.TargetNamespaces) > 0 && ctx.TargetNamespaces[0] != "" {
-		return ctx.TargetNamespaces[0]
-	}
-	return "default"
-}
-
-func compactJSON(raw json.RawMessage) []byte {
-	var buf bytes.Buffer
-	if err := json.Compact(&buf, raw); err != nil {
-		return raw
-	}
-	return buf.Bytes()
-}
-
-func phaseFromSchema(schema json.RawMessage) string {
-	compact := compactJSON(schema)
+func stepFromSchema(raw []byte) string {
+	compact := compactJSON(raw)
 	switch {
 	case bytes.Equal(compact, compactJSON(agenticrun.ExecutionOutputSchema)):
 		return "execution"
@@ -200,104 +126,185 @@ func phaseFromSchema(schema json.RawMessage) string {
 }
 
 // verifyFailNamespace is a sentinel target namespace that makes the mock
-// agent's verification response report failure instead of the default
-// success. e2e tests that need to exercise verification-failure/escalation
-// behavior target this namespace; every other namespace keeps getting the
-// canned "Passed" response.
+// agent's VerificationResult report an objective failure instead of the
+// default success. e2e tests that exercise verification-failure/escalation
+// behavior (OLS-3817) target this namespace; every other namespace keeps
+// getting the canned "Passed" verification result.
 const verifyFailNamespace = "e2e-verify-fail"
 
-func cannedResponse(phase, targetNS string) []byte {
-	switch phase {
-	case "execution":
-		return []byte(`{
-  "success": true,
-  "actionsTaken": [
-    {
-      "type": "mock",
-      "description": "mock execution action",
-      "outcome": "Succeeded"
-    }
-  ]
-}`)
-	case "verification":
-		if targetNS == verifyFailNamespace {
-			return []byte(`{
-  "success": false,
-  "checks": [
-    {
-      "name": "mock-check",
-      "source": "mock",
-      "value": "not-ok",
-      "result": "Failed"
-    }
-  ],
-  "summary": "mock verification failure (sentinel)"
-}`)
-		}
-		return []byte(`{
-  "success": true,
-  "checks": [
-    {
-      "name": "mock-check",
-      "source": "mock",
-      "value": "ok",
-      "result": "Passed"
-    }
-  ],
-  "summary": "mock verification summary"
-}`)
-	case "escalation":
-		return []byte(`{
-  "success": true,
-  "summary": "mock escalation summary",
-  "content": "mock escalation content"
-}`)
+func compactJSON(raw json.RawMessage) []byte {
+	var buf bytes.Buffer
+	if err := json.Compact(&buf, raw); err != nil {
+		return raw
+	}
+	return buf.Bytes()
+}
+
+func stepDelay(step string) time.Duration {
+	switch step {
+	case "execution", "verification":
+		return 60 * time.Second
 	default:
-		// Analysis: one option with diagnosis, proposal, rbac, verification (default workflow shape).
-		return []byte(fmt.Sprintf(`{
-  "success": true,
-  "options": [
-    {
-      "title": "mock-remediation",
-      "summary": "mock option summary",
-      "diagnosis": {
-        "summary": "mock diagnosis",
-        "rootCause": "mock root cause"
-      },
-      "remediationPlan": {
-        "description": "mock proposal description",
-        "actions": [
-          { "command": "kubectl get configmap -n %s", "type": "pre-check", "description": "Check current configmap state" },
-          { "command": "kubectl patch configmap mock-cm -n %s -p '{\"data\":{\"key\":\"value\"}}'", "type": "mutation", "description": "Patch configmap with fix" },
-          { "command": "kubectl get configmap mock-cm -n %s -o jsonpath='{.data.key}'", "type": "post-check", "description": "Verify configmap was patched" }
-        ],
-        "reversible": "Reversible"
-      },
-      "verification": {
-        "description": "mock verification plan",
-        "steps": [
-          {
-            "name": "mock-step",
-            "command": "true",
-            "expected": "ok",
-            "type": "command"
-          }
-        ]
-      },
-      "rbac": {
-        "namespaceScoped": [
-          {
-            "namespace": %q,
-            "apiGroups": [""],
-            "resources": ["configmaps"],
-            "verbs": ["get", "list", "patch"],
-            "justification": "Read and patch configmaps for mock remediation"
-          }
-        ],
-        "clusterScoped": []
-      }
-    }
-  ]
-}`, targetNS, targetNS, targetNS, targetNS))
+		return 0
+	}
+}
+
+func pickNamespace(ctxRaw []byte) string {
+	var c struct {
+		TargetNamespaces []string `json:"targetNamespaces"`
+	}
+	if err := json.Unmarshal(ctxRaw, &c); err == nil && len(c.TargetNamespaces) > 0 && c.TargetNamespaces[0] != "" {
+		return c.TargetNamespaces[0]
+	}
+	return "default"
+}
+
+// ---------------------------------------------------------------------------
+// Kubernetes client
+// ---------------------------------------------------------------------------
+
+func mustNewClient() client.Client {
+	cfg, err := rest.InClusterConfig()
+	if err != nil {
+		log.Printf("not in cluster (%v), falling back to kubeconfig", err)
+		loadingRules := clientcmd.NewDefaultClientConfigLoadingRules()
+		cfg, err = clientcmd.NewNonInteractiveDeferredLoadingClientConfig(loadingRules, nil).ClientConfig()
+		if err != nil {
+			log.Fatalf("kubeconfig: %v", err)
+		}
+	}
+
+	s := scheme.Scheme
+	utilruntime.Must(agenticv1alpha1.AddToScheme(s))
+
+	c, err := client.New(cfg, client.Options{Scheme: s})
+	if err != nil {
+		log.Fatalf("create client: %v", err)
+	}
+	return c
+}
+
+// ---------------------------------------------------------------------------
+// Result CR: create from template, then fill status
+// ---------------------------------------------------------------------------
+
+func newResultCR(step string, tmplRaw []byte) client.Object {
+	switch step {
+	case "execution":
+		var cr agenticv1alpha1.ExecutionResult
+		must(json.Unmarshal(tmplRaw, &cr))
+		return &cr
+	case "verification":
+		var cr agenticv1alpha1.VerificationResult
+		must(json.Unmarshal(tmplRaw, &cr))
+		return &cr
+	case "escalation":
+		var cr agenticv1alpha1.EscalationResult
+		must(json.Unmarshal(tmplRaw, &cr))
+		return &cr
+	default:
+		var cr agenticv1alpha1.AnalysisResult
+		must(json.Unmarshal(tmplRaw, &cr))
+		return &cr
+	}
+}
+
+func setStatus(obj client.Object, targetNS string) {
+	now := metav1.Now()
+	completed := []metav1.Condition{{
+		Type:               "Completed",
+		Status:             metav1.ConditionTrue,
+		Reason:             "Succeeded",
+		LastTransitionTime: now,
+	}}
+
+	switch cr := obj.(type) {
+	case *agenticv1alpha1.AnalysisResult:
+		cr.Status.Conditions = completed
+		cr.Status.ActionRequired = agenticv1alpha1.ActionRequiredTrue
+		cr.Status.Diagnosis = agenticv1alpha1.DiagnosisResult{
+			Summary:   "mock diagnosis",
+			RootCause: "mock root cause",
+		}
+		cr.Status.Options = []agenticv1alpha1.RemediationOption{{
+			Title:   "mock-remediation",
+			Summary: "mock option summary",
+			Diagnosis: agenticv1alpha1.DiagnosisResult{
+				Summary:   "mock diagnosis",
+				RootCause: "mock root cause",
+			},
+			RemediationPlan: agenticv1alpha1.RemediationPlan{
+				Description: "mock proposal description",
+				Actions: []agenticv1alpha1.ProposedAction{
+					{Command: fmt.Sprintf("kubectl get configmap -n %s", targetNS), Type: "pre-check", Description: "Check current configmap state"},
+					{Command: fmt.Sprintf("kubectl patch configmap mock-cm -n %s -p '{\"data\":{\"key\":\"value\"}}'", targetNS), Type: "mutation", Description: "Patch configmap with fix"},
+					{Command: fmt.Sprintf("kubectl get configmap mock-cm -n %s -o jsonpath='{.data.key}'", targetNS), Type: "post-check", Description: "Verify configmap was patched"},
+				},
+				Reversible: agenticv1alpha1.ReversibilityReversible,
+			},
+			Verification: agenticv1alpha1.VerificationPlan{
+				Description: "mock verification plan",
+				Steps: []agenticv1alpha1.VerificationStep{
+					{Name: "mock-step", Command: "true", Expected: "ok", Type: "command"},
+				},
+			},
+			RBAC: agenticv1alpha1.RBACResult{
+				NamespaceScoped: []agenticv1alpha1.RBACRule{{
+					Namespace:     targetNS,
+					APIGroups:     []string{""},
+					Resources:     []string{"configmaps"},
+					Verbs:         []string{"get", "list", "patch"},
+					Justification: "Read and patch configmaps for mock remediation",
+				}},
+			},
+		}}
+
+	case *agenticv1alpha1.ExecutionResult:
+		cr.Status.Conditions = completed
+		cr.Status.ActionsTaken = []agenticv1alpha1.ExecutionAction{{
+			Type:        "mock",
+			Description: "mock execution action",
+			Outcome:     "Succeeded",
+		}}
+
+	case *agenticv1alpha1.VerificationResult:
+		if targetNS == verifyFailNamespace {
+			// Objective verification failure (OLS-3817): the agent ran and
+			// reports the remediation did not work. Signal it via the
+			// Completed condition reason=Failed so the operator escalates.
+			cr.Status.Conditions = []metav1.Condition{{
+				Type:               "Completed",
+				Status:             metav1.ConditionTrue,
+				Reason:             agenticv1alpha1.ResultReasonFailed,
+				LastTransitionTime: now,
+			}}
+			cr.Status.Checks = []agenticv1alpha1.VerifyCheck{{
+				Name:   "mock-check",
+				Source: "mock",
+				Value:  "not-ok",
+				Result: "Failed",
+			}}
+			cr.Status.Summary = "mock verification failure (sentinel)"
+			break
+		}
+		cr.Status.Conditions = completed
+		cr.Status.Checks = []agenticv1alpha1.VerifyCheck{{
+			Name:   "mock-check",
+			Source: "mock",
+			Value:  "ok",
+			Result: "Passed",
+		}}
+		cr.Status.Summary = "mock verification summary"
+
+	case *agenticv1alpha1.EscalationResult:
+		cr.Status.Conditions = completed
+		cr.Status.Summary = "mock escalation summary"
+		cr.Status.Content = "mock escalation content"
+	}
+}
+
+func must(err error) {
+	if err != nil {
+		log.Fatal(err)
 	}
 }

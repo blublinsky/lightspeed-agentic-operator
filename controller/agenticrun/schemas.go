@@ -15,8 +15,9 @@ var AnalysisOutputSchema = json.RawMessage(`{
   "type": "object",
   "properties": {
     "actionRequired": {
-      "type": "boolean",
-      "description": "Whether remediation action is required. Set to false when the issue is a false alarm, already self-healed, or no cluster changes are needed. When false, provide a diagnosis explaining why no action is needed and omit options."
+      "type": "string",
+      "enum": ["True", "False"],
+      "description": "Whether remediation action is required. Set to 'False' when the issue is a false alarm, already self-healed, or no cluster changes are needed. When 'False', provide a diagnosis explaining why no action is needed and omit options."
     },
     "diagnosis": {
       "type": "object",
@@ -148,8 +149,9 @@ var MinimalAnalysisOutputSchema = json.RawMessage(`{
   "type": "object",
   "properties": {
     "actionRequired": {
-      "type": "boolean",
-      "description": "Whether remediation action is required. Set to false when the issue is a false alarm, already self-healed, or no cluster changes are needed."
+      "type": "string",
+      "enum": ["True", "False"],
+      "description": "Whether remediation action is required. Set to 'False' when the issue is a false alarm, already self-healed, or no cluster changes are needed."
     },
     "diagnosis": {
       "type": "object",

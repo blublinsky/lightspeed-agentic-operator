@@ -31,9 +31,9 @@ func getApprovalPolicy(ctx context.Context, c client.Client) (*agenticv1alpha1.A
 	return policy, nil
 }
 
-func getAgenticRunApproval(ctx context.Context, c client.Client, run *agenticv1alpha1.AgenticRun) (*agenticv1alpha1.AgenticRunApproval, error) {
+func getAgenticRunApproval(ctx context.Context, c client.Client, run *agenticv1alpha1.AgenticRun, namespace string) (*agenticv1alpha1.AgenticRunApproval, error) {
 	approval := &agenticv1alpha1.AgenticRunApproval{}
-	err := c.Get(ctx, types.NamespacedName{Name: run.Name, Namespace: run.Namespace}, approval)
+	err := c.Get(ctx, types.NamespacedName{Name: run.Name, Namespace: namespace}, approval)
 	if err != nil {
 		return nil, err
 	}
@@ -45,8 +45,9 @@ func ensureAgenticRunApproval(
 	c client.Client,
 	run *agenticv1alpha1.AgenticRun,
 	policy *agenticv1alpha1.ApprovalPolicy,
+	namespace string,
 ) (*agenticv1alpha1.AgenticRunApproval, error) {
-	existing, err := getAgenticRunApproval(ctx, c, run)
+	existing, err := getAgenticRunApproval(ctx, c, run, namespace)
 	if err == nil {
 		return existing, nil
 	}
@@ -85,7 +86,7 @@ func ensureAgenticRunApproval(
 	approval := &agenticv1alpha1.AgenticRunApproval{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      run.Name,
-			Namespace: run.Namespace,
+			Namespace: namespace,
 			OwnerReferences: []metav1.OwnerReference{{
 				APIVersion:         "agentic.openshift.io/v1alpha1",
 				Kind:               "AgenticRun",
@@ -102,7 +103,7 @@ func ensureAgenticRunApproval(
 
 	if err := c.Create(ctx, approval); err != nil {
 		if apierrors.IsAlreadyExists(err) {
-			return getAgenticRunApproval(ctx, c, run)
+			return getAgenticRunApproval(ctx, c, run, namespace)
 		}
 		return nil, fmt.Errorf("%s: %w", ErrCreateAgenticRunApproval, err)
 	}
@@ -181,7 +182,7 @@ func getStageOverrideAgent(approval *agenticv1alpha1.AgenticRunApproval, stage a
 	return ""
 }
 
-func getStageOption(approval *agenticv1alpha1.AgenticRunApproval, _ *agenticv1alpha1.ApprovalPolicy) *int32 {
+func getStageOption(approval *agenticv1alpha1.AgenticRunApproval) *int32 {
 	if approval != nil {
 		for _, s := range approval.Spec.Stages {
 			if s.Type == agenticv1alpha1.ApprovalStageExecution && s.Execution != nil && s.Execution.Option != nil {

@@ -5,16 +5,13 @@ import (
 	"crypto/rand"
 	"encoding/json"
 	"fmt"
-	"net/http"
 	"sync"
 	"time"
 
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
-	"go.opentelemetry.io/otel/propagation"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 	"go.opentelemetry.io/otel/trace"
-	"go.opentelemetry.io/otel/trace/noop"
 	"go.uber.org/zap"
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -53,26 +50,20 @@ func (*AgenticRunIDGenerator) NewSpanID(_ context.Context, _ trace.TraceID) trac
 // Each phase of an AgenticRun gets its own independent trace (fresh trace ID).
 // Phase spans link back to the prior phase's root span via span links.
 type AuditLogger interface {
-	// Phase spans — each creates a new root trace with auto-generated trace ID.
-	StartAnalysisSpan(ctx context.Context, run *agenticv1alpha1.AgenticRun) (context.Context, trace.Span)
-	StartExecutionSpan(ctx context.Context, run *agenticv1alpha1.AgenticRun) (context.Context, trace.Span)
-	StartVerificationSpan(ctx context.Context, run *agenticv1alpha1.AgenticRun) (context.Context, trace.Span)
-	StartEscalationSpan(ctx context.Context, run *agenticv1alpha1.AgenticRun) (context.Context, trace.Span)
-
 	// Short-lived phase spans (created and ended immediately).
 	EmitApprovalSpan(ctx context.Context, run *agenticv1alpha1.AgenticRun, approval *agenticv1alpha1.AgenticRunApproval, selectedOptionTitle string)
 	EmitTerminalSpan(ctx context.Context, run *agenticv1alpha1.AgenticRun, phase, reason string)
 
 	// Span events — emitted on the current span from ctx.
 	EmitAgenticRunReceived(ctx context.Context, run *agenticv1alpha1.AgenticRun)
-	EmitAnalysisCompleted(ctx context.Context, run *agenticv1alpha1.AgenticRun, result *agenticv1alpha1.AnalysisResult)
-	EmitExecutionCompleted(ctx context.Context, run *agenticv1alpha1.AgenticRun, result *agenticv1alpha1.ExecutionResult)
-	EmitVerificationCompleted(ctx context.Context, run *agenticv1alpha1.AgenticRun, result *agenticv1alpha1.VerificationResult)
-	EmitVerificationRetry(ctx context.Context, run *agenticv1alpha1.AgenticRun, result *agenticv1alpha1.VerificationResult, retryCount int)
-	EmitEscalationCompleted(ctx context.Context, run *agenticv1alpha1.AgenticRun, result *agenticv1alpha1.EscalationResult)
 
-	// InjectTraceContext injects W3C traceparent header for downstream propagation.
-	InjectTraceContext(ctx context.Context, run *agenticv1alpha1.AgenticRun, headers http.Header)
+	// BeginStep opens a phase span for a sandbox step and stores it in-memory
+	// so CompleteStep can close it when the pod terminates (async model).
+	BeginStep(ctx context.Context, run *agenticv1alpha1.AgenticRun, step string) context.Context
+	// CompleteStep ends the phase span opened by BeginStep. If result is
+	// non-nil, rich audit attributes are emitted as a span event before
+	// closing. No-op if no span was stored (e.g. operator restarted).
+	CompleteStep(run *agenticv1alpha1.AgenticRun, step string, result client.Object)
 
 	// Cleanup removes in-memory state for a completed run (except terminal guard).
 	Cleanup(run *agenticv1alpha1.AgenticRun)
@@ -104,6 +95,7 @@ type ProductionAuditLogger struct {
 	tracer          trace.Tracer
 	logEmitter      LogEmitter
 	priorPhase      sync.Map // map[types.UID]trace.SpanContext
+	activeSpans     sync.Map // map[string]trace.Span — "{UID}/{step}" → open phase span (async model)
 	emittedTerminal sync.Map // map[types.UID]bool — prevents duplicate terminal spans
 	emittedApproval sync.Map // map[types.UID]bool — prevents duplicate approval spans on retry
 	knownUIDs       sync.Map // map[string]types.UID — "namespace/name" → UID for cleanup after deletion
@@ -224,20 +216,118 @@ func (l *ProductionAuditLogger) startPhaseSpan(ctx context.Context, run *agentic
 	return spanCtx, span
 }
 
-func (l *ProductionAuditLogger) StartAnalysisSpan(ctx context.Context, run *agenticv1alpha1.AgenticRun) (context.Context, trace.Span) {
+func (l *ProductionAuditLogger) startAnalysisSpan(ctx context.Context, run *agenticv1alpha1.AgenticRun) (context.Context, trace.Span) {
 	return l.startPhaseSpan(ctx, run, "agenticrun.analyze")
 }
 
-func (l *ProductionAuditLogger) StartExecutionSpan(ctx context.Context, run *agenticv1alpha1.AgenticRun) (context.Context, trace.Span) {
+func (l *ProductionAuditLogger) startExecutionSpan(ctx context.Context, run *agenticv1alpha1.AgenticRun) (context.Context, trace.Span) {
 	return l.startPhaseSpan(ctx, run, "agenticrun.execute")
 }
 
-func (l *ProductionAuditLogger) StartVerificationSpan(ctx context.Context, run *agenticv1alpha1.AgenticRun) (context.Context, trace.Span) {
+func (l *ProductionAuditLogger) startVerificationSpan(ctx context.Context, run *agenticv1alpha1.AgenticRun) (context.Context, trace.Span) {
 	return l.startPhaseSpan(ctx, run, "agenticrun.verify")
 }
 
-func (l *ProductionAuditLogger) StartEscalationSpan(ctx context.Context, run *agenticv1alpha1.AgenticRun) (context.Context, trace.Span) {
+func (l *ProductionAuditLogger) startEscalationSpan(ctx context.Context, run *agenticv1alpha1.AgenticRun) (context.Context, trace.Span) {
 	return l.startPhaseSpan(ctx, run, "agenticrun.escalate")
+}
+
+func activeSpanKey(uid types.UID, step string) string {
+	return string(uid) + "/" + step
+}
+
+func (l *ProductionAuditLogger) BeginStep(ctx context.Context, run *agenticv1alpha1.AgenticRun, step string) context.Context {
+	var spanCtx context.Context
+	var span trace.Span
+	switch step {
+	case "analysis":
+		spanCtx, span = l.startAnalysisSpan(ctx, run)
+	case "execution":
+		spanCtx, span = l.startExecutionSpan(ctx, run)
+	case "verification":
+		spanCtx, span = l.startVerificationSpan(ctx, run)
+	case "escalation":
+		spanCtx, span = l.startEscalationSpan(ctx, run)
+	default:
+		return ctx
+	}
+	l.activeSpans.Store(activeSpanKey(run.UID, step), span)
+	return spanCtx
+}
+
+func (l *ProductionAuditLogger) CompleteStep(run *agenticv1alpha1.AgenticRun, step string, result client.Object) {
+	key := activeSpanKey(run.UID, step)
+	v, ok := l.activeSpans.LoadAndDelete(key)
+	if !ok {
+		return
+	}
+	span, _ := v.(trace.Span)
+	if span == nil {
+		return
+	}
+	if result != nil {
+		l.emitResultEvent(span, run, step, result)
+	}
+	span.End()
+}
+
+func (l *ProductionAuditLogger) emitResultEvent(span trace.Span, run *agenticv1alpha1.AgenticRun, step string, result client.Object) {
+	attrs := []attribute.KeyValue{
+		attribute.String("agenticrun.name", run.Name),
+		attribute.String("result.name", result.GetName()),
+		attribute.String("result.uid", string(result.GetUID())),
+	}
+
+	switch r := result.(type) {
+	case *agenticv1alpha1.AnalysisResult:
+		attrs = append(attrs, attribute.Int("options.count", len(r.Status.Options)))
+		for i, opt := range r.Status.Options {
+			if i >= 3 {
+				break
+			}
+			attrs = append(attrs, attribute.String(fmt.Sprintf("option.%d.title", i), opt.Title))
+		}
+	case *agenticv1alpha1.ExecutionResult:
+		attrs = append(attrs,
+			attribute.Int("actions_taken.count", len(r.Status.ActionsTaken)),
+			attribute.String("failure_reason", r.Status.FailureReason),
+		)
+		for i, action := range r.Status.ActionsTaken {
+			if i >= 5 {
+				break
+			}
+			attrs = append(attrs,
+				attribute.String(fmt.Sprintf("action.%d.type", i), action.Type),
+				attribute.String(fmt.Sprintf("action.%d.description", i), action.Description),
+			)
+		}
+	case *agenticv1alpha1.VerificationResult:
+		attrs = append(attrs,
+			attribute.String("summary", r.Status.Summary),
+			attribute.Int("checks.count", len(r.Status.Checks)),
+		)
+		for i, check := range r.Status.Checks {
+			if i >= 5 {
+				break
+			}
+			attrs = append(attrs,
+				attribute.String(fmt.Sprintf("check.%d.name", i), check.Name),
+				attribute.String(fmt.Sprintf("check.%d.result", i), string(check.Result)),
+			)
+		}
+	case *agenticv1alpha1.EscalationResult:
+		attrs = append(attrs, attribute.String("summary", r.Status.Summary))
+	}
+
+	serialized, err := serializeCR(result)
+	if err == nil {
+		l.emitStructuredLog(trace.ContextWithSpan(context.Background(), span),
+			string(run.UID), step, fmt.Sprintf("audit.%s.completed", step),
+			map[string]interface{}{"result": serialized})
+	}
+
+	attrs = append(attrs, attribute.String("agenticrun.cr", serializeCRJSON(result)))
+	span.AddEvent(fmt.Sprintf("agenticrun.%s.completed", step), trace.WithAttributes(attrs...))
 }
 
 // EmitApprovalSpan creates a short-lived agenticrun.human_approval trace.
@@ -332,202 +422,48 @@ func (l *ProductionAuditLogger) EmitAgenticRunReceived(ctx context.Context, run 
 	))
 }
 
-func (l *ProductionAuditLogger) EmitAnalysisCompleted(ctx context.Context, run *agenticv1alpha1.AgenticRun, result *agenticv1alpha1.AnalysisResult) {
-	serialized, err := serializeCR(result)
-	if err != nil {
-		l.logger.Error("Failed to serialize AnalysisResult for audit", zap.Error(err))
-	} else {
-		l.emitStructuredLog(ctx, string(run.UID), "analysis", "audit.analysis.completed", map[string]interface{}{"analysisResult": serialized})
-	}
+var auditSteps = []string{"analysis", "execution", "verification", "escalation"}
 
-	span := trace.SpanFromContext(ctx)
-	if span == nil || !span.IsRecording() {
-		return
-	}
-	attrs := []attribute.KeyValue{
-		attribute.String("agenticrun.name", run.Name),
-		attribute.String("result.name", result.Name),
-		attribute.String("result.uid", string(result.UID)),
-		attribute.Int("options.count", len(result.Status.Options)),
-	}
-	for i, opt := range result.Status.Options {
-		if i >= 3 {
-			break
+func (l *ProductionAuditLogger) endActiveSpans(uid types.UID) {
+	for _, step := range auditSteps {
+		if val, ok := l.activeSpans.LoadAndDelete(activeSpanKey(uid, step)); ok {
+			if span, ok := val.(trace.Span); ok {
+				span.End()
+			}
 		}
-		prefix := fmt.Sprintf("option.%d.", i)
-		attrs = append(attrs,
-			attribute.String(prefix+"title", opt.Title),
-		)
 	}
-	attrs = append(attrs, attribute.String("agenticrun.cr", serializeCRJSON(result)))
-	span.AddEvent("agenticrun.analysis.completed", trace.WithAttributes(attrs...))
-}
-
-func (l *ProductionAuditLogger) EmitExecutionCompleted(ctx context.Context, run *agenticv1alpha1.AgenticRun, result *agenticv1alpha1.ExecutionResult) {
-	serialized, err := serializeCR(result)
-	if err != nil {
-		l.logger.Error("Failed to serialize ExecutionResult for audit", zap.Error(err))
-	} else {
-		l.emitStructuredLog(ctx, string(run.UID), "execution", "audit.execution.completed", map[string]interface{}{"executionResult": serialized})
-	}
-
-	span := trace.SpanFromContext(ctx)
-	if span == nil || !span.IsRecording() {
-		return
-	}
-	attrs := []attribute.KeyValue{
-		attribute.String("agenticrun.name", run.Name),
-		attribute.String("result.name", result.Name),
-		attribute.String("result.uid", string(result.UID)),
-		attribute.Int("actions_taken.count", len(result.Status.ActionsTaken)),
-		attribute.String("failure_reason", result.Status.FailureReason),
-	}
-	for i, action := range result.Status.ActionsTaken {
-		if i >= 5 {
-			break
-		}
-		attrs = append(attrs,
-			attribute.String(fmt.Sprintf("action.%d.type", i), action.Type),
-			attribute.String(fmt.Sprintf("action.%d.description", i), action.Description),
-		)
-	}
-	attrs = append(attrs, attribute.String("agenticrun.cr", serializeCRJSON(result)))
-	span.AddEvent("agenticrun.execution.completed", trace.WithAttributes(attrs...))
-}
-
-func (l *ProductionAuditLogger) EmitVerificationCompleted(ctx context.Context, run *agenticv1alpha1.AgenticRun, result *agenticv1alpha1.VerificationResult) {
-	serialized, err := serializeCR(result)
-	if err != nil {
-		l.logger.Error("Failed to serialize VerificationResult for audit", zap.Error(err))
-	} else {
-		l.emitStructuredLog(ctx, string(run.UID), "verification", "audit.verification.completed", map[string]interface{}{"verificationResult": serialized})
-	}
-
-	span := trace.SpanFromContext(ctx)
-	if span == nil || !span.IsRecording() {
-		return
-	}
-	attrs := []attribute.KeyValue{
-		attribute.String("agenticrun.name", run.Name),
-		attribute.String("result.name", result.Name),
-		attribute.String("result.uid", string(result.UID)),
-		attribute.String("summary", result.Status.Summary),
-		attribute.Int("checks.count", len(result.Status.Checks)),
-	}
-	for i, check := range result.Status.Checks {
-		if i >= 5 {
-			break
-		}
-		attrs = append(attrs,
-			attribute.String(fmt.Sprintf("check.%d.name", i), check.Name),
-			attribute.String(fmt.Sprintf("check.%d.result", i), string(check.Result)),
-		)
-	}
-	attrs = append(attrs, attribute.String("agenticrun.cr", serializeCRJSON(result)))
-	span.AddEvent("agenticrun.verification.completed", trace.WithAttributes(attrs...))
-}
-
-func (l *ProductionAuditLogger) EmitVerificationRetry(ctx context.Context, run *agenticv1alpha1.AgenticRun, result *agenticv1alpha1.VerificationResult, retryCount int) {
-	serialized, err := serializeCR(result)
-	if err != nil {
-		l.logger.Error("Failed to serialize VerificationResult for audit retry", zap.Error(err))
-	} else {
-		l.emitStructuredLog(ctx, string(run.UID), "verification", "audit.verification.retry", map[string]interface{}{
-			"verificationResult": serialized,
-			"retryCount":         retryCount,
-		})
-	}
-
-	span := trace.SpanFromContext(ctx)
-	if span == nil || !span.IsRecording() {
-		return
-	}
-	span.AddEvent("agenticrun.verification.retry", trace.WithAttributes(
-		attribute.String("agenticrun.name", run.Name),
-		attribute.String("result.name", result.Name),
-		attribute.String("summary", result.Status.Summary),
-		attribute.Int("retry_count", retryCount),
-		attribute.Int("checks.count", len(result.Status.Checks)),
-		attribute.String("agenticrun.cr", serializeCRJSON(result)),
-	))
-}
-
-func (l *ProductionAuditLogger) EmitEscalationCompleted(ctx context.Context, run *agenticv1alpha1.AgenticRun, result *agenticv1alpha1.EscalationResult) {
-	serialized, err := serializeCR(result)
-	if err != nil {
-		l.logger.Error("Failed to serialize EscalationResult for audit", zap.Error(err))
-	} else {
-		l.emitStructuredLog(ctx, string(run.UID), "escalation", "audit.escalation.completed", map[string]interface{}{"escalationResult": serialized})
-	}
-
-	span := trace.SpanFromContext(ctx)
-	if span == nil || !span.IsRecording() {
-		return
-	}
-	span.AddEvent("agenticrun.escalation.completed", trace.WithAttributes(
-		attribute.String("agenticrun.name", run.Name),
-		attribute.String("result.name", result.Name),
-		attribute.String("result.uid", string(result.UID)),
-		attribute.String("summary", result.Status.Summary),
-		attribute.String("agenticrun.cr", serializeCRJSON(result)),
-	))
-}
-
-func (l *ProductionAuditLogger) InjectTraceContext(ctx context.Context, _ *agenticv1alpha1.AgenticRun, headers http.Header) {
-	sc := trace.SpanContextFromContext(ctx)
-	if !sc.IsValid() {
-		return
-	}
-	propagator := propagation.TraceContext{}
-	propagator.Inject(ctx, propagation.HeaderCarrier(headers))
 }
 
 func (l *ProductionAuditLogger) Cleanup(run *agenticv1alpha1.AgenticRun) {
 	l.priorPhase.Delete(run.UID)
 	l.emittedApproval.Delete(run.UID)
+	l.endActiveSpans(run.UID)
 }
 
 func (l *ProductionAuditLogger) CleanupDeleted(key types.NamespacedName) {
 	if uid, ok := l.knownUIDs.LoadAndDelete(key.String()); ok {
-		l.emittedTerminal.Delete(uid)
-		l.priorPhase.Delete(uid)
-		l.emittedApproval.Delete(uid)
+		typedUID, ok := uid.(types.UID)
+		if !ok {
+			return
+		}
+		l.emittedTerminal.Delete(typedUID)
+		l.priorPhase.Delete(typedUID)
+		l.emittedApproval.Delete(typedUID)
+		l.endActiveSpans(typedUID)
 	}
 }
 
 // --- NoOp implementations ---
 
-var noopTracer = noop.NewTracerProvider().Tracer("noop")
-
-func (l *NoOpAuditLogger) StartAnalysisSpan(ctx context.Context, _ *agenticv1alpha1.AgenticRun) (context.Context, trace.Span) {
-	return noopTracer.Start(ctx, "agenticrun.analyze")
-}
-func (l *NoOpAuditLogger) StartExecutionSpan(ctx context.Context, _ *agenticv1alpha1.AgenticRun) (context.Context, trace.Span) {
-	return noopTracer.Start(ctx, "agenticrun.execute")
-}
-func (l *NoOpAuditLogger) StartVerificationSpan(ctx context.Context, _ *agenticv1alpha1.AgenticRun) (context.Context, trace.Span) {
-	return noopTracer.Start(ctx, "agenticrun.verify")
-}
-func (l *NoOpAuditLogger) StartEscalationSpan(ctx context.Context, _ *agenticv1alpha1.AgenticRun) (context.Context, trace.Span) {
-	return noopTracer.Start(ctx, "agenticrun.escalate")
-}
 func (l *NoOpAuditLogger) EmitApprovalSpan(_ context.Context, _ *agenticv1alpha1.AgenticRun, _ *agenticv1alpha1.AgenticRunApproval, _ string) {
 }
 func (l *NoOpAuditLogger) EmitTerminalSpan(_ context.Context, _ *agenticv1alpha1.AgenticRun, _, _ string) {
 }
 func (l *NoOpAuditLogger) EmitAgenticRunReceived(_ context.Context, _ *agenticv1alpha1.AgenticRun) {
 }
-func (l *NoOpAuditLogger) EmitAnalysisCompleted(_ context.Context, _ *agenticv1alpha1.AgenticRun, _ *agenticv1alpha1.AnalysisResult) {
+func (l *NoOpAuditLogger) BeginStep(ctx context.Context, _ *agenticv1alpha1.AgenticRun, _ string) context.Context {
+	return ctx
 }
-func (l *NoOpAuditLogger) EmitExecutionCompleted(_ context.Context, _ *agenticv1alpha1.AgenticRun, _ *agenticv1alpha1.ExecutionResult) {
-}
-func (l *NoOpAuditLogger) EmitVerificationCompleted(_ context.Context, _ *agenticv1alpha1.AgenticRun, _ *agenticv1alpha1.VerificationResult) {
-}
-func (l *NoOpAuditLogger) EmitVerificationRetry(_ context.Context, _ *agenticv1alpha1.AgenticRun, _ *agenticv1alpha1.VerificationResult, _ int) {
-}
-func (l *NoOpAuditLogger) EmitEscalationCompleted(_ context.Context, _ *agenticv1alpha1.AgenticRun, _ *agenticv1alpha1.EscalationResult) {
-}
-func (l *NoOpAuditLogger) InjectTraceContext(_ context.Context, _ *agenticv1alpha1.AgenticRun, _ http.Header) {
-}
-func (l *NoOpAuditLogger) Cleanup(_ *agenticv1alpha1.AgenticRun) {}
-func (l *NoOpAuditLogger) CleanupDeleted(_ types.NamespacedName) {}
+func (l *NoOpAuditLogger) CompleteStep(_ *agenticv1alpha1.AgenticRun, _ string, _ client.Object) {}
+func (l *NoOpAuditLogger) Cleanup(_ *agenticv1alpha1.AgenticRun)                                 {}
+func (l *NoOpAuditLogger) CleanupDeleted(_ types.NamespacedName)                                 {}

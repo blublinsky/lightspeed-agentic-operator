@@ -1,13 +1,14 @@
 package agenticrun
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"path"
 	"strings"
 
+	"go.opentelemetry.io/otel/trace"
 	corev1 "k8s.io/api/core/v1"
-	"k8s.io/apimachinery/pkg/util/intstr"
 	"k8s.io/utils/ptr"
 
 	agenticv1alpha1 "github.com/openshift/lightspeed-agentic-operator/api/v1alpha1"
@@ -19,20 +20,21 @@ const (
 	ErrBuildAgentRequired     = "agent is required"
 	ErrBuildLLMRequired       = "LLMProvider is required"
 	ErrBuildSARequired        = "serviceAccount is required"
+	ErrBuildInputCMRequired   = "inputConfigMapName is required"
 	ErrBuildMCPServers        = "build MCP servers"
 	ErrMarshalMCPServerConfig = "marshal MCP server config"
 
-	llmCredsMountPath   = "/var/run/secrets/llm-credentials"
-	llmCredsVolumeName  = "llm-credentials"
-	mcpHeadersMountRoot = "/var/secrets/mcp"
-	mcpServersEnvVar    = "LIGHTSPEED_MCP_SERVERS"
+	llmCredsMountPath        = "/var/run/secrets/llm-credentials"
+	llmCredsVolumeName       = "llm-credentials"
+	inputConfigMapVolumeName = "input"
+	mcpHeadersMountRoot      = "/var/secrets/mcp"
+	mcpServersEnvVar         = "LIGHTSPEED_MCP_SERVERS"
 
-	LabelManaged      = "agentic.openshift.io/managed"
-	LabelBaseTemplate = "agentic.openshift.io/base-template"
-	LabelStep         = "agentic.openshift.io/step"
-	LabelAgent        = "agentic.openshift.io/agent"
-	LabelRun          = "agentic.openshift.io/run"
-	LabelComponent    = "agentic.openshift.io/component"
+	LabelStep      = "agentic.openshift.io/step"
+	LabelRun       = "agentic.openshift.io/run"
+	LabelComponent = "agentic.openshift.io/component"
+
+	AnnotationRunName = "agentic.openshift.io/run-name"
 )
 
 type mcpServerEnvEntry struct {
@@ -48,13 +50,15 @@ type mcpHeaderEnvEntry struct {
 	SecretName string `json:"secretName,omitempty"`
 }
 
-// PodSpecBuilder overlays agent-specific configuration (env vars, volumes,
-// probes) onto a base PodSpec provided by the configuration cache.
+// PodSpecBuilder overlays agent-specific configuration (env vars, volumes)
+// onto a base PodSpec provided by the configuration cache.
 type PodSpecBuilder struct{}
 
 // Build takes a base PodSpec (from the configuration cache) and overlays
 // agent, LLM, tools, and OTEL configuration for the given step.
+// inputConfigMapName is mounted read-only at /input/ (OLS-3794 batch model).
 // The base PodSpec must contain at least one container (the agent container).
+// HTTP readiness/liveness probes are not set — batch sandboxes have no HTTP server.
 func (b *PodSpecBuilder) Build(
 	base *corev1.PodSpec,
 	agent *agenticv1alpha1.Agent,
@@ -64,6 +68,8 @@ func (b *PodSpecBuilder) Build(
 	step string,
 	runUID string,
 	serviceAccount string,
+	inputConfigMapName string,
+	traceparent string,
 ) (*corev1.PodSpec, error) {
 	if base == nil || len(base.Containers) == 0 {
 		return nil, fmt.Errorf("%s", ErrBuildBasePodSpec)
@@ -77,12 +83,17 @@ func (b *PodSpecBuilder) Build(
 	if serviceAccount == "" {
 		return nil, fmt.Errorf("%s", ErrBuildSARequired)
 	}
+	if inputConfigMapName == "" {
+		return nil, fmt.Errorf("%s", ErrBuildInputCMRequired)
+	}
 
 	podSpec := base.DeepCopy()
 	podSpec.ServiceAccountName = serviceAccount
 	podSpec.AutomountServiceAccountToken = ptr.To(true)
+	podSpec.RestartPolicy = corev1.RestartPolicyNever
 
 	container := &podSpec.Containers[0]
+	container.TerminationMessagePolicy = corev1.TerminationMessageFallbackToLogsOnError
 	var volumes []corev1.Volume
 
 	container.Env = append(container.Env,
@@ -120,22 +131,21 @@ func (b *PodSpecBuilder) Build(
 		ReadOnly:  true,
 	})
 
-	container.ReadinessProbe = &corev1.Probe{
-		ProbeHandler: corev1.ProbeHandler{
-			HTTPGet: &corev1.HTTPGetAction{Path: "/ready", Port: intstr.FromInt32(8080)},
+	// Batch input ConfigMap (sandbox-execution.md rule 7). No HTTP probes —
+	// the sandbox is a batch executor, not an HTTP service (rule 6).
+	volumes = append(volumes, corev1.Volume{
+		Name: inputConfigMapVolumeName,
+		VolumeSource: corev1.VolumeSource{
+			ConfigMap: &corev1.ConfigMapVolumeSource{
+				LocalObjectReference: corev1.LocalObjectReference{Name: inputConfigMapName},
+			},
 		},
-		InitialDelaySeconds: 3,
-		PeriodSeconds:       10,
-		FailureThreshold:    3,
-	}
-	container.LivenessProbe = &corev1.Probe{
-		ProbeHandler: corev1.ProbeHandler{
-			HTTPGet: &corev1.HTTPGetAction{Path: "/health", Port: intstr.FromInt32(8080)},
-		},
-		InitialDelaySeconds: 10,
-		PeriodSeconds:       30,
-		FailureThreshold:    3,
-	}
+	})
+	container.VolumeMounts = append(container.VolumeMounts, corev1.VolumeMount{
+		Name:      inputConfigMapVolumeName,
+		MountPath: inputConfigMapMountPath,
+		ReadOnly:  true,
+	})
 
 	if tools != nil {
 		skillVols, skillMounts := b.buildSkills(tools.Skills)
@@ -160,12 +170,13 @@ func (b *PodSpecBuilder) Build(
 		container.Env = append(container.Env, secEnv...)
 	}
 
-	appendOTELEnvVars(container, &volumes, otelCfg, runUID, step)
+	appendOTELEnvVars(container, &volumes, otelCfg, runUID)
 
 	podSpec.Volumes = mergeVolumes(podSpec.Volumes, volumes)
 	container.VolumeMounts = mergeVolumeMounts(container.VolumeMounts)
 
 	appendAuditEnvVars(container)
+	appendTraceEnvVars(container, traceparent)
 
 	return podSpec, nil
 }
@@ -211,20 +222,26 @@ func appendAuditEnvVars(container *corev1.Container) {
 	container.Env = append(container.Env, corev1.EnvVar{Name: "LIGHTSPEED_AUDIT_ENABLED", Value: "true"})
 }
 
+func appendTraceEnvVars(container *corev1.Container, traceparent string) {
+	if traceparent == "" {
+		return
+	}
+	container.Env = append(container.Env, corev1.EnvVar{Name: traceparentEnvVar, Value: traceparent})
+}
+
 const (
 	otelCAVolumeName = "otel-ca"
 	otelCAMountPath  = "/var/run/secrets/otel-ca"
 	otelCASecretKey  = "otel-ca.crt"
 )
 
-func appendOTELEnvVars(container *corev1.Container, volumes *[]corev1.Volume, otelCfg *configuration.OTELConfig, runUID, step string) {
+func appendOTELEnvVars(container *corev1.Container, volumes *[]corev1.Volume, otelCfg *configuration.OTELConfig, runUID string) {
 	if otelCfg == nil || otelCfg.CollectorEndpoint == "" {
 		return
 	}
 	container.Env = append(container.Env,
 		corev1.EnvVar{Name: "OTEL_EXPORTER_OTLP_ENDPOINT", Value: otelCfg.CollectorEndpoint},
 		corev1.EnvVar{Name: "LIGHTSPEED_AGENTICRUN_UID", Value: runUID},
-		corev1.EnvVar{Name: "LIGHTSPEED_AGENTICRUN_STEP", Value: step},
 	)
 
 	if otelCfg.CASecretName != "" {
@@ -439,6 +456,18 @@ func providerURL(llm *agenticv1alpha1.LLMProvider) string {
 	default:
 		return ""
 	}
+}
+
+const traceparentEnvVar = "TRACEPARENT"
+
+// traceparentFromContext formats the active span in ctx as a W3C traceparent
+// value for sandbox pod env injection. Returns empty when no valid span is present.
+func traceparentFromContext(ctx context.Context) string {
+	sc := trace.SpanContextFromContext(ctx)
+	if !sc.IsValid() {
+		return ""
+	}
+	return fmt.Sprintf("00-%s-%s-%02x", sc.TraceID().String(), sc.SpanID().String(), byte(sc.TraceFlags()))
 }
 
 func providerTypeString(t agenticv1alpha1.LLMProviderType) string {
