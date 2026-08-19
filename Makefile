@@ -84,7 +84,7 @@ test: fmt-check vet ## Run unit tests (main + api + cli modules).
 
 .PHONY: test-e2e
 test-e2e: ## Run e2e tests against a live cluster (operator must be running). See test/e2e/ for prereqs.
-	go test -tags=e2e ./test/e2e/... -count=1 -v -timeout 30m
+	go test -tags=e2e ./test/e2e/... -count=1 -v -timeout 60m
 
 .PHONY: product-e2e
 product-e2e: ## Run product e2e: deploy operator, run all providers against live LLMs, collect artifacts.

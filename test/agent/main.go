@@ -66,7 +66,7 @@ func main() {
 	switch {
 	case strings.Contains(queryStr, MockTimeout):
 		log.Println("MOCK_TIMEOUT: sleeping forever")
-		select {}
+		time.Sleep(24 * time.Hour)
 	case strings.Contains(queryStr, MockCrash):
 		log.Fatalf("MOCK_CRASH: exiting without creating Result CR")
 	case strings.Contains(queryStr, MockAgentFail):
