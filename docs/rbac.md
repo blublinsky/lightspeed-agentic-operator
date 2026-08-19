@@ -28,11 +28,11 @@ Key permissions:
 
 These must be created by a **platform admin** before the operator and agents can function correctly. The operator does not create them — it assumes they exist.
 
-### 1. Agent ServiceAccount and read access (all phases)
+### 1. Agent read access ClusterRoleBindings (all phases)
 
-**Why:** The agent pod runs as the `lightspeed-agent` ServiceAccount (referenced in `SandboxTemplate.spec.podTemplate.spec.serviceAccountName`). This SA is the runtime identity for all k8s API calls the agent makes (e.g. `kubectl get pods`, `kubectl patch deployment`). It must exist (or pods fail to start) and must have read permissions bound to it (or agents can't inspect cluster state to diagnose problems).
+**Why:** Every sandbox step gets its own per-step ServiceAccount (`ls-{step}-{namespace}-{runUID}`). The operator discovers all `ClusterRoleBinding`s where `lightspeed-agent` is a subject, then adds each per-step SA to those bindings. The `lightspeed-agent` SA serves as the **discovery seed** for reader bindings — no sandbox pod runs as `lightspeed-agent` directly.
 
-**What:** A ServiceAccount + ClusterRole + ClusterRoleBinding granting read permissions.
+**What:** A ServiceAccount + ClusterRole + ClusterRoleBinding granting read permissions. The `lightspeed-agent` SA must exist as the reference identity in the ClusterRoleBinding subjects.
 
 ```yaml
 apiVersion: v1
@@ -68,7 +68,7 @@ subjects:
   namespace: default
 ```
 
-**Note:** The ServiceAccount is typically included in the SandboxTemplate YAML (see `test/agent/sandboxtemplate/sandboxtemplate.yaml`).
+**Note:** The `lightspeed-agent` ServiceAccount is created by the operator at startup (idempotent). It is the discovery seed — all per-step SAs are dynamically added to (and removed from) these ClusterRoleBindings by `SandboxManager.Create` and `Release`.
 
 **Scope decision:** Cluster-wide read is shown above. For tighter security, use per-namespace Roles binding only to `targetNamespaces` the AgenticRun references — but this requires dynamic admin action per namespace.
 
@@ -117,24 +117,28 @@ Created by the operator during the execution phase, deleted on terminal state or
 | ClusterRole | `ls-exec-cluster-<run>` | Cluster | Permissions from `rbac.clusterScoped` |
 | ClusterRoleBinding | `ls-exec-cluster-<run>` | Cluster | Binds ClusterRole to sandbox SA |
 
-Subject: per-run `ServiceAccount ls-exec-{namespace}-{name}` in the operator namespace.
+Subject: per-step `ServiceAccount ls-execution-{namespace}-{runUID}` in the operator namespace (same SA naming as all other steps, via `sandboxSAName`).
 
 Lifecycle:
-- **Created**: just before execution agent call (`ensureExecutionRBAC`)
-- **Deleted**: immediately after execution completes (before verification starts). Retries on failure via requeue. Also cleaned up on AgenticRun deletion (finalizer), escalation, or system failure as fallback.
+- **Created**: by `SandboxManager.Create` when the execution step launches. SA creation, reader CRB subject addition, and execution RBAC (Roles/ClusterRoles) are all encapsulated in `Create`.
+- **Deleted**: by `SandboxManager.Release`. The SA and result RBAC are GC'd via owner references when the pod/claim is deleted. Cross-namespace Roles/ClusterRoles are explicitly deleted by `cleanupExecutionRBAC`. Reader CRB subjects are removed by `removeReaderSubject`. Also cleaned up on AgenticRun deletion (via `ReleaseSandboxes` in the finalizer).
 
-> **Resolved: per-run SA isolation.** Each AgenticRun in execution phase gets its own ServiceAccount (`ls-exec-{namespace}-{name}`) in the operator namespace. Execution RBAC binds to this per-run SA, not the shared `lightspeed-agent`. The per-run SA is explicitly deleted after execution completes (before verification). This eliminates cross-run permission bleed — concurrent AgenticRuns cannot share write RBAC. Analysis and verification continue using the shared `lightspeed-agent` SA (read-only). The operator's `cluster-admin` privilege (external prerequisite) allows it to create SAs and Roles with arbitrary content without escalation issues.
+> **Resolved: per-step SA isolation.** Every sandbox step gets its own ServiceAccount (`ls-{step}-{namespace}-{runUID}`) in the operator namespace, not just execution. No sandbox pod runs as the shared `lightspeed-agent` SA — it serves only as the discovery seed for reader ClusterRoleBindings. Execution RBAC binds to the execution step's per-step SA. Per-step SAs are cleaned up automatically via GC (owner reference to pod/claim) and reader CRB subjects are removed by `Release`. This eliminates cross-step and cross-run permission bleed. The operator's scoped escalation privilege (external prerequisite #2, `agentic-operator-escalation` ClusterRole) permits creating SAs and Roles within its granted scope — no cluster-admin required.
 
 ## Agent RBAC per phase
 
-The sandbox SA is `lightspeed-agent` (from `SandboxTemplate.spec.podTemplate.spec.serviceAccountName`).
+Every sandbox step gets a unique per-step ServiceAccount via `sandboxSAName(run, step)`.
 
 | Phase | SA | Read access | Write access | Notes |
 |-------|-----|-------------|--------------|-------|
-| Analysis | `lightspeed-agent` | Admin-created ClusterRole (pods, deployments, events, logs, etc.) | None | Agent inspects cluster to diagnose; no mutations |
-| Execution | `ls-exec-{ns}-{name}` (per-run) | Inherited from bound Roles | `ls-exec-*` Roles (operator-created) | Agent mutates cluster per remediation plan; isolated SA per AgenticRun |
-| Verification | `lightspeed-agent` | Admin-created read access | None | Per-proposal SA deleted after execution; verification has read only |
-| Escalation | `lightspeed-agent` | Admin-created read access | None | Agent re-analyzes failure; no mutations |
+| Analysis | `ls-analysis-{namespace}-{runUID}` | Via reader CRBs (inherited from `lightspeed-agent` discovery) | Result CR create/patch only | Agent inspects cluster to diagnose; no mutations |
+| Execution | `ls-execution-{namespace}-{runUID}` | Via reader CRBs (inherited from `lightspeed-agent` discovery) | `ls-exec-*` Roles (operator-created) + Result CR create/patch | Agent mutates cluster per remediation plan; isolated SA per step |
+| Verification | `ls-verification-{namespace}-{runUID}` | Via reader CRBs (inherited from `lightspeed-agent` discovery) | Result CR create/patch only | Separate SA from execution; read-only cluster access |
+| Escalation | `ls-escalation-{namespace}-{runUID}` | Via reader CRBs (inherited from `lightspeed-agent` discovery) | Result CR create/patch only | Agent re-analyzes failure; no mutations |
+
+## Stale reader subject cleanup
+
+Reader CRB subjects are added by `SandboxManager.Create` and removed by `Release`. If `Release` is interrupted (e.g. operator crash), stale subjects may remain in the CRB. These are harmless — the referenced per-step SA is deleted via owner-reference GC, so the stale subject entry points to a non-existent SA with no permissions. The finalizer on `AgenticRun` deletion calls `ReleaseSandboxes`, which re-attempts removal for all steps, providing crash-recovery coverage. A periodic background sweep is not currently implemented; the finalizer path is considered sufficient.
 
 ## Troubleshooting
 
@@ -148,7 +152,8 @@ The sandbox SA is `lightspeed-agent` (from `SandboxTemplate.spec.podTemplate.spe
 
 | Boundary | Enforced by |
 |----------|-------------|
-| Agent cannot write during analysis | No write RBAC bound to SA until execution |
+| Agent cannot write during analysis | Per-step SA has only reader CRB access + Result CR create/patch |
 | Agent write scope limited to what analysis proposed | Operator creates Roles from `rbac.namespaceScoped`/`clusterScoped` only |
-| Write permissions revoked after terminal state | Finalizer calls `cleanupExecutionRBAC` |
+| Write permissions revoked after execution | `SandboxManager.Release` cleans up execution RBAC; GC handles SA |
+| Per-step SA isolation | Each step gets a unique SA, eliminating cross-step permission bleed |
 | Operator cannot grant permissions it doesn't hold | Kubernetes RBAC escalation prevention (requires admin prerequisite #2) |

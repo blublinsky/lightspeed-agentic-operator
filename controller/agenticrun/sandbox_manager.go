@@ -7,6 +7,7 @@ import (
 
 	"time"
 
+	"go.opentelemetry.io/otel/trace"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -24,16 +25,15 @@ import (
 const (
 	sandboxModeSandboxClaim = "sandbox-claim"
 
-	errBuildPodSpec             = "build pod spec"
-	errCreatePod                = "create pod for"
-	errDeletePod                = "delete pod"
-	errEnsureAgentTemplate      = "ensure agent template"
-	errCreateSandboxClaim       = "failed to create SandboxClaim for"
-	errDeleteSandboxClaim       = "failed to delete SandboxClaim"
-	errCreateSandbox            = "create sandbox"
-	errExtractSandboxName       = "extract sandbox name from claim"
-	errExtractSandboxConditions = "extract conditions from sandbox"
-	errExtractServiceFQDN       = "extract serviceFQDN from sandbox"
+	errBuildPodSpec         = "build pod spec"
+	errCreatePod            = "create pod for"
+	errDeletePod            = "delete pod"
+	errEnsureAgentTemplate  = "ensure agent template"
+	errCreateSandboxClaim   = "failed to create SandboxClaim for"
+	errDeleteSandboxClaim   = "failed to delete SandboxClaim"
+	errCreateInputConfigMap = "create input ConfigMap"
+
+	errCreateSandbox = "create sandbox"
 
 	sandboxDeletionTimeout = 2 * time.Minute
 )
@@ -43,14 +43,9 @@ const (
 // +kubebuilder:rbac:groups=extensions.agents.x-k8s.io,resources=sandboxclaims,verbs=get;list;watch;create;delete
 // +kubebuilder:rbac:groups=agents.x-k8s.io,resources=sandboxes,verbs=get;list;watch
 
-var (
-	smClaimGVK = schema.GroupVersionKind{
-		Group: "extensions.agents.x-k8s.io", Version: "v1alpha1", Kind: "SandboxClaim",
-	}
-	smSandboxGVK = schema.GroupVersionKind{
-		Group: "agents.x-k8s.io", Version: "v1alpha1", Kind: "Sandbox",
-	}
-)
+var smClaimGVK = schema.GroupVersionKind{
+	Group: "extensions.agents.x-k8s.io", Version: "v1alpha1", Kind: "SandboxClaim",
+}
 
 // SandboxManager manages sandbox lifecycle: create, wait-ready, release.
 // Internally it decides between bare-pod and sandbox-claim mode based on
@@ -60,23 +55,25 @@ type SandboxManager struct {
 	client  client.Client
 	config  *configuration.Cache
 	builder *PodSpecBuilder
+	audit   AuditLogger
 
 	namespace       string
 	deletionTimeout time.Duration
 }
 
-func NewSandboxManager(c client.Client, config *configuration.Cache, namespace string) *SandboxManager {
+func NewSandboxManager(c client.Client, config *configuration.Cache, namespace string, audit AuditLogger) *SandboxManager {
 	return &SandboxManager{
 		client:    c,
 		config:    config,
 		builder:   &PodSpecBuilder{},
+		audit:     audit,
 		namespace: namespace,
 	}
 }
 
-// Create builds a PodSpec from the cached base + agent configuration, then
-// creates either a bare Pod or a SandboxClaim depending on the configured
-// sandbox mode. Returns the resource name used for WaitReady/Release.
+// Create handles full sandbox setup: builds input ConfigMap, determines
+// SA + RBAC from step, creates the pod/claim, and sets owner refs.
+// Returns the resource name used for Release.
 func (m *SandboxManager) Create(
 	ctx context.Context,
 	run *agenticv1alpha1.AgenticRun,
@@ -84,15 +81,75 @@ func (m *SandboxManager) Create(
 	agent *agenticv1alpha1.Agent,
 	llm *agenticv1alpha1.LLMProvider,
 	tools *agenticv1alpha1.ToolsSpec,
-	serviceAccount string,
 	deadline time.Duration,
-) (string, error) {
+	query string,
+	agentCtx *agentContext,
+) (name string, retErr error) {
+	if m.audit != nil {
+		ctx = m.audit.BeginStep(ctx, run, step)
+		if step == "analysis" {
+			m.audit.EmitAgenticRunReceived(ctx, run)
+		}
+		defer func() {
+			if retErr != nil {
+				m.audit.CompleteStep(run, step, nil)
+			}
+		}()
+	}
+
 	cfg := m.config.Get()
 	if cfg == nil {
 		return "", fmt.Errorf("%s: configuration not available", errCreateSandbox)
 	}
 
-	podSpec, err := m.builder.Build(cfg.Sandbox.PodSpec, agent, llm, tools, &cfg.OTEL, step, string(run.UID), serviceAccount)
+	span := trace.SpanFromContext(ctx)
+
+	serviceAccount := sandboxSAName(run, step)
+	if err := m.ensureSA(ctx, run, serviceAccount, step); err != nil {
+		return "", err
+	}
+	span.AddEvent("sandbox.sa.created")
+
+	if step == "execution" && agentCtx != nil && agentCtx.ApprovedOption != nil {
+		rbac := &agentCtx.ApprovedOption.RBAC
+		if len(rbac.NamespaceScoped) > 0 || len(rbac.ClusterScoped) > 0 {
+			base := run.DeepCopy()
+			if err := ensureExecutionRBAC(ctx, m.client, run, rbac, m.namespace); err != nil {
+				return "", err
+			}
+			if err := m.client.Patch(ctx, run, client.MergeFrom(base)); err != nil {
+				return "", fmt.Errorf("persist RBAC annotation: %w", err)
+			}
+		}
+	}
+
+	schema := outputSchemaForStep(step, run)
+	inputCM, err := buildInputConfigMap(m.namespace, run, step, query, schema, agentCtx)
+	if err != nil {
+		return "", err
+	}
+	if err := m.createInputConfigMap(ctx, inputCM); err != nil {
+		return "", err
+	}
+	span.AddEvent("sandbox.configmap.created")
+
+	if err := ensureResultRBAC(ctx, m.client, run, step, serviceAccount, m.namespace); err != nil {
+		return "", err
+	}
+	span.AddEvent("sandbox.rbac.created")
+
+	podSpec, err := m.builder.Build(
+		cfg.Sandbox.PodSpec,
+		agent,
+		llm,
+		tools,
+		&cfg.OTEL,
+		step,
+		string(run.UID),
+		serviceAccount,
+		inputCM.Name,
+		traceparentFromContext(ctx),
+	)
 	if err != nil {
 		return "", fmt.Errorf("%s: %w", errBuildPodSpec, err)
 	}
@@ -102,11 +159,104 @@ func (m *SandboxManager) Create(
 		podSpec.ActiveDeadlineSeconds = &secs
 	}
 
-	name := truncateK8sName(fmt.Sprintf("ls-%s-%s", step, run.Name))
+	name = fmt.Sprintf("ls-%s-%s", step, run.UID)
+	var ownerRef metav1.OwnerReference
 	if cfg.Sandbox.Mode == sandboxModeSandboxClaim {
-		return m.createSandboxClaim(ctx, run, name, step, podSpec)
+		claimName, claimUID, err := m.createSandboxClaim(ctx, run, name, step, podSpec)
+		if err != nil {
+			return "", err
+		}
+		ownerRef = metav1.OwnerReference{
+			APIVersion: smClaimGVK.GroupVersion().String(),
+			Kind:       smClaimGVK.Kind,
+			Name:       claimName,
+			UID:        claimUID,
+		}
+		name = claimName
+	} else {
+		podName, podUID, err := m.createBarePod(ctx, run, name, step, podSpec)
+		if err != nil {
+			return "", err
+		}
+		ownerRef = metav1.OwnerReference{
+			APIVersion: "v1",
+			Kind:       "Pod",
+			Name:       podName,
+			UID:        podUID,
+		}
+		name = podName
 	}
-	return m.createBarePod(ctx, run, name, step, podSpec)
+
+	span.AddEvent("sandbox.pod.created")
+
+	if err := m.setInputConfigMapOwner(ctx, string(run.UID), ownerRef); err != nil {
+		return "", err
+	}
+	if err := setResultRBACOwner(ctx, m.client, string(run.UID), step, ownerRef, m.namespace); err != nil {
+		return "", err
+	}
+	if err := m.setSAOwner(ctx, serviceAccount, ownerRef); err != nil {
+		return "", err
+	}
+	return name, nil
+}
+
+// ensureSA creates a per-step ServiceAccount and adds it to the shared reader
+// ClusterRoleBindings. Idempotent.
+func (m *SandboxManager) ensureSA(ctx context.Context, run *agenticv1alpha1.AgenticRun, saName, step string) error {
+	sa := &corev1.ServiceAccount{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      saName,
+			Namespace: m.namespace,
+			Labels:    rbacLabels(string(run.UID), step+"-sa"),
+		},
+	}
+	if err := m.client.Create(ctx, sa); err != nil && !apierrors.IsAlreadyExists(err) {
+		return fmt.Errorf("%s %s: %w", ErrCreateSandboxSA, saName, err)
+	}
+	return addReaderSubject(ctx, m.client, saName, m.namespace)
+}
+
+// setSAOwner sets the pod/claim as owner on the per-run ServiceAccount
+// so Kubernetes GC cleans it up when the pod is deleted.
+func (m *SandboxManager) setSAOwner(ctx context.Context, saName string, owner metav1.OwnerReference) error {
+	sa := &corev1.ServiceAccount{}
+	if err := m.client.Get(ctx, client.ObjectKey{Name: saName, Namespace: m.namespace}, sa); err != nil {
+		return fmt.Errorf("get sandbox SA %s: %w", saName, err)
+	}
+	base := sa.DeepCopy()
+	sa.OwnerReferences = []metav1.OwnerReference{owner}
+	if err := m.client.Patch(ctx, sa, client.MergeFrom(base)); err != nil {
+		return fmt.Errorf("set owner on sandbox SA %s: %w", saName, err)
+	}
+	return nil
+}
+
+// setInputConfigMapOwner replaces the owner refs on the input ConfigMap with
+// the pod/claim owner so Kubernetes GC cleans it up when the pod is deleted.
+func (m *SandboxManager) setInputConfigMapOwner(ctx context.Context, cmName string, owner metav1.OwnerReference) error {
+	cm := &corev1.ConfigMap{}
+	if err := m.client.Get(ctx, client.ObjectKey{Name: cmName, Namespace: m.namespace}, cm); err != nil {
+		return fmt.Errorf("get input ConfigMap: %w", err)
+	}
+	base := cm.DeepCopy()
+	cm.OwnerReferences = []metav1.OwnerReference{owner}
+	if err := m.client.Patch(ctx, cm, client.MergeFrom(base)); err != nil {
+		return fmt.Errorf("set owner on input ConfigMap: %w", err)
+	}
+	return nil
+}
+
+func (m *SandboxManager) createInputConfigMap(ctx context.Context, cm *corev1.ConfigMap) error {
+	log := logf.FromContext(ctx)
+	if err := m.client.Create(ctx, cm); err != nil {
+		if apierrors.IsAlreadyExists(err) {
+			return nil
+		}
+		return fmt.Errorf("%s %q: %w", errCreateInputConfigMap, cm.Name, err)
+	}
+	log.Info("Created input ConfigMap", LogKeyName, cm.Name)
+	return nil
 }
 
 func (m *SandboxManager) createBarePod(
@@ -115,7 +265,7 @@ func (m *SandboxManager) createBarePod(
 	podName string,
 	step string,
 	podSpec *corev1.PodSpec,
-) (string, error) {
+) (string, types.UID, error) {
 	log := logf.FromContext(ctx)
 
 	pod := &corev1.Pod{
@@ -123,8 +273,11 @@ func (m *SandboxManager) createBarePod(
 			Name:      podName,
 			Namespace: m.namespace,
 			Labels: map[string]string{
-				LabelRun:  truncateK8sName(run.Name),
+				LabelRun:  string(run.UID),
 				LabelStep: step,
+			},
+			Annotations: map[string]string{
+				AnnotationRunName: run.Name,
 			},
 			OwnerReferences: []metav1.OwnerReference{{
 				APIVersion:         agenticv1alpha1.GroupVersion.String(),
@@ -140,32 +293,35 @@ func (m *SandboxManager) createBarePod(
 
 	if err := m.client.Create(ctx, pod); err != nil {
 		if !apierrors.IsAlreadyExists(err) {
-			return "", fmt.Errorf("%s %s: %w", errCreatePod, step, err)
+			return "", "", fmt.Errorf("%s %s: %w", errCreatePod, step, err)
 		}
 
 		var existing corev1.Pod
 		key := types.NamespacedName{Name: podName, Namespace: m.namespace}
 		if getErr := m.client.Get(ctx, key, &existing); getErr != nil {
-			return "", fmt.Errorf("get existing pod %q: %w", podName, getErr)
+			return "", "", fmt.Errorf("get existing pod %q: %w", podName, getErr)
 		}
 		if existing.DeletionTimestamp.IsZero() {
-			return podName, nil
+			return podName, existing.UID, nil
 		}
 
 		log.Info("Waiting for terminating pod to disappear", LogKeyName, podName)
 		if err := m.waitForPodDeletion(ctx, key); err != nil {
-			return "", fmt.Errorf("wait for terminating pod %q: %w", podName, err)
+			return "", "", fmt.Errorf("wait for terminating pod %q: %w", podName, err)
 		}
 		if err := m.client.Create(ctx, pod); err != nil {
 			if apierrors.IsAlreadyExists(err) {
-				return podName, nil
+				if getErr := m.client.Get(ctx, key, &existing); getErr != nil {
+					return "", "", fmt.Errorf("get existing pod %q: %w", podName, getErr)
+				}
+				return podName, existing.UID, nil
 			}
-			return "", fmt.Errorf("%s %s: %w", errCreatePod, step, err)
+			return "", "", fmt.Errorf("%s %s: %w", errCreatePod, step, err)
 		}
 	}
 
 	log.Info("Created bare pod", LogKeyName, podName, LogKeyStep, step)
-	return podName, nil
+	return podName, pod.UID, nil
 }
 
 func (m *SandboxManager) createSandboxClaim(
@@ -174,12 +330,12 @@ func (m *SandboxManager) createSandboxClaim(
 	name string,
 	step string,
 	podSpec *corev1.PodSpec,
-) (string, error) {
+) (string, types.UID, error) {
 	log := logf.FromContext(ctx)
 
 	podSpecMap, err := podSpecToUnstructured(podSpec)
 	if err != nil {
-		return "", fmt.Errorf("convert PodSpec to unstructured: %w", err)
+		return "", "", fmt.Errorf("convert PodSpec to unstructured: %w", err)
 	}
 
 	ownerRef := map[string]any{
@@ -199,8 +355,11 @@ func (m *SandboxManager) createSandboxClaim(
 				"name":      name,
 				"namespace": m.namespace,
 				"labels": map[string]any{
-					LabelRun:  truncateK8sName(run.Name),
+					LabelRun:  string(run.UID),
 					LabelStep: step,
+				},
+				"annotations": map[string]any{
+					AnnotationRunName: run.Name,
 				},
 				"ownerReferences": []any{ownerRef},
 			},
@@ -213,7 +372,7 @@ func (m *SandboxManager) createSandboxClaim(
 	}
 
 	if err := m.client.Create(ctx, template); err != nil && !apierrors.IsAlreadyExists(err) {
-		return "", fmt.Errorf("%s: %w", errEnsureAgentTemplate, err)
+		return "", "", fmt.Errorf("%s: %w", errEnsureAgentTemplate, err)
 	}
 
 	claim := &unstructured.Unstructured{
@@ -224,8 +383,11 @@ func (m *SandboxManager) createSandboxClaim(
 				"name":      name,
 				"namespace": m.namespace,
 				"labels": map[string]any{
-					LabelRun:  truncateK8sName(run.Name),
+					LabelRun:  string(run.UID),
 					LabelStep: step,
+				},
+				"annotations": map[string]any{
+					AnnotationRunName: run.Name,
 				},
 				"ownerReferences": []any{ownerRef},
 			},
@@ -242,13 +404,18 @@ func (m *SandboxManager) createSandboxClaim(
 
 	if err := m.client.Create(ctx, claim); err != nil {
 		if apierrors.IsAlreadyExists(err) {
-			return name, nil
+			existing := &unstructured.Unstructured{}
+			existing.SetGroupVersionKind(smClaimGVK)
+			if getErr := m.client.Get(ctx, types.NamespacedName{Name: name, Namespace: m.namespace}, existing); getErr != nil {
+				return "", "", fmt.Errorf("get existing SandboxClaim %q: %w", name, getErr)
+			}
+			return name, existing.GetUID(), nil
 		}
-		return "", fmt.Errorf("%s %s: %w", errCreateSandboxClaim, step, err)
+		return "", "", fmt.Errorf("%s %s: %w", errCreateSandboxClaim, step, err)
 	}
 
 	log.Info("Created SandboxClaim", LogKeyClaim, name, LogKeyStep, step)
-	return name, nil
+	return name, types.UID(claim.GetUID()), nil
 }
 
 func podSpecToUnstructured(podSpec *corev1.PodSpec) (map[string]any, error) {
@@ -263,154 +430,43 @@ func podSpecToUnstructured(podSpec *corev1.PodSpec) (map[string]any, error) {
 	return result, nil
 }
 
-// WaitReady polls until the sandbox is ready and returns its endpoint.
-// For bare pods this is the PodIP; for sandbox claims it's the serviceFQDN.
-func (m *SandboxManager) WaitReady(ctx context.Context, name string, timeout time.Duration) (string, error) {
-	cfg := m.config.Get()
-	if cfg != nil && cfg.Sandbox.Mode == sandboxModeSandboxClaim {
-		return m.waitSandboxClaimReady(ctx, name, timeout)
-	}
-	return m.waitPodReady(ctx, name, timeout)
-}
-
-func (m *SandboxManager) waitPodReady(ctx context.Context, podName string, timeout time.Duration) (string, error) {
-	log := logf.FromContext(ctx)
-
-	deadline := time.Now().Add(timeout)
-	ticker := time.NewTicker(2 * time.Second)
-	defer ticker.Stop()
-
-	key := types.NamespacedName{Name: podName, Namespace: m.namespace}
-
-	check := func() (string, bool, error) {
-		var pod corev1.Pod
-		if err := m.client.Get(ctx, key, &pod); err != nil {
-			if apierrors.IsNotFound(err) {
-				return "", false, fmt.Errorf("pod %q was deleted while waiting for readiness", podName)
-			}
-			log.V(1).Info("Waiting for pod", LogKeyName, podName, "error", err)
-			return "", false, nil
-		}
-		if !pod.DeletionTimestamp.IsZero() {
-			return "", false, fmt.Errorf("pod %q is terminating, will not become ready", podName)
-		}
-		for _, cond := range pod.Status.Conditions {
-			if cond.Type == corev1.PodReady && cond.Status == corev1.ConditionTrue && pod.Status.PodIP != "" {
-				log.Info("Pod ready", LogKeyName, podName, "podIP", pod.Status.PodIP)
-				return pod.Status.PodIP, true, nil
-			}
-		}
-		return "", false, nil
+// Release ends the audit span and deletes the sandbox resource. Both bare-pod
+// and sandbox-claim deletion are attempted for TOCTOU safety (config may have
+// changed since Create). ConfigMap, result RBAC, and SA are cleaned up
+// automatically via owner references. Cross-namespace execution RBAC (Roles,
+// ClusterRoles) and reader subject bindings are cleaned up explicitly.
+// Idempotent.
+func (m *SandboxManager) Release(ctx context.Context, run *agenticv1alpha1.AgenticRun, step string) error {
+	if m.audit != nil {
+		m.audit.CompleteStep(run, step, nil)
 	}
 
-	if ip, ready, err := check(); err != nil || ready {
-		return ip, err
+	claimName := sandboxClaimName(run, step)
+	if claimName == "" {
+		return nil
 	}
 
-	for {
-		select {
-		case <-ctx.Done():
-			return "", ctx.Err()
-		case <-ticker.C:
-			if time.Now().After(deadline) {
-				return "", fmt.Errorf("timeout waiting for pod %q after %s", podName, timeout)
-			}
-			if ip, ready, err := check(); err != nil || ready {
-				return ip, err
-			}
+	var firstErr error
+	if err := m.releaseBarePod(ctx, claimName); err != nil {
+		firstErr = err
+	}
+	if cfg := m.config.Get(); cfg != nil && cfg.Sandbox.Mode == sandboxModeSandboxClaim {
+		if err := m.releaseSandboxClaim(ctx, claimName); err != nil && firstErr == nil {
+			firstErr = err
 		}
 	}
-}
 
-func (m *SandboxManager) waitSandboxClaimReady(ctx context.Context, claimName string, timeout time.Duration) (string, error) {
-	log := logf.FromContext(ctx)
-
-	deadline := time.Now().Add(timeout)
-	ticker := time.NewTicker(2 * time.Second)
-	defer ticker.Stop()
-
-	claim := &unstructured.Unstructured{}
-	sandbox := &unstructured.Unstructured{}
-	claimKey := types.NamespacedName{Name: claimName, Namespace: m.namespace}
-
-	check := func() (string, bool, error) {
-		claim.SetGroupVersionKind(smClaimGVK)
-		if err := m.client.Get(ctx, claimKey, claim); err != nil {
-			log.V(1).Info("Waiting for SandboxClaim", LogKeyClaim, claimName)
-			return "", false, nil
-		}
-
-		sandboxName, found, nestedErr := unstructured.NestedString(claim.Object, "status", "sandbox", "name")
-		if nestedErr != nil {
-			return "", false, fmt.Errorf("%s %q: %w", errExtractSandboxName, claimName, nestedErr)
-		}
-		if !found || sandboxName == "" {
-			return "", false, nil
-		}
-
-		sandbox.SetGroupVersionKind(smSandboxGVK)
-		if err := m.client.Get(ctx, types.NamespacedName{
-			Name: sandboxName, Namespace: m.namespace,
-		}, sandbox); err != nil {
-			log.V(1).Info("Waiting for Sandbox", LogKeyName, sandboxName, "error", err)
-			return "", false, nil
-		}
-
-		conditions, found, nestedErr := unstructured.NestedSlice(sandbox.Object, "status", "conditions")
-		if nestedErr != nil {
-			return "", false, fmt.Errorf("%s %q: %w", errExtractSandboxConditions, sandboxName, nestedErr)
-		}
-		if !found {
-			return "", false, nil
-		}
-
-		for _, c := range conditions {
-			cond, ok := c.(map[string]any)
-			if !ok {
-				continue
-			}
-			if cond["type"] == "Ready" && cond["status"] == string(metav1.ConditionTrue) {
-				fqdn, fqdnFound, fqdnErr := unstructured.NestedString(sandbox.Object, "status", "serviceFQDN")
-				if fqdnErr != nil {
-					return "", false, fmt.Errorf("%s %q: %w", errExtractServiceFQDN, sandboxName, fqdnErr)
-				}
-				if !fqdnFound || fqdn == "" {
-					return "", false, nil
-				}
-				log.Info("Sandbox ready", LogKeyName, sandboxName, "fqdn", fqdn)
-				return fqdn, true, nil
-			}
-		}
-		return "", false, nil
+	saName := sandboxSAName(run, step)
+	if err := removeReaderSubject(ctx, m.client, saName, m.namespace); err != nil && firstErr == nil {
+		firstErr = err
 	}
 
-	if fqdn, ready, err := check(); err != nil || ready {
-		return fqdn, err
-	}
-
-	for {
-		select {
-		case <-ctx.Done():
-			return "", ctx.Err()
-		case <-ticker.C:
-			if time.Now().After(deadline) {
-				return "", fmt.Errorf("timeout waiting for sandbox %q after %s", claimName, timeout)
-			}
-			if fqdn, ready, err := check(); err != nil || ready {
-				return fqdn, err
-			}
+	if step == "execution" {
+		if err := cleanupExecutionRBAC(ctx, m.client, run); err != nil && firstErr == nil {
+			firstErr = err
 		}
 	}
-}
-
-// Release deletes the sandbox resource (Pod or SandboxClaim).
-// Idempotent: returns nil if already gone.
-func (m *SandboxManager) Release(ctx context.Context, name string) error {
-	cfg := m.config.Get()
-	if cfg != nil && cfg.Sandbox.Mode == sandboxModeSandboxClaim {
-		return m.releaseSandboxClaim(ctx, name)
-	}
-	return m.releaseBarePod(ctx, name)
+	return firstErr
 }
 
 func (m *SandboxManager) releaseBarePod(ctx context.Context, podName string) error {

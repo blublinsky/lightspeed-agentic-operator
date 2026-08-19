@@ -47,7 +47,7 @@ help: ## Display this help.
 
 # Namespace for the manager (sandbox templates/claims) and for in-cluster
 # Deployment/RBAC from make deploy / make undeploy.
-OPERATOR_NAMESPACE ?= default
+OPERATOR_NAMESPACE ?= openshift-lightspeed
 
 # Local `make run` defaults avoid clashing with other processes on :8080/:8081.
 METRICS_BIND_ADDRESS ?= :18080
@@ -113,6 +113,9 @@ endif
 
 # Sandbox mode: "bare-pod" (default) or "sandbox-claim". Used by validate-agent-sandbox.
 SANDBOX_MODE ?= bare-pod
+
+# Agent image used by deploy-config to populate the configuration ConfigMap.
+AGENT_IMAGE ?= quay.io/redhat-user-workloads/crt-nshift-lightspeed-tenant/lightspeed-agentic-sandbox:main
 
 # kubernetes-sigs/agent-sandbox release reference (used only for documentation links).
 AGENT_SANDBOX_VERSION ?= v0.4.5
@@ -247,8 +250,28 @@ undeploy: kustomize ## Remove in-cluster operator (CRDs + RBAC + Deployment). Us
 	cd "$$tmpdir/config/manager" && $(KUSTOMIZE) edit set image controller=$(IMG); \
 	$(KUSTOMIZE) build "$$tmpdir/config/default" | $(KUBECTL) delete --ignore-not-found=$(ignore-not-found) -f - || true
 
+.PHONY: deploy-config
+deploy-config: ## Create the lightspeed-agentic-configuration ConfigMap and SandboxTemplate for local testing. Override image: AGENT_IMAGE=…
+	@$(KUBECTL) create configmap lightspeed-agentic-configuration \
+		--namespace=$(OPERATOR_NAMESPACE) \
+		--from-literal=sandbox-mode=$(SANDBOX_MODE) \
+		--from-literal=sandbox-pod-spec='{"containers":[{"name":"agent","image":"$(AGENT_IMAGE)"}]}' \
+		--dry-run=client -o yaml | $(KUBECTL) apply -f -
+	@if [ "$(SANDBOX_MODE)" = "sandbox-claim" ]; then \
+		$(KUBECTL) apply -f test/agent/sandboxtemplate/sandboxtemplate.yaml -n $(OPERATOR_NAMESPACE); \
+	fi
+	@echo "ConfigMap + SandboxTemplate applied in $(OPERATOR_NAMESPACE) (image=$(AGENT_IMAGE))"
+
 .PHONY: run
 run: install validate-agent-sandbox vet ## install + validate-agent-sandbox (no-op if bare-pod) + vet, then run the controller locally.
+	@mkdir -p /tmp/k8s-webhook-server/serving-certs && \
+	if [ ! -f /tmp/k8s-webhook-server/serving-certs/tls.crt ]; then \
+		openssl req -x509 -newkey ec -pkeyopt ec_paramgen_curve:prime256v1 \
+			-keyout /tmp/k8s-webhook-server/serving-certs/tls.key \
+			-out /tmp/k8s-webhook-server/serving-certs/tls.crt \
+			-days 365 -nodes -subj "/CN=localhost" 2>/dev/null; \
+		echo "Generated self-signed webhook certs"; \
+	fi
 	go run ./cmd/main.go \
 		--namespace=$(OPERATOR_NAMESPACE) \
 		--metrics-bind-address=$(METRICS_BIND_ADDRESS) \

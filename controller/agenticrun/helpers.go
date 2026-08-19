@@ -44,31 +44,23 @@ const (
 	templogMaxCleanupAttempts        = 3
 	templogCleanupRequeueAfter       = 5 * time.Second
 
-	rbacCleanupAttemptsAnnotation = "agentic.openshift.io/rbac-cleanup-attempts"
-	rbacMaxCleanupAttempts        = 3
-	rbacCleanupRequeueAfter       = 1 * time.Second
-
-	reasonInProgress        = "InProgress"
-	reasonComplete          = "Complete"
-	reasonFailed            = "Failed"
-	reasonSkipped           = "Skipped"
-	reasonPassed            = "Passed"
-	reasonWorkflowFailed    = "WorkflowResolutionFailed"
-	reasonUserDenied        = "UserDenied"
-	defaultSandboxSA        = "lightspeed-agent"
-	reasonRevising          = "Revising"
-	reasonRevisionComplete  = "RevisionComplete"
-	reasonRetryingExecution = agenticv1alpha1.ReasonRetryingExecution
-	reasonRetriesExhausted  = agenticv1alpha1.ReasonRetriesExhausted
-	reasonSystemSuspended   = "SystemSuspended"
-	reasonNoActionRequired  = agenticv1alpha1.ReasonNoActionRequired
+	reasonInProgress       = "InProgress"
+	reasonComplete         = "Complete"
+	reasonFailed           = "Failed"
+	reasonSkipped          = "Skipped"
+	reasonPassed           = "Passed"
+	reasonWorkflowFailed   = "WorkflowResolutionFailed"
+	reasonUserDenied       = "UserDenied"
+	defaultSandboxSA       = "lightspeed-agent"
+	reasonRevising         = "Revising"
+	reasonRevisionComplete = "RevisionComplete"
+	reasonSystemSuspended  = "SystemSuspended"
+	reasonNoActionRequired = agenticv1alpha1.ReasonNoActionRequired
 
 	LogKeyName      = "name"
 	LogKeyStep      = "step"
 	LogKeyPhase     = "phase"
 	LogKeyClaim     = "claimName"
-	LogKeyTemplate  = "template"
-	LogKeySummary   = "summary"
 	LogKeyCondition = "condition"
 )
 
@@ -195,7 +187,7 @@ func (r *AgenticRunReconciler) getLatestAnalysisResult(ctx context.Context, run 
 	}
 	latestRef := analysis.Results[len(analysis.Results)-1]
 	var result agenticv1alpha1.AnalysisResult
-	if err := r.Get(ctx, types.NamespacedName{Name: latestRef.Name, Namespace: run.Namespace}, &result); err != nil {
+	if err := r.Get(ctx, types.NamespacedName{Name: latestRef.Name, Namespace: r.Namespace}, &result); err != nil {
 		return nil, fmt.Errorf("%s %s: %w", ErrGetAnalysisResult, latestRef.Name, err)
 	}
 	return &result, nil
@@ -215,7 +207,7 @@ func (r *AgenticRunReconciler) selectedOption(ctx context.Context, run *agenticv
 // trimNonSelectedOptions keeps only the user-approved option on the
 // AnalysisResult, discarding the rest, and returns it. The selected
 // index comes from the AgenticRunApproval's execution stage.
-func (r *AgenticRunReconciler) trimNonSelectedOptions(ctx context.Context, run *agenticv1alpha1.AgenticRun, approval *agenticv1alpha1.AgenticRunApproval, policy *agenticv1alpha1.ApprovalPolicy) (*agenticv1alpha1.RemediationOption, error) {
+func (r *AgenticRunReconciler) trimNonSelectedOptions(ctx context.Context, run *agenticv1alpha1.AgenticRun, approval *agenticv1alpha1.AgenticRunApproval) (*agenticv1alpha1.RemediationOption, error) {
 	result, err := r.getLatestAnalysisResult(ctx, run)
 	if err != nil {
 		return nil, err
@@ -228,7 +220,7 @@ func (r *AgenticRunReconciler) trimNonSelectedOptions(ctx context.Context, run *
 		return &result.Status.Options[0], nil
 	}
 
-	idx := int(*getStageOption(approval, policy))
+	idx := int(*getStageOption(approval))
 	if idx < 0 || idx >= len(result.Status.Options) {
 		return nil, fmt.Errorf("selected option index %d out of range (have %d options)", idx, len(result.Status.Options))
 	}
@@ -269,16 +261,18 @@ func maxAttempts(approval *agenticv1alpha1.AgenticRunApproval, policy *agenticv1
 type escalationData struct {
 	Name                string
 	Namespace           string
+	ResultNamespace     string
 	Request             string
 	AnalysisResults     []agenticv1alpha1.StepResultRef
 	ExecutionResults    []agenticv1alpha1.StepResultRef
 	VerificationResults []agenticv1alpha1.StepResultRef
 }
 
-func buildEscalationRequest(run *agenticv1alpha1.AgenticRun) string {
+func buildEscalationRequest(run *agenticv1alpha1.AgenticRun, resultNamespace string) string {
 	data := escalationData{
 		Name:                run.Name,
 		Namespace:           run.Namespace,
+		ResultNamespace:     resultNamespace,
 		Request:             run.Spec.Request,
 		AnalysisResults:     run.Status.Steps.Analysis.Results,
 		ExecutionResults:    run.Status.Steps.Execution.Results,

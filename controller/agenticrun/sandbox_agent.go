@@ -2,9 +2,7 @@ package agenticrun
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
-	"net/http"
 	"strings"
 	"time"
 
@@ -21,171 +19,30 @@ const (
 	executionStepTimeout    = 10 * time.Minute
 	verificationStepTimeout = 30 * time.Minute
 
-	ErrAnalysisAgentCall         = "analysis agent call"
-	ErrParseAnalysisResponse     = "parse analysis response"
-	ErrExecutionAgentCall        = "execution agent call"
-	ErrParseExecutionResponse    = "parse execution response"
-	ErrVerificationAgentCall     = "verification agent call"
-	ErrParseVerificationResponse = "parse verification response"
-	ErrEscalationAgentCall       = "escalation agent call"
-	ErrParseEscalationResponse   = "parse escalation response"
-	ErrClaimSandbox              = "claim sandbox"
-	ErrWaitForSandbox            = "wait for sandbox"
+	ErrClaimSandbox = "claim sandbox"
+
+	// Batch sandbox execution (OLS-3066 / OLS-3794).
+	// Spec: .ai/spec/what/sandbox-execution.md, .ai/spec/what/run-lifecycle.md rule 14a.
+
+	// Step condition reasons (run-lifecycle.md rule 14a).
+	ReasonWaitingForSandbox = "WaitingForSandbox"
+	ReasonRunning           = "Running"
+	ReasonSucceeded         = "Succeeded"
+	ReasonSandboxTimeout    = "SandboxTimeout"
+	ReasonSandboxFailed     = "SandboxFailed"
+
+	// Pod start timeout — covers image pull, scheduling, resource limits, etc.
+	podStartTimeout = 5 * time.Minute
+
+	// Input ConfigMap (sandbox-execution.md rule 7).
+	inputConfigMapMountPath = "/input"
+	inputConfigMapKeyQuery  = "query"
+	inputConfigMapKeySchema = "output-schema"
+	inputConfigMapKeyCtx    = "context"
+	inputConfigMapKeyTmpl   = "result-template"
 )
 
-type analysisResponse struct {
-	Success        bool                                `json:"success"`
-	Summary        string                              `json:"summary,omitempty"`
-	ActionRequired *bool                               `json:"actionRequired,omitempty"`
-	Diagnosis      *agenticv1alpha1.DiagnosisResult    `json:"diagnosis,omitempty"`
-	Options        []agenticv1alpha1.RemediationOption `json:"options"`
-}
-
-type executionResponse struct {
-	Success      bool                              `json:"success"`
-	Summary      string                            `json:"summary,omitempty"`
-	ActionsTaken []agenticv1alpha1.ExecutionAction `json:"actionsTaken"`
-}
-
-type verificationResponse struct {
-	Success bool                          `json:"success"`
-	Checks  []agenticv1alpha1.VerifyCheck `json:"checks"`
-	Summary string                        `json:"summary"`
-}
-
-// SandboxLifecycle is the interface for sandbox create/wait/release.
-type SandboxLifecycle interface {
-	Create(ctx context.Context, run *agenticv1alpha1.AgenticRun, step string, agent *agenticv1alpha1.Agent, llm *agenticv1alpha1.LLMProvider, tools *agenticv1alpha1.ToolsSpec, serviceAccount string, deadline time.Duration) (string, error)
-	WaitReady(ctx context.Context, name string, timeout time.Duration) (endpoint string, err error)
-	Release(ctx context.Context, name string) error
-}
-
-// SandboxAgentCaller implements AgentCaller by creating a sandbox (bare pod
-// or sandbox claim), calling the agent HTTP service, and releasing it.
-type SandboxAgentCaller struct {
-	Sandbox       SandboxLifecycle
-	K8sClient     client.Client
-	ClientFactory func(endpoint string, timeout time.Duration) AgentHTTPClientInterface
-	Namespace     string
-	Audit         AuditLogger
-}
-
-func stepString(step agenticv1alpha1.SandboxStep) string {
-	return strings.ToLower(string(step))
-}
-
-func (s *SandboxAgentCaller) Analyze(ctx context.Context, run *agenticv1alpha1.AgenticRun, step resolvedStep, requestText string, serviceAccount string) (*AnalysisOutput, error) {
-	query := buildAnalysisQuery(requestText, run)
-	raw, err := s.callWithSandbox(ctx, run, stepString(agenticv1alpha1.SandboxStepAnalysis), step, query, buildAgentContext(run), serviceAccount)
-	if err != nil {
-		return nil, fmt.Errorf("%s: %w", ErrAnalysisAgentCall, err)
-	}
-
-	var resp analysisResponse
-	if err := json.Unmarshal(raw, &resp); err != nil {
-		return nil, fmt.Errorf("%s: %w", ErrParseAnalysisResponse, err)
-	}
-
-	log := logf.FromContext(ctx)
-	for i, opt := range resp.Options {
-		for j, action := range opt.RemediationPlan.Actions {
-			if action.Command == "" {
-				log.Info("analysis action missing command field", "option", i, "action", j, "type", action.Type, "run", run.Name)
-			}
-		}
-	}
-
-	if resp.Diagnosis != nil && (resp.Diagnosis.Summary == "" || resp.Diagnosis.RootCause == "") {
-		log.Info("ignoring empty top-level diagnosis (per-option diagnoses used instead)", "run", run.Name)
-		resp.Diagnosis = nil
-	}
-
-	actionRequired := resp.ActionRequired == nil || *resp.ActionRequired
-	if resp.Diagnosis == nil && !actionRequired {
-		log.Error(nil, "analysis response missing diagnosis for no-action-required result", "run", run.Name)
-	}
-
-	return &AnalysisOutput{
-		Success:        resp.Success,
-		Summary:        resp.Summary,
-		ActionRequired: &actionRequired,
-		Options:        resp.Options,
-		Diagnosis:      resp.Diagnosis,
-	}, nil
-}
-
-func (s *SandboxAgentCaller) Execute(ctx context.Context, run *agenticv1alpha1.AgenticRun, step resolvedStep, option *agenticv1alpha1.RemediationOption, serviceAccount string) (*ExecutionOutput, error) {
-	agentCtx := buildAgentContext(run)
-	if option != nil {
-		agentCtx.ApprovedOption = option
-	}
-
-	query := buildExecutionQuery(option)
-	raw, err := s.callWithSandbox(ctx, run, stepString(agenticv1alpha1.SandboxStepExecution), step, query, agentCtx, serviceAccount)
-	if err != nil {
-		return nil, fmt.Errorf("%s: %w", ErrExecutionAgentCall, err)
-	}
-
-	var resp executionResponse
-	if err := json.Unmarshal(raw, &resp); err != nil {
-		return nil, fmt.Errorf("%s: %w", ErrParseExecutionResponse, err)
-	}
-
-	return &ExecutionOutput{
-		Success:      resp.Success,
-		Summary:      resp.Summary,
-		ActionsTaken: resp.ActionsTaken,
-	}, nil
-}
-
-func (s *SandboxAgentCaller) Verify(ctx context.Context, run *agenticv1alpha1.AgenticRun, step resolvedStep, option *agenticv1alpha1.RemediationOption, exec *ExecutionOutput, serviceAccount string) (*VerificationOutput, error) {
-	agentCtx := buildAgentContext(run)
-	if option != nil {
-		agentCtx.ApprovedOption = option
-	}
-	agentCtx.ExecutionResult = executionOutputToAgentResult(exec)
-
-	query := buildVerificationQuery(option, exec)
-	raw, err := s.callWithSandbox(ctx, run, stepString(agenticv1alpha1.SandboxStepVerification), step, query, agentCtx, serviceAccount)
-	if err != nil {
-		return nil, fmt.Errorf("%s: %w", ErrVerificationAgentCall, err)
-	}
-
-	var resp verificationResponse
-	if err := json.Unmarshal(raw, &resp); err != nil {
-		return nil, fmt.Errorf("%s: %w", ErrParseVerificationResponse, err)
-	}
-
-	return &VerificationOutput{
-		Success: resp.Success,
-		Checks:  resp.Checks,
-		Summary: resp.Summary,
-	}, nil
-}
-
-func (s *SandboxAgentCaller) Escalate(ctx context.Context, run *agenticv1alpha1.AgenticRun, step resolvedStep, requestText string, serviceAccount string) (*EscalationOutput, error) {
-	agentCtx := buildAgentContext(run)
-	raw, err := s.callWithSandbox(ctx, run, stepString(agenticv1alpha1.SandboxStepEscalation), step, requestText, agentCtx, serviceAccount)
-	if err != nil {
-		return nil, fmt.Errorf("%s: %w", ErrEscalationAgentCall, err)
-	}
-
-	var resp struct {
-		Success bool   `json:"success"`
-		Summary string `json:"summary"`
-		Content string `json:"content"`
-	}
-	if err := json.Unmarshal(raw, &resp); err != nil {
-		return nil, fmt.Errorf("%s: %w", ErrParseEscalationResponse, err)
-	}
-
-	return &EscalationOutput{
-		Success: resp.Success,
-		Summary: resp.Summary,
-		Content: resp.Content,
-	}, nil
-}
-
+// stepTimeout returns the hard deadline for a sandbox step (OLS-3781 / PR 423).
 func stepTimeout(step string) time.Duration {
 	switch step {
 	case "analysis", "escalation":
@@ -199,67 +56,139 @@ func stepTimeout(step string) time.Duration {
 	}
 }
 
-func (s *SandboxAgentCaller) callWithSandbox(
+// Agent context types — shared by input ConfigMap builder and helpers.
+
+type agentContext struct {
+	TargetNamespaces []string                           `json:"targetNamespaces,omitempty"`
+	PreviousAttempts []agentPreviousAttempt             `json:"previousAttempts,omitempty"`
+	ApprovedOption   *agenticv1alpha1.RemediationOption `json:"approvedOption,omitempty"`
+	ExecutionResult  *agentExecutionResult              `json:"executionResult,omitempty"`
+}
+
+type agentExecutionResult struct {
+	Success      bool                              `json:"success"`
+	ActionsTaken []agenticv1alpha1.ExecutionAction `json:"actionsTaken"`
+}
+
+func executionOutputToAgentResult(exec *ExecutionOutput) *agentExecutionResult {
+	if exec == nil {
+		return nil
+	}
+	return &agentExecutionResult{
+		Success:      exec.Success,
+		ActionsTaken: exec.ActionsTaken,
+	}
+}
+
+type agentPreviousAttempt struct {
+	Attempt       int32  `json:"attempt"`
+	FailureReason string `json:"failureReason,omitempty"`
+}
+
+// SandboxLifecycle is the interface for sandbox create/release.
+// Create handles all sandbox setup: SA, RBAC, ConfigMap, pod, owner refs.
+// Release handles all cleanup: pod deletion (GC handles children) plus
+// explicit cross-namespace/cluster-scoped RBAC teardown.
+type SandboxLifecycle interface {
+	Create(ctx context.Context, run *agenticv1alpha1.AgenticRun, step string, agent *agenticv1alpha1.Agent, llm *agenticv1alpha1.LLMProvider, tools *agenticv1alpha1.ToolsSpec, deadline time.Duration, query string, agentCtx *agentContext) (string, error)
+	Release(ctx context.Context, run *agenticv1alpha1.AgenticRun, step string) error
+}
+
+// SandboxAgentCaller implements AgentCaller by creating a sandbox pod
+// with an input ConfigMap. The sandbox runs the agent autonomously and
+// creates the Result CR before exiting.
+type SandboxAgentCaller struct {
+	Sandbox   SandboxLifecycle
+	K8sClient client.Client
+	Namespace string
+	Audit     AuditLogger
+}
+
+func stepString(step agenticv1alpha1.SandboxStep) string {
+	return strings.ToLower(string(step))
+}
+
+func (s *SandboxAgentCaller) Analyze(ctx context.Context, run *agenticv1alpha1.AgenticRun, step resolvedStep, requestText string) error {
+	query := buildAnalysisQuery(requestText, run)
+	return s.launchSandbox(ctx, run, stepString(agenticv1alpha1.SandboxStepAnalysis), step, query, buildAgentContext(run))
+}
+
+func (s *SandboxAgentCaller) Execute(ctx context.Context, run *agenticv1alpha1.AgenticRun, step resolvedStep, option *agenticv1alpha1.RemediationOption) error {
+	agentCtx := buildAgentContext(run)
+	if option != nil {
+		agentCtx.ApprovedOption = option
+	}
+	query := buildExecutionQuery(option)
+	return s.launchSandbox(ctx, run, stepString(agenticv1alpha1.SandboxStepExecution), step, query, agentCtx)
+}
+
+func (s *SandboxAgentCaller) Verify(ctx context.Context, run *agenticv1alpha1.AgenticRun, step resolvedStep, option *agenticv1alpha1.RemediationOption, exec *ExecutionOutput) error {
+	agentCtx := buildAgentContext(run)
+	if option != nil {
+		agentCtx.ApprovedOption = option
+	}
+	agentCtx.ExecutionResult = executionOutputToAgentResult(exec)
+	query := buildVerificationQuery(option, exec)
+	return s.launchSandbox(ctx, run, stepString(agenticv1alpha1.SandboxStepVerification), step, query, agentCtx)
+}
+
+func (s *SandboxAgentCaller) Escalate(ctx context.Context, run *agenticv1alpha1.AgenticRun, step resolvedStep, requestText string) error {
+	return s.launchSandbox(ctx, run, stepString(agenticv1alpha1.SandboxStepEscalation), step, requestText, buildAgentContext(run))
+}
+
+// launchSandbox delegates to SandboxLifecycle.Create which handles all setup
+// (ConfigMap, SA, RBAC, pod) and patches the sandbox info on the status.
+func (s *SandboxAgentCaller) launchSandbox(
 	ctx context.Context,
 	run *agenticv1alpha1.AgenticRun,
 	stepName string,
 	step resolvedStep,
 	query string,
 	agentCtx *agentContext,
-	serviceAccount string,
-) (json.RawMessage, error) {
-	agentTimeout := stepTimeout(stepName)
-	podDeadline := agentTimeout + defaultSandboxTimeout
-
-	name, err := s.Sandbox.Create(ctx, run, stepName, step.Agent, step.LLM, step.Tools, serviceAccount, podDeadline)
+) error {
+	podDeadline := stepTimeout(stepName) + defaultSandboxTimeout
+	name, err := s.Sandbox.Create(ctx, run, stepName, step.Agent, step.LLM, step.Tools, podDeadline, query, agentCtx)
 	if err != nil {
-		return nil, fmt.Errorf("%s: %w", ErrClaimSandbox, err)
+		return fmt.Errorf("%s: %w", ErrClaimSandbox, err)
 	}
 
-	s.patchSandboxInfo(ctx, run, stepName, name)
-
-	endpoint, err := s.Sandbox.WaitReady(ctx, name, defaultSandboxTimeout)
-	if err != nil {
-		return nil, fmt.Errorf("%s: %w", ErrWaitForSandbox, err)
+	if err := s.patchSandboxInfo(ctx, run, stepName, name); err != nil {
+		return fmt.Errorf("patch sandbox info for step %s: %w", stepName, err)
 	}
+	return nil
+}
 
-	agentURL := endpoint
-	if !strings.HasPrefix(endpoint, "http") {
-		agentURL = fmt.Sprintf("http://%s:8080", endpoint)
-	}
-
-	schema := outputSchemaForStep(stepName, run)
-
-	// Inject W3C traceparent header for trace propagation
-	headers := http.Header{}
-	if s.Audit != nil {
-		s.Audit.InjectTraceContext(ctx, run, headers)
-	}
-
-	client := s.ClientFactory(agentURL, podDeadline)
-	resp, err := client.Run(ctx, "", query, schema, agentCtx, headers, agentTimeout)
-	if err != nil {
-		return nil, err
-	}
-
-	return resp.Response, nil
+func (s *SandboxAgentCaller) ReleaseSandbox(ctx context.Context, run *agenticv1alpha1.AgenticRun, step string) error {
+	return s.Sandbox.Release(ctx, run, step)
 }
 
 func (s *SandboxAgentCaller) ReleaseSandboxes(ctx context.Context, run *agenticv1alpha1.AgenticRun) error {
 	log := logf.FromContext(ctx)
 	var firstErr error
 
-	for _, info := range []agenticv1alpha1.SandboxInfo{
-		run.Status.Steps.Analysis.Sandbox,
-		run.Status.Steps.Execution.Sandbox,
-		run.Status.Steps.Verification.Sandbox,
-		run.Status.Steps.Escalation.Sandbox,
-	} {
-		if info.ClaimName == "" {
+	executionReleased := false
+	for _, step := range []string{"analysis", "execution", "verification", "escalation"} {
+		claimName := sandboxClaimName(run, step)
+		if claimName == "" {
 			continue
 		}
-		if err := s.Sandbox.Release(ctx, info.ClaimName); err != nil {
-			log.Error(err, "failed to release sandbox", LogKeyClaim, info.ClaimName)
+		if step == "execution" {
+			executionReleased = true
+		}
+		if err := s.Sandbox.Release(ctx, run, step); err != nil {
+			log.Error(err, "failed to release sandbox", LogKeyClaim, claimName, LogKeyStep, step)
+			if firstErr == nil {
+				firstErr = err
+			}
+		}
+	}
+
+	// If execution RBAC was created (annotation present) but patchSandboxInfo
+	// failed (no claim name), Release("execution") was skipped above. Clean up
+	// the RBAC unconditionally to prevent leaks.
+	if !executionReleased && len(annotatedRBACNamespaces(run)) > 0 {
+		if err := cleanupExecutionRBAC(ctx, s.K8sClient, run); err != nil {
+			log.Error(err, "failed to clean up orphaned execution RBAC")
 			if firstErr == nil {
 				firstErr = err
 			}
@@ -268,13 +197,10 @@ func (s *SandboxAgentCaller) ReleaseSandboxes(ctx context.Context, run *agenticv
 	return firstErr
 }
 
-func (s *SandboxAgentCaller) patchSandboxInfo(ctx context.Context, run *agenticv1alpha1.AgenticRun, step, claimName string) {
-	log := logf.FromContext(ctx)
-
+func (s *SandboxAgentCaller) patchSandboxInfo(ctx context.Context, run *agenticv1alpha1.AgenticRun, step, claimName string) error {
 	var current agenticv1alpha1.AgenticRun
 	if err := s.K8sClient.Get(ctx, client.ObjectKeyFromObject(run), &current); err != nil {
-		log.Error(err, "failed to get run for sandbox info patch")
-		return
+		return fmt.Errorf("get run for sandbox info patch: %w", err)
 	}
 
 	base := current.DeepCopy()
@@ -295,8 +221,9 @@ func (s *SandboxAgentCaller) patchSandboxInfo(ctx context.Context, run *agenticv
 	}
 
 	if err := s.K8sClient.Status().Patch(ctx, &current, client.MergeFrom(base)); err != nil {
-		log.Error(err, "failed to patch sandbox info", LogKeyStep, step, LogKeyClaim, claimName)
+		return fmt.Errorf("patch sandbox info for step %s: %w", step, err)
 	}
+	return nil
 }
 
 func collectFailedResults(results []agenticv1alpha1.StepResultRef, stepName string) []agentPreviousAttempt {

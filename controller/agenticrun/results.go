@@ -25,18 +25,17 @@ func resultCRName(agenticRunName, step string, index int) string {
 
 func agenticRunOwnerRef(run *agenticv1alpha1.AgenticRun) metav1.OwnerReference {
 	return metav1.OwnerReference{
-		APIVersion:         "agentic.openshift.io/v1alpha1",
-		Kind:               "AgenticRun",
-		Name:               run.Name,
-		UID:                run.UID,
-		Controller:         ptr.To(true),
-		BlockOwnerDeletion: ptr.To(true),
+		APIVersion: "agentic.openshift.io/v1alpha1",
+		Kind:       "AgenticRun",
+		Name:       run.Name,
+		UID:        run.UID,
+		Controller: ptr.To(true),
 	}
 }
 
-func resultLabels(agenticRunName, step string) map[string]string {
+func resultLabels(runUID, step string) map[string]string {
 	return map[string]string{
-		LabelRun:  truncateK8sName(agenticRunName),
+		LabelRun:  runUID,
 		LabelStep: step,
 	}
 }
@@ -95,8 +94,8 @@ func (r *AgenticRunReconciler) createAnalysisResult(
 	cr := &agenticv1alpha1.AnalysisResult{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:            crName,
-			Namespace:       run.Namespace,
-			Labels:          resultLabels(run.Name, "analysis"),
+			Namespace:       r.Namespace,
+			Labels:          resultLabels(string(run.UID), "analysis"),
 			OwnerReferences: []metav1.OwnerReference{agenticRunOwnerRef(run)},
 		},
 		Spec: agenticv1alpha1.AnalysisResultSpec{
@@ -150,8 +149,8 @@ func (r *AgenticRunReconciler) createExecutionResult(
 	cr := &agenticv1alpha1.ExecutionResult{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:            crName,
-			Namespace:       run.Namespace,
-			Labels:          resultLabels(run.Name, "execution"),
+			Namespace:       r.Namespace,
+			Labels:          resultLabels(string(run.UID), "execution"),
 			OwnerReferences: []metav1.OwnerReference{agenticRunOwnerRef(run)},
 		},
 		Spec: agenticv1alpha1.ExecutionResultSpec{
@@ -202,8 +201,8 @@ func (r *AgenticRunReconciler) createVerificationResult(
 	cr := &agenticv1alpha1.VerificationResult{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:            crName,
-			Namespace:       run.Namespace,
-			Labels:          resultLabels(run.Name, "verification"),
+			Namespace:       r.Namespace,
+			Labels:          resultLabels(string(run.UID), "verification"),
 			OwnerReferences: []metav1.OwnerReference{agenticRunOwnerRef(run)},
 		},
 		Spec: agenticv1alpha1.VerificationResultSpec{
@@ -255,8 +254,8 @@ func (r *AgenticRunReconciler) createEscalationResult(
 	cr := &agenticv1alpha1.EscalationResult{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:            crName,
-			Namespace:       run.Namespace,
-			Labels:          resultLabels(run.Name, "escalation"),
+			Namespace:       r.Namespace,
+			Labels:          resultLabels(string(run.UID), "escalation"),
 			OwnerReferences: []metav1.OwnerReference{agenticRunOwnerRef(run)},
 		},
 		Spec: agenticv1alpha1.EscalationResultSpec{

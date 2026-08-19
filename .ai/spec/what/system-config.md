@@ -17,7 +17,7 @@ Jira tracking: OLS-3018 (base kill switch), OLS-3267 (hardening).
 ### Emergency Suspension (`spec.suspended`)
 
 5. **Activation**: Setting `spec.suspended` to `true` MUST immediately prevent the run reconciler from starting any new workflow steps (analysis, execution, verification, escalation) for any run cluster-wide.
-6. **In-flight termination**: When `spec.suspended` becomes `true`, all non-terminal runs MUST be terminated: sandbox pods MUST be deleted (best-effort), execution RBAC MUST be cleaned up, and the `EmergencyStopped` condition MUST be set on each run.
+6. **In-flight termination**: When `spec.suspended` becomes `true`, all non-terminal runs MUST be terminated: sandbox pods MUST be released via `Agent.ReleaseSandboxes` (which handles pod deletion, SA cleanup, reader CRB subject removal, and execution RBAC cleanup via `SandboxManager.Release`), and the `EmergencyStopped` condition MUST be set on each run.
 7. **EmergencyStopped condition**: The operator MUST set condition type `EmergencyStopped` with status `True`, reason `SystemSuspended`, and message `"Terminated by system kill switch (AgenticOLSConfig.spec.suspended=true)"`.
 8. **EmergencyStopped is terminal — no automatic restart**: `EmergencyStopped` is a terminal phase. Runs in this state MUST NOT resume when `spec.suspended` is set back to `false`. To retry work, the admin creates new runs. This is a safety invariant: the kill switch exists for emergencies where agent behavior is harmful, so automatically restarting the same runs that caused the emergency would re-introduce the exact problem the admin stopped. Resumption MUST always require explicit human action (creating new runs).
 9. **DerivePhase precedence**: `EmergencyStopped=True` MUST be checked **before** all other conditions in `DerivePhase()`. It takes precedence over `Escalated`, `Denied`, and all progress conditions.
@@ -55,7 +55,7 @@ Primary enforcement so new runs never persist while the system is suspended. Spi
 
 12. **Watch and re-queue**: The run reconciler MUST watch `AgenticOLSConfig` and re-queue all non-terminal runs when the CR changes (same pattern as the existing `ApprovalPolicy` watch).
 13. **Reconcile guard**: The suspension check MUST execute after the deletion handler but before finalizer addition, terminal phase routing, approval resolution, and phase dispatch.
-14. **Order of operations on termination**: For each non-terminal run when suspended: (a) release sandbox claims via `Agent.ReleaseSandboxes` (best-effort, log errors), (b) clean up execution RBAC via `cleanupExecutionRBAC` (best-effort, log errors), (c) set `EmergencyStopped` condition, (d) status patch. Errors in (a) or (b) MUST NOT prevent (c) and (d).
+14. **Order of operations on termination**: For each non-terminal run when suspended: (a) release sandboxes via `Agent.ReleaseSandboxes` (best-effort, log errors — `Release` handles pod deletion, SA GC, reader CRB cleanup, and execution RBAC cleanup for each step), (b) set `EmergencyStopped` condition, (c) status patch. Errors in (a) MUST NOT prevent (b) and (c).
 15. **Config fetch failure**: If the `AgenticOLSConfig` CR cannot be fetched and the error is not `NotFound`, the reconciler MUST return the error for retry. `NotFound` MUST be treated as `suspended=false`.
 
 ### Console Visibility

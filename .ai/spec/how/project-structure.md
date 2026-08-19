@@ -9,7 +9,7 @@
 | `api/v1alpha1/` | `AgenticRun`, `Agent`, `LLMProvider`, `ApprovalPolicy`, `AgenticRunApproval`, result types, `DerivePhase` | CRD type definitions, phase derivation, CEL markers, deepcopy |
 | `cmd/main.go` | `main`, `scheme` | Operator binary entry point |
 | `cmd/oc-agentic/main.go` | `main` | CLI binary entry point |
-| `controller/agenticrun/` | `AgenticRunReconciler`, `SandboxAgentCaller`, `SandboxManager`, `SandboxLifecycle`, `PodSpecBuilder` | AgenticRun reconciler, unified sandbox management, agent HTTP client, RBAC, results |
+| `controller/agenticrun/` | `AgenticRunReconciler`, `SandboxAgentCaller`, `SandboxManager`, `SandboxLifecycle`, `PodSpecBuilder`, `PodEventHandler` | AgenticRun reconciler, unified sandbox management (SA, RBAC, ConfigMap, pod), pod event handler, timeout loop, results |
 | `controller/console/` | `EnsureAgenticConsole`, `AgenticConsoleConfig` | Console plugin deployment (Deployment, Service, ConfigMap, ConsolePlugin CR) |
 | `controller/sandbox/` | Legacy bootstrap helpers | SA creation inlined into `cmd/main.go` |
 | `pkg/configuration/` | `Config`, `Cache`, `OnConfigMapChange` | ConfigMap-driven config cache (sandbox mode, PodSpec, OTEL, MCP) |
@@ -32,7 +32,7 @@
 - Parses flags (`--namespace`, `--metrics-bind-address`, `--health-probe-bind-address`, `--agentic-console-image`)
 - Creates `configuration.Cache` and registers ConfigMap watcher for `lightspeed-agentic-configuration`
 - Wires `SandboxManager` → `SandboxAgentCaller` → `AgenticRunReconciler` directly (no `controller/setup.go`)
-- Ensures `lightspeed-agent` ServiceAccount unconditionally
+- Ensures `lightspeed-agent` ServiceAccount unconditionally (discovery seed for reader CRBs)
 - Registers console plugin, health/readiness probes, and webhook
 - Starts manager with signal handler
 
