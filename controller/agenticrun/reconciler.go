@@ -325,6 +325,12 @@ func (r *AgenticRunReconciler) handleTerminalTTL(ctx context.Context, run *agent
 			return ctrl.Result{}, false, fmt.Errorf("%s: %w", ErrStampTerminalTTL, err)
 		}
 		if clusterTTL != nil {
+			// run already reflects the latest server state: Patch (like the
+			// statusPatch above) decodes the API server's response back into
+			// run, so there's no need to re-Get here. Re-Getting through the
+			// manager's cached client can race the informer cache and clobber
+			// the terminalTime just stamped above with a stale, pre-patch
+			// copy, leading to a nil Status.TerminalTime below.
 			original := run.DeepCopy()
 			run.Spec.TTLAfterTerminal = clusterTTL
 			if err := r.Patch(ctx, run, client.MergeFrom(original)); err != nil {
