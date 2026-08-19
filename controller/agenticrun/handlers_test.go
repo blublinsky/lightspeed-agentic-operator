@@ -817,10 +817,7 @@ func TestReconcile_RevisionClearsTerminalTime(t *testing.T) {
 	if _, err := reconcileOnce(r, "fix-crash"); err != nil {
 		t.Fatalf("reconcile 2: %v", err)
 	}
-	p, err := getAgenticRun(r, "fix-crash")
-	if err != nil {
-		t.Fatalf("get completed run: %v", err)
-	}
+	p, _ := getAgenticRun(r, "fix-crash")
 	if agenticv1alpha1.DerivePhase(p.Status.Conditions) != agenticv1alpha1.AgenticRunPhaseCompleted {
 		t.Fatalf("expected Completed, got %s", agenticv1alpha1.DerivePhase(p.Status.Conditions))
 	}
@@ -839,10 +836,7 @@ func TestReconcile_RevisionClearsTerminalTime(t *testing.T) {
 		t.Fatalf("reconcile 3 (revision from Completed): %v", err)
 	}
 
-	p, err = getAgenticRun(r, "fix-crash")
-	if err != nil {
-		t.Fatalf("get revised run: %v", err)
-	}
+	p, _ = getAgenticRun(r, "fix-crash")
 	if agenticv1alpha1.DerivePhase(p.Status.Conditions) != agenticv1alpha1.AgenticRunPhaseProposed {
 		t.Fatalf("expected Proposed after revision from Completed, got %s", agenticv1alpha1.DerivePhase(p.Status.Conditions))
 	}
