@@ -145,8 +145,9 @@ Every step (analysis, execution, verification) has a built-in approval gate. The
 - **Denied** -- User denied a step on the AgenticRunApproval. Terminal.
 - **Verifying** -- Execution complete (or skipped). Verification step approved (or pending approval).
 - **Completed** -- Verification passed. Terminal (success).
-- **Failed** -- A step failed. Terminal for analysis/execution failures. Verification failure instead escalates immediately (no retry) -- see **Escalated**.
-- **Escalated** -- Verification failed. An `EscalationResult` is produced with the execution and verification history for a human operator to assess.
+- **Failed** -- A step failed. Terminal for analysis/execution failures. Verification failure instead escalates immediately (no retry) -- see **Escalating** / **Escalated**.
+- **Escalating** -- Verification failed and the operator is producing an `EscalationResult` (the `Escalated` condition is `Unknown`). In-flight, not terminal -- do not treat it as a final state.
+- **Escalated** -- Escalation complete. An `EscalationResult` has been produced with the execution and verification history for a human operator to assess. Terminal.
 
 ### Approval flow
 
@@ -185,6 +186,8 @@ for event := range watch.ResultChan() {
         // Remediation succeeded
     case v1alpha1.AgenticRunPhaseFailed:
         // Inspect run.Status.Steps.*.results (and the referenced Result CRs) for failure details
+    case v1alpha1.AgenticRunPhaseEscalating:
+        // Verification failed; escalation is in progress (not yet terminal) -- keep watching
     case v1alpha1.AgenticRunPhaseEscalated:
         // Verification failed; an EscalationResult was created for human review
     }
@@ -523,6 +526,10 @@ type AgenticRunSpec struct {
 
     // Mutable fields — the designated mutation points.
     RevisionFeedback string  // Set to feedback text to trigger re-analysis.
+    TTLAfterTerminal *int32   // Seconds to keep the run after it reaches a terminal
+                              // state before the operator deletes it (0 disables).
+                              // Overrides the cluster-wide default; may be pre-set
+                              // before the run terminates.
 }
 ```
 
