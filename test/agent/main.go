@@ -13,7 +13,7 @@
 // can observe in-flight RBAC.
 //
 // Build:  make -C test/agent docker-build
-// Image:  quay.io/openshift-lightspeed/ols-qe:lightspeed-mock-agent
+// Image:  quay.io/openshift-lightspeed/ols-qe:lightspeed-mock-agent1
 package main
 
 import (

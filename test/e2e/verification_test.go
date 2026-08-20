@@ -19,9 +19,14 @@ import (
 )
 
 // verifyFailNamespace is the target namespace sentinel the mock agent
-// (test/agent/main.go cannedResponse) recognizes to return a FAILING
-// verification response instead of the default "Passed" one. Must match the
-// constant of the same name in test/agent/main.go.
+// (test/agent/main.go setStatus) recognizes to return a FAILING verification
+// result instead of the default "Passed" one. Must match the constant of the
+// same name in test/agent/main.go.
+//
+// NOTE: this behavior lives in the mock-agent image. The e2e SandboxTemplate
+// pulls quay.io/openshift-lightspeed/ols-qe:lightspeed-mock-agent1, so that
+// image must be rebuilt+pushed (make -C test/agent docker-build docker-push)
+// after changing the sentinel, or this test's run will just Complete.
 const verifyFailNamespace = "e2e-verify-fail"
 
 // TestVerificationFlow_VerifyingToCompleted validates the verification phase:
