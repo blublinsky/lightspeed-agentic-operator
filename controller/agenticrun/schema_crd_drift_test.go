@@ -205,19 +205,28 @@ func assertMaxLengthCoverage(t *testing.T, path string, crd *apiextensionsv1.JSO
 		}
 		llmItems, ok := asJSONObject(llm["items"])
 		if !ok {
+			t.Errorf("maxLength drift at %s: CRD has array items but LLM schema is missing items node", path)
 			return
 		}
 		assertMaxLengthCoverage(t, path+"[]", crd.Items.Schema, llmItems)
 		return
 	}
 
+	crdRequired := map[string]bool{}
+	for _, r := range crd.Required {
+		crdRequired[r] = true
+	}
+
 	llmProps, _ := asJSONObject(llm["properties"])
 	for name, prop := range crd.Properties {
+		childPath := path + "." + name
 		llmProp, ok := asJSONObject(llmProps[name])
 		if !ok {
+			if prop.Type == "string" && prop.MaxLength != nil && crdRequired[name] {
+				t.Errorf("maxLength drift at %s: CRD requires field with maxLength=%d but LLM schema does not model this property", childPath, *prop.MaxLength)
+			}
 			continue
 		}
-		childPath := path + "." + name
 
 		if prop.Type == "string" && prop.MaxLength != nil {
 			llmMax, hasMax := llmProp["maxLength"]
@@ -225,6 +234,8 @@ func assertMaxLengthCoverage(t *testing.T, path string, crd *apiextensionsv1.JSO
 				t.Errorf("maxLength drift at %s: CRD has maxLength=%d but LLM schema has no maxLength", childPath, *prop.MaxLength)
 			} else if num, ok := llmMax.(float64); ok && int64(num) != *prop.MaxLength {
 				t.Errorf("maxLength drift at %s: CRD maxLength=%d but LLM schema maxLength=%d", childPath, *prop.MaxLength, int64(num))
+			} else if !ok {
+				t.Errorf("maxLength drift at %s: LLM schema maxLength is not numeric", childPath)
 			}
 		}
 
