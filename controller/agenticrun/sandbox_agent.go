@@ -40,6 +40,25 @@ const (
 	inputConfigMapKeySchema = "output-schema"
 	inputConfigMapKeyCtx    = "context"
 	inputConfigMapKeyTmpl   = "result-template"
+
+	// CRD maxLength limits for analysis option fields, injected into
+	// the LLM output schema so the model respects CRD constraints.
+	maxLenOptionTitle              = 256
+	maxLenOptionSummary            = 1024
+	maxLenDiagnosisSummary         = 8192
+	maxLenDiagnosisRootCause       = 1024
+	maxLenPlanDescription          = 8192
+	maxLenActionCommand            = 4096
+	maxLenActionType               = 256
+	maxLenActionDescription        = 4096
+	maxLenRollbackDescription      = 4096
+	maxLenRollbackCommand          = 4096
+	maxLenVerificationDescription  = 4096
+	maxLenVerificationStepName     = 253
+	maxLenVerificationStepCommand  = 4096
+	maxLenVerificationStepExpected = 1024
+	maxLenVerificationStepType     = 256
+	maxLenRBACJustification        = 1024
 )
 
 // stepTimeout returns the hard deadline for a sandbox step (OLS-3781 / PR 423).

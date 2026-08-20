@@ -148,6 +148,101 @@ func TestSchemasCoverCRDRequiredFields(t *testing.T) {
 	}
 }
 
+// TestSchemasCoverCRDMaxLength guards against maxLength drift: every string
+// field in the CRD with a maxLength constraint must have a matching maxLength
+// in the LLM output schema so the LLM is told the limit. Without this, the
+// LLM can produce strings that pass schema validation but get rejected by CRD
+// validation at status-patch time (OLS-3865).
+func TestSchemasCoverCRDMaxLength(t *testing.T) {
+	crdPath := filepath.Join(crdBasesDir(t), "agentic.openshift.io_analysisresults.yaml")
+	raw, err := os.ReadFile(crdPath)
+	if err != nil {
+		t.Fatalf("read CRD: %v", err)
+	}
+
+	var crd apiextensionsv1.CustomResourceDefinition
+	if err := yaml.Unmarshal(raw, &crd); err != nil {
+		t.Fatalf("unmarshal CRD: %v", err)
+	}
+
+	var llm map[string]any
+	if err := json.Unmarshal(AnalysisOutputSchema, &llm); err != nil {
+		t.Fatalf("unmarshal LLM schema: %v", err)
+	}
+	llmStart, ok := digObject(llm, "properties", "options", "items")
+	if !ok {
+		t.Fatal("LLM schema is missing options[].items")
+	}
+
+	for _, v := range crd.Spec.Versions {
+		if v.Schema == nil || v.Schema.OpenAPIV3Schema == nil {
+			continue
+		}
+		status, ok := v.Schema.OpenAPIV3Schema.Properties["status"]
+		if !ok {
+			continue
+		}
+		options, ok := status.Properties["options"]
+		if !ok || options.Items == nil || options.Items.Schema == nil {
+			continue
+		}
+		assertMaxLengthCoverage(t, "options[]", options.Items.Schema, llmStart)
+	}
+}
+
+// assertMaxLengthCoverage walks a CRD schema node and the corresponding LLM
+// schema node in parallel, asserting that every string field with a CRD
+// maxLength also has a maxLength in the LLM schema.
+func assertMaxLengthCoverage(t *testing.T, path string, crd *apiextensionsv1.JSONSchemaProps, llm map[string]any) {
+	t.Helper()
+	if crd == nil || llm == nil {
+		return
+	}
+
+	if crd.Type == "array" {
+		if crd.Items == nil || crd.Items.Schema == nil {
+			return
+		}
+		llmItems, ok := asJSONObject(llm["items"])
+		if !ok {
+			t.Errorf("maxLength drift at %s: CRD has array items but LLM schema is missing items node", path)
+			return
+		}
+		assertMaxLengthCoverage(t, path+"[]", crd.Items.Schema, llmItems)
+		return
+	}
+
+	crdRequired := map[string]bool{}
+	for _, r := range crd.Required {
+		crdRequired[r] = true
+	}
+
+	llmProps, _ := asJSONObject(llm["properties"])
+	for name, prop := range crd.Properties {
+		childPath := path + "." + name
+		llmProp, ok := asJSONObject(llmProps[name])
+		if !ok {
+			if prop.Type == "string" && prop.MaxLength != nil && crdRequired[name] {
+				t.Errorf("maxLength drift at %s: CRD requires field with maxLength=%d but LLM schema does not model this property", childPath, *prop.MaxLength)
+			}
+			continue
+		}
+
+		if prop.Type == "string" && prop.MaxLength != nil {
+			llmMax, hasMax := llmProp["maxLength"]
+			if !hasMax {
+				t.Errorf("maxLength drift at %s: CRD has maxLength=%d but LLM schema has no maxLength", childPath, *prop.MaxLength)
+			} else if num, ok := llmMax.(float64); ok && int64(num) != *prop.MaxLength {
+				t.Errorf("maxLength drift at %s: CRD maxLength=%d but LLM schema maxLength=%d", childPath, *prop.MaxLength, int64(num))
+			} else if !ok {
+				t.Errorf("maxLength drift at %s: LLM schema maxLength is not numeric", childPath)
+			}
+		}
+
+		assertMaxLengthCoverage(t, childPath, &prop, llmProp)
+	}
+}
+
 // assertRequiredCoverage walks a CRD schema node and the corresponding LLM
 // schema node in parallel, asserting that every field required by the CRD is
 // also required by the LLM schema (for fields the LLM schema actually models).
@@ -215,9 +310,9 @@ func assertRequiredCoverage(t *testing.T, path string, crd *apiextensionsv1.JSON
 
 // llmOnlyControlFields are properties the LLM output schemas model that are
 // deliberately not persisted to any CRD: the operator consumes them for
-// control flow (see executionResponse/verificationResponse in
-// sandbox_agent.go) before building the status patch, so the pruning check
-// does not apply to them.
+// control flow (the sandbox agent uses them to determine step outcome)
+// before building the result CR, so the pruning check does not apply
+// to them.
 var llmOnlyControlFields = map[string]bool{
 	"success": true,
 }
