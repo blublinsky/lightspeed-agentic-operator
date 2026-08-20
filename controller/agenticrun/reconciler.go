@@ -26,7 +26,6 @@ const (
 	ErrAddFinalizer                = "add finalizer"
 	ErrPatchTemplogCleanupAttempts = "patch templog cleanup attempts"
 	ErrPatchRBACCleanupAttempts    = "patch rbac cleanup attempts"
-	ErrMigrateLeftoverToEscalation = "migrate leftover verification-failed run to escalation"
 	ErrStampTerminalTTL            = "stamp terminal TTL"
 	ErrDeleteExpiredRun            = "delete expired run"
 )
@@ -110,36 +109,6 @@ func (r *AgenticRunReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 		if err := r.Get(ctx, req.NamespacedName, &run); err != nil {
 			return ctrl.Result{}, client.IgnoreNotFound(err)
 		}
-	}
-
-	// --- Upgrade shim (OLS-3817): rescue runs stranded mid-retry ---
-	// A previous operator version marked a failed verification pending a retry
-	// with Verified=False, reason "RetryingExecution", and no Escalated
-	// condition. Retries are gone, and DerivePhase now maps that condition set
-	// to Failed (terminal) -- which would strand such a leftover run without
-	// ever escalating. Convert it onto the escalation path by writing the same
-	// Escalated=Unknown/VerificationFailed condition a fresh verification
-	// failure now sets. The reason match is deliberately narrow: a genuine
-	// system failure during verification uses reason "Failed" and must stay
-	// terminal. "RetryingExecution" is a historical value no current code
-	// writes, so this only ever matches pre-upgrade leftovers.
-	const leftoverRetryReason = "RetryingExecution"
-	if verified := meta.FindStatusCondition(run.Status.Conditions, agenticv1alpha1.AgenticRunConditionVerified); verified != nil &&
-		verified.Status == metav1.ConditionFalse &&
-		verified.Reason == leftoverRetryReason &&
-		meta.FindStatusCondition(run.Status.Conditions, agenticv1alpha1.AgenticRunConditionEscalated) == nil {
-		base := run.DeepCopy()
-		meta.SetStatusCondition(&run.Status.Conditions, metav1.Condition{
-			Type:               agenticv1alpha1.AgenticRunConditionEscalated,
-			Status:             metav1.ConditionUnknown,
-			Reason:             agenticv1alpha1.ReasonVerificationFailed,
-			Message:            "Verification failed under a previous operator version, escalating",
-			ObservedGeneration: run.Generation,
-		})
-		if err := r.statusPatch(ctx, &run, base); err != nil {
-			return ctrl.Result{}, fmt.Errorf("%s: %w", ErrMigrateLeftoverToEscalation, err)
-		}
-		return ctrl.Result{Requeue: true}, nil
 	}
 
 	phase := agenticv1alpha1.DerivePhase(run.Status.Conditions)

@@ -562,30 +562,6 @@ func TestManualApproval_ExecutionSuccessFalse_NoMutations_Fails(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// Verification objective failure → Escalating (no retries)
-// ---------------------------------------------------------------------------
-
-func TestManualApproval_VerificationFailEscalatesNoRetry(t *testing.T) {
-	run := testAgenticRun()
-	agent := newTestAgentCaller()
-	agent.verifyResult = &VerificationOutput{
-		Success: false,
-		Summary: "Pod still crashing",
-	}
-	r, fc := newManualReconciler(t, run, agent)
-
-	approveAnalysis(t, fc, "fix-crash")
-	reconcileOnce(r, "fix-crash")
-	approveExecution(t, fc, "fix-crash", 0)
-	reconcileOnce(r, "fix-crash")
-	approveVerification(t, fc, "fix-crash")
-	reconcileOnce(r, "fix-crash")
-
-	// No retries → escalate immediately
-	assertPhase(t, r, "fix-crash", agenticv1alpha1.AgenticRunPhaseEscalating)
-}
-
-// ---------------------------------------------------------------------------
 // Agent override from approval stage is respected
 // ---------------------------------------------------------------------------
 

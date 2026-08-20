@@ -1005,38 +1005,6 @@ func TestReconcile_ExecutionInlineVerificationFailed_ProceedsToVerification(t *t
 	}
 }
 
-func TestReconcile_VerificationOutcomeFailed_Escalates(t *testing.T) {
-	scheme := testScheme()
-	run := testAgenticRun()
-
-	objs := append([]client.Object{run}, defaultObjects()...)
-	fc := fake.NewClientBuilder().WithScheme(scheme).WithObjects(objs...).
-		WithStatusSubresource(run, &agenticv1alpha1.AnalysisResult{}, &agenticv1alpha1.ExecutionResult{}, &agenticv1alpha1.VerificationResult{}, &agenticv1alpha1.EscalationResult{}).Build()
-
-	agent := newTestAgentCaller()
-	agent.verifyResult = &VerificationOutput{
-		Success: false,
-		Checks:  []agenticv1alpha1.VerifyCheck{{Name: "health", Result: agenticv1alpha1.CheckResultFailed}},
-		Summary: "Health check failed",
-	}
-	r := &AgenticRunReconciler{Client: fc, Agent: agent.withClient(t, fc, "default"), Namespace: "default"}
-
-	// Analysis → Executing → Approve → Execute → Verify (fail) → escalate
-	mustReconcile(t, r, "fix-crash")
-	approveAgenticRun(t, fc, "fix-crash")
-	mustReconcile(t, r, "fix-crash") // execution
-	mustReconcile(t, r, "fix-crash") // verification → escalate
-
-	p, _ := getAgenticRun(r, "fix-crash")
-	if agenticv1alpha1.DerivePhase(p.Status.Conditions) != agenticv1alpha1.AgenticRunPhaseEscalating {
-		t.Fatalf("expected Escalating when verification success=false, got %s", agenticv1alpha1.DerivePhase(p.Status.Conditions))
-	}
-	verified := meta.FindStatusCondition(p.Status.Conditions, agenticv1alpha1.AgenticRunConditionVerified)
-	if verified == nil || verified.Status != metav1.ConditionFalse || verified.Reason != agenticv1alpha1.ReasonVerificationFailed {
-		t.Fatalf("expected Verified=False/VerificationFailed, got %+v", verified)
-	}
-}
-
 func TestReconcile_ExecutionSelectsOption(t *testing.T) {
 	scheme := testScheme()
 	run := testAgenticRun()

@@ -904,48 +904,6 @@ func TestReconcile_AddsFinalizersOnTerminalRun(t *testing.T) {
 	}
 }
 
-// TestReconcile_MigratesLeftoverRetryRunToEscalation covers the OLS-3817
-// upgrade shim: a run left mid-retry by a previous operator version has
-// Verified=False (reason RetryingExecution) and no Escalated condition. The new
-// DerivePhase maps that to Failed (terminal), which would strand it. The shim
-// must instead write Escalated=Unknown/VerificationFailed so the run escalates.
-func TestReconcile_MigratesLeftoverRetryRunToEscalation(t *testing.T) {
-	run := testAgenticRun()
-	run.Finalizers = []string{rbacCleanupFinalizer, templogCleanupFinalizer}
-	run.Status.Conditions = []metav1.Condition{
-		{Type: agenticv1alpha1.AgenticRunConditionAnalyzed, Status: metav1.ConditionTrue, Reason: "Complete"},
-		{Type: agenticv1alpha1.AgenticRunConditionExecuted, Status: metav1.ConditionTrue, Reason: "Complete"},
-		// Leftover retry state from a previous operator version.
-		{Type: agenticv1alpha1.AgenticRunConditionVerified, Status: metav1.ConditionFalse, Reason: "RetryingExecution"},
-	}
-
-	objs := append([]client.Object{run}, defaultObjects()...)
-	fc := fake.NewClientBuilder().WithScheme(testScheme()).WithObjects(objs...).
-		WithStatusSubresource(run).Build()
-
-	r := &AgenticRunReconciler{Client: fc, Agent: newTestAgentCaller(), Namespace: "default"}
-
-	result, err := reconcileOnce(r, "fix-crash")
-	if err != nil {
-		t.Fatalf("reconcile: %v", err)
-	}
-	if !result.Requeue {
-		t.Error("expected requeue after writing the Escalated condition")
-	}
-
-	updated, err := getAgenticRun(r, "fix-crash")
-	if err != nil {
-		t.Fatalf("get updated run: %v", err)
-	}
-	escalated := meta.FindStatusCondition(updated.Status.Conditions, agenticv1alpha1.AgenticRunConditionEscalated)
-	if escalated == nil || escalated.Status != metav1.ConditionUnknown || escalated.Reason != agenticv1alpha1.ReasonVerificationFailed {
-		t.Fatalf("expected Escalated=Unknown/%s, got %+v", agenticv1alpha1.ReasonVerificationFailed, escalated)
-	}
-	if got := agenticv1alpha1.DerivePhase(updated.Status.Conditions); got != agenticv1alpha1.AgenticRunPhaseEscalating {
-		t.Fatalf("expected phase Escalating after migration, got %s", got)
-	}
-}
-
 func TestDeletion_BothFinalizersInOneReconcile(t *testing.T) {
 	now := metav1.Now()
 	run := testAgenticRun()
