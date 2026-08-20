@@ -25,8 +25,6 @@ func TestVerificationFlow_VerifyingToCompleted(t *testing.T) {
 	c := newClient(t)
 	ctx := context.Background()
 
-	t.Log("Creating fixtures (LLMProvider, Agent, ApprovalPolicy, Secret)")
-	createFixtures(t, c)
 	prop := createAgenticRun(t, c, "e2e-verification-flow")
 	t.Logf("AgenticRun created: %s/%s", testNS, prop.Name)
 
@@ -82,6 +80,15 @@ func TestVerificationFlow_VerifyingToCompleted(t *testing.T) {
 		t.Error("status.steps.verification.sandbox.claimName is empty")
 	}
 	t.Logf("Verified: verification sandbox info recorded, claimName=%s", updated.Status.Steps.Verification.Sandbox.ClaimName)
+
+	// --- Verify: OTEL traces exported for all steps ---
+	assertTracesExported(t, &updated, []string{
+		"agenticrun.analyze",
+		"agenticrun.human_approval",
+		"agenticrun.execute",
+		"agenticrun.verify",
+		"agenticrun.terminal",
+	})
 
 	// --- Cleanup and verify RBAC removed ---
 	roleName := "ls-exec-" + runUID
