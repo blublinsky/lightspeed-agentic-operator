@@ -356,7 +356,7 @@ func TestReconcile_AnalysisSystemFailure_Terminal(t *testing.T) {
 	}
 }
 
-func TestReconcile_VerificationObjectiveFailure_Failed(t *testing.T) {
+func TestReconcile_VerificationObjectiveFailure_Escalates(t *testing.T) {
 	agent := newTestAgentCaller()
 	scheme := testScheme()
 
@@ -379,14 +379,18 @@ func TestReconcile_VerificationObjectiveFailure_Failed(t *testing.T) {
 		Summary: "Pod still crashing",
 	}
 
-	// Verification fails → Failed (no operator-level retry)
+	// Verification fails → escalates directly (no retry).
 	_, err := reconcileOnce(r, "fix-crash")
 	if err != nil {
 		t.Fatalf("verification reconcile: %v", err)
 	}
 	p, _ := getAgenticRun(r, "fix-crash")
-	if agenticv1alpha1.DerivePhase(p.Status.Conditions) != agenticv1alpha1.AgenticRunPhaseFailed {
-		t.Fatalf("expected Failed, got %s", agenticv1alpha1.DerivePhase(p.Status.Conditions))
+	if agenticv1alpha1.DerivePhase(p.Status.Conditions) != agenticv1alpha1.AgenticRunPhaseEscalating {
+		t.Fatalf("expected Escalating, got %s", agenticv1alpha1.DerivePhase(p.Status.Conditions))
+	}
+	verified := meta.FindStatusCondition(p.Status.Conditions, agenticv1alpha1.AgenticRunConditionVerified)
+	if verified == nil || verified.Status != metav1.ConditionFalse || verified.Reason != agenticv1alpha1.ReasonVerificationFailed {
+		t.Fatalf("expected Verified=False/VerificationFailed, got %+v", verified)
 	}
 }
 
@@ -462,42 +466,6 @@ func TestReconcile_SystemFailure_Verification_Terminal(t *testing.T) {
 	p, _ = getAgenticRun(r, "fix-crash")
 	if agenticv1alpha1.DerivePhase(p.Status.Conditions) != agenticv1alpha1.AgenticRunPhaseFailed {
 		t.Fatalf("expected Failed (terminal), got %s", agenticv1alpha1.DerivePhase(p.Status.Conditions))
-	}
-}
-
-func TestReconcile_VerificationFailure_IsTerminal(t *testing.T) {
-	agent := newTestAgentCaller()
-	scheme := testScheme()
-
-	run := testAgenticRun()
-
-	objs := append([]client.Object{run}, defaultObjects()...)
-	fc := fake.NewClientBuilder().WithScheme(scheme).WithObjects(objs...).
-		WithStatusSubresource(run, &agenticv1alpha1.AnalysisResult{}, &agenticv1alpha1.ExecutionResult{}, &agenticv1alpha1.VerificationResult{}, &agenticv1alpha1.EscalationResult{}).Build()
-
-	r := &AgenticRunReconciler{Client: fc, Agent: agent.withClient(t, fc, "default"), Namespace: "default"}
-
-	mustReconcile(t, r, "fix-crash")
-	approveAgenticRun(t, fc, "fix-crash")
-	mustReconcile(t, r, "fix-crash")
-
-	agent.verifyResult = &VerificationOutput{
-		Checks:  []agenticv1alpha1.VerifyCheck{{Name: "pod-running", Source: "oc", Value: "CrashLoopBackOff", Result: agenticv1alpha1.CheckResultFailed}},
-		Summary: "Pod still crashing",
-	}
-
-	// Verification fails → Failed (terminal for execution-mode runs)
-	mustReconcile(t, r, "fix-crash")
-	p, _ := getAgenticRun(r, "fix-crash")
-	if agenticv1alpha1.DerivePhase(p.Status.Conditions) != agenticv1alpha1.AgenticRunPhaseFailed {
-		t.Fatalf("expected Failed, got %s", agenticv1alpha1.DerivePhase(p.Status.Conditions))
-	}
-
-	// Re-reconcile stays Failed
-	mustReconcile(t, r, "fix-crash")
-	p, _ = getAgenticRun(r, "fix-crash")
-	if agenticv1alpha1.DerivePhase(p.Status.Conditions) != agenticv1alpha1.AgenticRunPhaseFailed {
-		t.Fatalf("expected Failed (stable), got %s", agenticv1alpha1.DerivePhase(p.Status.Conditions))
 	}
 }
 
@@ -1037,33 +1005,6 @@ func TestReconcile_ExecutionInlineVerificationFailed_ProceedsToVerification(t *t
 	}
 }
 
-func TestReconcile_VerificationOutcomeFailed_Terminal(t *testing.T) {
-	scheme := testScheme()
-	run := testAgenticRun()
-
-	objs := append([]client.Object{run}, defaultObjects()...)
-	fc := fake.NewClientBuilder().WithScheme(scheme).WithObjects(objs...).
-		WithStatusSubresource(run, &agenticv1alpha1.AnalysisResult{}, &agenticv1alpha1.ExecutionResult{}, &agenticv1alpha1.VerificationResult{}, &agenticv1alpha1.EscalationResult{}).Build()
-
-	agent := newTestAgentCaller()
-	agent.verifyResult = &VerificationOutput{
-		Success: false,
-		Checks:  []agenticv1alpha1.VerifyCheck{{Name: "health", Result: agenticv1alpha1.CheckResultFailed}},
-		Summary: "Health check failed",
-	}
-	r := &AgenticRunReconciler{Client: fc, Agent: agent.withClient(t, fc, "default"), Namespace: "default"}
-
-	mustReconcile(t, r, "fix-crash")
-	approveAgenticRun(t, fc, "fix-crash")
-	mustReconcile(t, r, "fix-crash") // execution
-	mustReconcile(t, r, "fix-crash") // verification fails → Failed
-
-	p, _ := getAgenticRun(r, "fix-crash")
-	if agenticv1alpha1.DerivePhase(p.Status.Conditions) != agenticv1alpha1.AgenticRunPhaseFailed {
-		t.Fatalf("expected Failed when verification success=false, got %s", agenticv1alpha1.DerivePhase(p.Status.Conditions))
-	}
-}
-
 func TestReconcile_ExecutionSelectsOption(t *testing.T) {
 	scheme := testScheme()
 	run := testAgenticRun()
@@ -1190,12 +1131,23 @@ func TestReconcile_TrimOptionsOnExecution(t *testing.T) {
 		t.Errorf("expected trimmed option title %q, got %q", "Option C", ar.Status.Options[0].Title)
 	}
 
-	// Verification fails → Failed (no operator-level retry)
+	// Verification fails → escalates directly (no retry)
 	mustReconcile(t, r, "fix-crash")
 
 	p, _ = getAgenticRun(r, "fix-crash")
-	if agenticv1alpha1.DerivePhase(p.Status.Conditions) != agenticv1alpha1.AgenticRunPhaseFailed {
-		t.Fatalf("expected Failed, got %s", agenticv1alpha1.DerivePhase(p.Status.Conditions))
+	if agenticv1alpha1.DerivePhase(p.Status.Conditions) != agenticv1alpha1.AgenticRunPhaseEscalating {
+		t.Fatalf("expected Escalating, got %s", agenticv1alpha1.DerivePhase(p.Status.Conditions))
+	}
+
+	// AnalysisResult should still have just 1 option after escalation
+	if err := fc.Get(context.Background(), types.NamespacedName{Name: p.Status.Steps.Analysis.Results[0].Name, Namespace: "default"}, &ar); err != nil {
+		t.Fatalf("get AnalysisResult after escalation: %v", err)
+	}
+	if len(ar.Status.Options) != 1 {
+		t.Fatalf("expected 1 option after escalation, got %d", len(ar.Status.Options))
+	}
+	if ar.Status.Options[0].Title != "Option C" {
+		t.Errorf("expected option %q after escalation, got %q", "Option C", ar.Status.Options[0].Title)
 	}
 }
 

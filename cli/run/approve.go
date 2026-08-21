@@ -47,6 +47,9 @@ func NewApproveCmd(streams genericclioptions.IOStreams) *cobra.Command {
   # Approve verification
   oc agentic run approve fix-crash --stage=verification
 
+  # Approve escalation (only pending after a verification failure)
+  oc agentic run approve fix-crash --stage=escalation
+
   # Approve all pending steps
   oc agentic run approve fix-crash --all`,
 		Args: cobra.ExactArgs(1),
@@ -62,7 +65,7 @@ func NewApproveCmd(streams genericclioptions.IOStreams) *cobra.Command {
 	}
 
 	o.configFlags.AddFlags(cmd.Flags())
-	cmd.Flags().StringVar(&o.stage, "stage", "", "Step to approve: analysis, execution, or verification (required unless --all)")
+	cmd.Flags().StringVar(&o.stage, "stage", "", "Step to approve: analysis, execution, verification, or escalation (required unless --all)")
 	cmd.Flags().Int32Var(&o.option, "option", 0, "0-based index of the remediation option (execution only)")
 	cmd.Flags().StringVar(&o.agent, "agent", "", "Override agent for this step")
 	cmd.Flags().BoolVar(&o.all, "all", false, "Approve all remaining unapproved steps")
@@ -84,13 +87,13 @@ func (o *ApproveOptions) Complete(cmd *cobra.Command, args []string) error {
 
 func (o *ApproveOptions) Validate() error {
 	if !o.all && o.stage == "" {
-		return fmt.Errorf("--stage is required (analysis, execution, or verification) unless --all is set")
+		return fmt.Errorf("--stage is required (analysis, execution, verification, or escalation) unless --all is set")
 	}
 	if o.stage != "" {
 		switch strings.ToLower(o.stage) {
-		case "analysis", "execution", "verification":
+		case "analysis", "execution", "verification", "escalation":
 		default:
-			return fmt.Errorf("--stage must be analysis, execution, or verification")
+			return fmt.Errorf("--stage must be analysis, execution, verification, or escalation")
 		}
 	}
 	if o.option < 0 {
@@ -138,7 +141,7 @@ func (o *ApproveOptions) Run(ctx context.Context) error {
 		if stageType == agenticv1alpha1.ApprovalStageExecution {
 			option = &o.option
 		}
-		entries = append(entries, agenticv1alpha1.NewApprovalStage(stageType, "", o.agent, option, 0))
+		entries = append(entries, agenticv1alpha1.NewApprovalStage(stageType, "", o.agent, option))
 	}
 
 	patch := client.MergeFrom(approval.DeepCopy())
@@ -204,6 +207,13 @@ func (o *ApproveOptions) pendingStages(p *agenticv1alpha1.AgenticRun, approval *
 	if !p.Spec.Verification.IsZero() && !approved[agenticv1alpha1.ApprovalStageVerification] {
 		pending = append(pending, "verification")
 	}
+	// Escalation is not a spec-configured step; it is triggered by a
+	// verification failure. It is only pending for approval once the run has
+	// actually reached the Escalating phase.
+	if agenticv1alpha1.DerivePhase(p.Status.Conditions) == agenticv1alpha1.AgenticRunPhaseEscalating &&
+		!approved[agenticv1alpha1.ApprovalStageEscalation] {
+		pending = append(pending, "escalation")
+	}
 	return pending
 }
 
@@ -215,6 +225,8 @@ func normalizeStageType(s string) agenticv1alpha1.ApprovalStageType {
 		return agenticv1alpha1.ApprovalStageExecution
 	case "verification":
 		return agenticv1alpha1.ApprovalStageVerification
+	case "escalation":
+		return agenticv1alpha1.ApprovalStageEscalation
 	default:
 		return agenticv1alpha1.ApprovalStageType(s)
 	}

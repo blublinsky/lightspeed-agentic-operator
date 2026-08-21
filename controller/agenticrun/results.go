@@ -40,13 +40,6 @@ func resultLabels(runUID, step string) map[string]string {
 	}
 }
 
-func executionRetryIndex(run *agenticv1alpha1.AgenticRun) int32 {
-	if run.Status.Steps.Execution.RetryCount != nil {
-		return *run.Status.Steps.Execution.RetryCount
-	}
-	return 0
-}
-
 func resultConditions(startTime *metav1.Time, completionTime metav1.Time, outcome agenticv1alpha1.ActionOutcome) []metav1.Condition {
 	conditions := make([]metav1.Condition, 0, 2)
 	if startTime != nil {
@@ -155,7 +148,6 @@ func (r *AgenticRunReconciler) createExecutionResult(
 		},
 		Spec: agenticv1alpha1.ExecutionResultSpec{
 			AgenticRunName: run.Name,
-			RetryIndex:     ptr.To(executionRetryIndex(run)),
 		},
 		Status: agenticv1alpha1.ExecutionResultStatus{
 			Conditions:    resultConditions(startTime, completedAt, outcome),
@@ -207,7 +199,6 @@ func (r *AgenticRunReconciler) createVerificationResult(
 		},
 		Spec: agenticv1alpha1.VerificationResultSpec{
 			AgenticRunName: run.Name,
-			RetryIndex:     ptr.To(executionRetryIndex(run)),
 		},
 		Status: agenticv1alpha1.VerificationResultStatus{
 			Conditions:    resultConditions(startTime, completedAt, outcome),

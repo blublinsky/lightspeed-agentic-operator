@@ -59,20 +59,12 @@ type ExecutionResultSpec struct {
 	// +kubebuilder:validation:MinLength=1
 	// +kubebuilder:validation:MaxLength=253
 	AgenticRunName string `json:"agenticRunName,omitempty"`
-
-	// retryIndex is the 0-based retry index within the current analysis.
-	// First execution has retryIndex 0, first retry has retryIndex 1, etc.
-	// +required
-	// +kubebuilder:validation:Minimum=0
-	// +kubebuilder:validation:Maximum=2
-	RetryIndex *int32 `json:"retryIndex,omitempty"`
 }
 
 // +kubebuilder:object:root=true
 // +kubebuilder:resource:scope=Namespaced
 // +kubebuilder:subresource:status
 // +kubebuilder:printcolumn:name="AgenticRun",type=string,JSONPath=`.spec.agenticRunName`
-// +kubebuilder:printcolumn:name="Retry",type=integer,JSONPath=`.spec.retryIndex`
 // +kubebuilder:printcolumn:name="Outcome",type=string,JSONPath=`.status.conditions[?(@.type=="Completed")].reason`
 // +kubebuilder:printcolumn:name="Age",type=date,JSONPath=`.metadata.creationTimestamp`
 

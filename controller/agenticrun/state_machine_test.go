@@ -23,14 +23,9 @@ func testManualPolicy() *agenticv1alpha1.ApprovalPolicy {
 }
 
 func testPolicy(analysis, execution, verification agenticv1alpha1.ApprovalMode) *agenticv1alpha1.ApprovalPolicy {
-	return testPolicyWithMaxAttempts(analysis, execution, verification, 0)
-}
-
-func testPolicyWithMaxAttempts(analysis, execution, verification agenticv1alpha1.ApprovalMode, maxAttempts int32) *agenticv1alpha1.ApprovalPolicy {
 	return &agenticv1alpha1.ApprovalPolicy{
 		ObjectMeta: metav1.ObjectMeta{Name: "cluster"},
 		Spec: agenticv1alpha1.ApprovalPolicySpec{
-			MaxAttempts: maxAttempts,
 			Stages: []agenticv1alpha1.ApprovalPolicyStage{
 				{Name: agenticv1alpha1.SandboxStepAnalysis, Approval: analysis},
 				{Name: agenticv1alpha1.SandboxStepExecution, Approval: execution},
@@ -357,10 +352,10 @@ func TestManualApproval_VerificationFails(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// Verification failure → Failed (no operator-level retry)
+// Verification failure escalates directly (no execution retries) — OLS-3817
 // ---------------------------------------------------------------------------
 
-func TestManualApproval_VerificationFail_Terminal(t *testing.T) {
+func TestManualApproval_VerificationFailEscalates(t *testing.T) {
 	run := testAgenticRun()
 	agent := newTestAgentCaller()
 	r, fc := newManualReconciler(t, run, agent)
@@ -371,6 +366,7 @@ func TestManualApproval_VerificationFail_Terminal(t *testing.T) {
 	reconcileOnce(r, "fix-crash")
 	assertPhase(t, r, "fix-crash", agenticv1alpha1.AgenticRunPhaseVerifying)
 
+	// Objective verification failure
 	agent.verifyResult = &VerificationOutput{
 		Success: false,
 		Summary: "Pod still crashing",
@@ -379,7 +375,27 @@ func TestManualApproval_VerificationFail_Terminal(t *testing.T) {
 	approveVerification(t, fc, "fix-crash")
 	reconcileOnce(r, "fix-crash")
 
-	assertPhase(t, r, "fix-crash", agenticv1alpha1.AgenticRunPhaseFailed)
+	// Escalates directly — never returns to Executing.
+	assertPhase(t, r, "fix-crash", agenticv1alpha1.AgenticRunPhaseEscalating)
+
+	p, _ := getAgenticRun(r, "fix-crash")
+	verified := meta.FindStatusCondition(p.Status.Conditions, agenticv1alpha1.AgenticRunConditionVerified)
+	if verified == nil || verified.Status != metav1.ConditionFalse || verified.Reason != agenticv1alpha1.ReasonVerificationFailed {
+		t.Fatalf("expected Verified=False/VerificationFailed, got %+v", verified)
+	}
+	escalated := meta.FindStatusCondition(p.Status.Conditions, agenticv1alpha1.AgenticRunConditionEscalated)
+	if escalated == nil || escalated.Status != metav1.ConditionUnknown {
+		t.Fatalf("expected Escalated=Unknown, got %+v", escalated)
+	}
+
+	// Exactly one ExecutionResult — proof of no re-execution.
+	var execResults agenticv1alpha1.ExecutionResultList
+	if err := fc.List(context.Background(), &execResults); err != nil {
+		t.Fatalf("list execution results: %v", err)
+	}
+	if len(execResults.Items) != 1 {
+		t.Fatalf("expected exactly 1 ExecutionResult, got %d", len(execResults.Items))
+	}
 }
 
 // ---------------------------------------------------------------------------
@@ -546,29 +562,6 @@ func TestManualApproval_ExecutionSuccessFalse_NoMutations_Fails(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// Verification objective failure without maxAttempts → terminal Failed
-// ---------------------------------------------------------------------------
-
-func TestManualApproval_VerificationFailDefaultOneAttempt(t *testing.T) {
-	run := testAgenticRun()
-	agent := newTestAgentCaller()
-	agent.verifyResult = &VerificationOutput{
-		Success: false,
-		Summary: "Pod still crashing",
-	}
-	r, fc := newManualReconciler(t, run, agent)
-
-	approveAnalysis(t, fc, "fix-crash")
-	reconcileOnce(r, "fix-crash")
-	approveExecution(t, fc, "fix-crash", 0)
-	reconcileOnce(r, "fix-crash")
-	approveVerification(t, fc, "fix-crash")
-	reconcileOnce(r, "fix-crash")
-
-	assertPhase(t, r, "fix-crash", agenticv1alpha1.AgenticRunPhaseFailed)
-}
-
-// ---------------------------------------------------------------------------
 // Agent override from approval stage is respected
 // ---------------------------------------------------------------------------
 
@@ -635,12 +628,12 @@ func TestDerivePhase_ProposedVsExecuting(t *testing.T) {
 			want: agenticv1alpha1.AgenticRunPhaseVerifying,
 		},
 		{
-			name: "Analyzed=True + Verified=False/RetryingExecution → Executing (retry)",
+			name: "Analyzed=True + Verified=False → Failed (any reason)",
 			conditions: []metav1.Condition{
 				{Type: agenticv1alpha1.AgenticRunConditionAnalyzed, Status: metav1.ConditionTrue},
-				{Type: agenticv1alpha1.AgenticRunConditionVerified, Status: metav1.ConditionFalse, Reason: agenticv1alpha1.ReasonRetryingExecution},
+				{Type: agenticv1alpha1.AgenticRunConditionVerified, Status: metav1.ConditionFalse, Reason: agenticv1alpha1.ReasonVerificationFailed},
 			},
-			want: agenticv1alpha1.AgenticRunPhaseExecuting,
+			want: agenticv1alpha1.AgenticRunPhaseFailed,
 		},
 		{
 			name: "Analyzed=False → Failed",
@@ -793,14 +786,21 @@ func driveToEscalating(t *testing.T, fc client.WithWatch, name string) {
 func TestEscalation_ApproveAndComplete(t *testing.T) {
 	run := testAgenticRun()
 	agent := newTestAgentCaller()
-	r, fc := newManualReconciler(t, run, agent)
+	agent.verifyResult = &VerificationOutput{
+		Success: false,
+		Summary: "Pod still crashing",
+		Checks:  []agenticv1alpha1.VerifyCheck{{Name: "pod-running", Result: agenticv1alpha1.CheckResultFailed}},
+	}
+	policy := testPolicy(agenticv1alpha1.ApprovalModeManual, agenticv1alpha1.ApprovalModeManual, agenticv1alpha1.ApprovalModeManual)
+	r, fc := newReconcilerWithPolicy(t, run, agent, policy)
 
-	// Drive through analysis → execution → inject escalation
+	// Run through to verification failure → escalate directly → Escalating
 	approveAnalysis(t, fc, "fix-crash")
 	reconcileOnce(r, "fix-crash")
 	approveExecution(t, fc, "fix-crash", 0)
 	reconcileOnce(r, "fix-crash")
-	driveToEscalating(t, fc, "fix-crash")
+	approveVerification(t, fc, "fix-crash")
+	reconcileOnce(r, "fix-crash") // verify fails → escalate immediately
 	assertPhase(t, r, "fix-crash", agenticv1alpha1.AgenticRunPhaseEscalating)
 
 	approveEscalation(t, fc, "fix-crash")
@@ -899,14 +899,23 @@ func TestEscalation_AutoApprove(t *testing.T) {
 func TestEscalation_InProgressIsIdempotent(t *testing.T) {
 	run := testAgenticRun()
 	agent := newTestAgentCaller()
-	r, fc := newManualReconciler(t, run, agent)
+	agent.verifyResult = &VerificationOutput{
+		Success: false,
+		Summary: "Pod still crashing",
+		Checks:  []agenticv1alpha1.VerifyCheck{{Name: "pod-running", Result: agenticv1alpha1.CheckResultFailed}},
+	}
+	policy := testPolicy(agenticv1alpha1.ApprovalModeManual, agenticv1alpha1.ApprovalModeManual, agenticv1alpha1.ApprovalModeManual)
+	r, fc := newReconcilerWithPolicy(t, run, agent, policy)
 
 	// Drive to Escalating phase
 	approveAnalysis(t, fc, "fix-crash")
 	reconcileOnce(r, "fix-crash")
 	approveExecution(t, fc, "fix-crash", 0)
 	reconcileOnce(r, "fix-crash")
-	driveToEscalating(t, fc, "fix-crash")
+	approveVerification(t, fc, "fix-crash")
+	reconcileOnce(r, "fix-crash") // verify fails → escalate immediately
+	reconcileOnce(r, "fix-crash") // re-reconcile is idempotent
+	reconcileOnce(r, "fix-crash") // still Escalating
 	assertPhase(t, r, "fix-crash", agenticv1alpha1.AgenticRunPhaseEscalating)
 
 	// Approve escalation and run it

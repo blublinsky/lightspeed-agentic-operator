@@ -309,7 +309,6 @@ kind: ApprovalPolicy
 metadata:
   name: cluster
 spec:
-  maxAttempts: 3
   maxConcurrentRuns: 5
   stages:
   - name: Analysis

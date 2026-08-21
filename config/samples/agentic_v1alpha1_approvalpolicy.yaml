@@ -3,7 +3,6 @@ kind: ApprovalPolicy
 metadata:
   name: cluster
 spec:
-  maxAttempts: 3
   maxConcurrentRuns: 5
   stages:
     - name: Analysis
@@ -12,3 +11,8 @@ spec:
       approval: Manual
     - name: Verification
       approval: Manual
+    # Escalation is triggered by a verification failure and only produces a
+    # report. Keep it Automatic so a failure is not stranded at an unapproved
+    # escalation gate.
+    - name: Escalation
+      approval: Automatic

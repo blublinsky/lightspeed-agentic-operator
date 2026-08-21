@@ -231,8 +231,6 @@ func TestBuildAgentContext_PreviousAttempts(t *testing.T) {
 	run.Status.Steps.Execution.Results = []agenticv1alpha1.StepResultRef{
 		{Name: "exec-1", Outcome: agenticv1alpha1.ActionOutcomeFailed},
 	}
-	retryCount := int32(1)
-	run.Status.Steps.Execution.RetryCount = &retryCount
 	run.Status.Conditions = []metav1.Condition{
 		{Type: agenticv1alpha1.AgenticRunConditionVerified, Status: metav1.ConditionFalse, Message: "check failed"},
 	}

@@ -184,15 +184,8 @@ type ExecutionStepStatus struct {
 	// sandbox tracks the sandbox used.
 	// +optional
 	Sandbox SandboxInfo `json:"sandbox,omitzero"`
-	// retryCount tracks how many times execution+verification has been
-	// retried for the current analysis option. Reset when a new analysis
-	// is run (initial or revision). The operator increments this on each
-	// objective verification failure before retrying execution.
-	// +optional
-	// +kubebuilder:validation:Minimum=0
-	RetryCount *int32 `json:"retryCount,omitempty"`
 	// results references ExecutionResult CRs, newest last.
-	// Each entry corresponds to one execution attempt (including retries).
+	// Each entry corresponds to one execution attempt (one per revision).
 	// +optional
 	// +listType=atomic
 	// +kubebuilder:validation:MinItems=1
@@ -217,7 +210,7 @@ type VerificationStepStatus struct {
 	// +optional
 	Sandbox SandboxInfo `json:"sandbox,omitzero"`
 	// results references VerificationResult CRs, newest last.
-	// Each entry corresponds to one verification attempt (including retries).
+	// Each entry corresponds to one verification attempt (one per revision).
 	// +optional
 	// +listType=atomic
 	// +kubebuilder:validation:MinItems=1
@@ -226,7 +219,7 @@ type VerificationStepStatus struct {
 }
 
 // EscalationStepStatus is the observed state of the escalation step.
-// The operator injects this step when retries are exhausted; it is not
+// The operator injects this step when verification fails; it is not
 // declared in the AgenticRun spec.
 //
 // +kubebuilder:validation:MinProperties=1

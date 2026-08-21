@@ -59,14 +59,6 @@ type ApprovalPolicySpec struct {
 	// +kubebuilder:validation:MaxItems=4
 	Stages []ApprovalPolicyStage `json:"stages,omitempty"`
 
-	// maxAttempts sets the maximum number of execution retry attempts
-	// allowed for agentic runs. When verification fails, the operator retries
-	// execution up to this limit before escalating. Defaults to 1 if omitted.
-	// +optional
-	// +kubebuilder:validation:Minimum=1
-	// +kubebuilder:validation:Maximum=3
-	MaxAttempts int32 `json:"maxAttempts,omitempty"`
-
 	// maxConcurrentRuns sets the maximum number of agentic runs the
 	// operator reconciles concurrently. Higher values allow more agentic runs
 	// to run in parallel but consume more cluster resources.
@@ -104,6 +96,13 @@ type ApprovalPolicySpec struct {
 //	      approval: Manual
 //	    - name: Verification
 //	      approval: Automatic
+//	    - name: Escalation
+//	      approval: Automatic
+//
+// Escalation runs only after a verification failure and produces a report for
+// a human. Leaving it unset (default Manual) strands every verification
+// failure at the escalation approval gate, so set it Automatic unless you
+// intend to gate the escalation agent itself.
 type ApprovalPolicy struct {
 	metav1.TypeMeta `json:",inline"`
 

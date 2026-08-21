@@ -45,10 +45,15 @@ const (
 // Condition reasons used by DerivePhase for state transitions.
 // SYNC: must match derivePhaseFromConditions in lightspeed-agentic-console/src/models/agenticrun.ts
 const (
-	ReasonRetryingExecution = "RetryingExecution"
-	ReasonRetriesExhausted  = "RetriesExhausted"
-	ReasonNoActionRequired  = "NoActionRequired"
+	ReasonNoActionRequired = "NoActionRequired"
 )
+
+// ReasonVerificationFailed is the condition reason set on both Verified=False
+// and Escalated=Unknown when verification does not pass and the run escalates.
+// It is a cross-file contract: the controller writes it and tests assert it.
+// Not consumed by DerivePhase (which routes on Escalated status, not reason),
+// so it is intentionally outside the console SYNC block above.
+const ReasonVerificationFailed = "VerificationFailed"
 
 // DerivePhase computes the display phase from conditions. Conditions are
 // the source of truth; this function maps them to a human-friendly phase
@@ -93,9 +98,6 @@ func DerivePhase(conditions []metav1.Condition) AgenticRunPhase {
 		case metav1.ConditionUnknown:
 			return AgenticRunPhaseVerifying
 		default:
-			if c.Reason == ReasonRetryingExecution {
-				return AgenticRunPhaseExecuting
-			}
 			return AgenticRunPhaseFailed
 		}
 	}
@@ -226,8 +228,9 @@ func (a AnalysisOutput) IsZero() bool {
 //	Executed=True       -> execution complete
 //	Verified=Unknown    -> verification in progress
 //	Verified=True       -> verification passed (terminal: success)
+//	Verified=False      -> verification failed; run escalates (Escalated=Unknown)
 //	Denied=True         -> user denied a step (terminal)
-//	Escalated=True      -> max retries exhausted (terminal)
+//	Escalated=True      -> escalation complete (terminal)
 //	Any condition=False -> step failed; check reason and message
 const (
 	// AgenticRunConditionAnalyzed indicates whether analysis has completed.
@@ -407,7 +410,7 @@ type AgenticRunSpec struct {
 // AgenticRunStatus defines the observed state of AgenticRun. All fields are
 // set by the operator -- users should not modify status fields directly.
 // The status provides complete observability into the run's progress,
-// including per-step results, retry history, and standard Kubernetes conditions.
+// including per-step results and standard Kubernetes conditions.
 // An empty status (`status: {}`) is the initial state before the operator's
 // first reconcile.
 //

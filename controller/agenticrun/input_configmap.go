@@ -6,7 +6,6 @@ import (
 
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/utils/ptr"
 
 	agenticv1alpha1 "github.com/openshift/lightspeed-agentic-operator/api/v1alpha1"
 )
@@ -91,7 +90,6 @@ func buildResultTemplate(run *agenticv1alpha1.AgenticRun, step, namespace string
 			},
 			Spec: agenticv1alpha1.ExecutionResultSpec{
 				AgenticRunName: run.Name,
-				RetryIndex:     ptr.To(executionRetryIndex(run)),
 			},
 		}
 	case "verification":
@@ -105,7 +103,6 @@ func buildResultTemplate(run *agenticv1alpha1.AgenticRun, step, namespace string
 			},
 			Spec: agenticv1alpha1.VerificationResultSpec{
 				AgenticRunName: run.Name,
-				RetryIndex:     ptr.To(executionRetryIndex(run)),
 			},
 		}
 	case "escalation":

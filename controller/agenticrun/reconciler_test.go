@@ -277,16 +277,28 @@ func (ta *testAgentCaller) completeVerification(ctx context.Context, run *agenti
 	fresh.Status.Steps.Verification.Results = append(fresh.Status.Steps.Verification.Results,
 		agenticv1alpha1.StepResultRef{Name: crName, Outcome: outcome})
 
-	reason := reasonPassed
-	status := metav1.ConditionTrue
 	if !ta.verifyResult.Success {
-		reason = reasonFailed
-		status = metav1.ConditionFalse
+		// Mirror pod_handler.patchVerificationFailedEscalating (OLS-3817): an
+		// objective verification failure escalates directly instead of
+		// terminating. Verified=False/VerificationFailed plus
+		// Escalated=Unknown/VerificationFailed makes DerivePhase yield Escalating.
+		meta.SetStatusCondition(&fresh.Status.Conditions, metav1.Condition{
+			Type: agenticv1alpha1.AgenticRunConditionVerified, Status: metav1.ConditionFalse,
+			Reason: agenticv1alpha1.ReasonVerificationFailed, Message: fmt.Sprintf("Verification failed: %s", ta.verifyResult.Summary),
+			ObservedGeneration: fresh.Generation,
+		})
+		meta.SetStatusCondition(&fresh.Status.Conditions, metav1.Condition{
+			Type: agenticv1alpha1.AgenticRunConditionEscalated, Status: metav1.ConditionUnknown,
+			Reason: agenticv1alpha1.ReasonVerificationFailed, Message: "Verification failed, escalating",
+			ObservedGeneration: fresh.Generation,
+		})
+	} else {
+		meta.SetStatusCondition(&fresh.Status.Conditions, metav1.Condition{
+			Type: agenticv1alpha1.AgenticRunConditionVerified, Status: metav1.ConditionTrue,
+			Reason: reasonPassed, Message: ta.verifyResult.Summary,
+			ObservedGeneration: fresh.Generation,
+		})
 	}
-	meta.SetStatusCondition(&fresh.Status.Conditions, metav1.Condition{
-		Type: agenticv1alpha1.AgenticRunConditionVerified, Status: status, Reason: reason, Message: ta.verifyResult.Summary,
-		ObservedGeneration: fresh.Generation,
-	})
 	ta.record(ta.fc.Status().Patch(ctx, &fresh, client.MergeFrom(base)))
 }
 
@@ -386,14 +398,9 @@ func testAgenticRun() *agenticv1alpha1.AgenticRun {
 // and verification stages, so tests only need to explicitly approve execution
 // (which carries the selected option).
 func testAutoApprovePolicy() *agenticv1alpha1.ApprovalPolicy {
-	return testAutoApprovePolicyWithMaxAttempts(0)
-}
-
-func testAutoApprovePolicyWithMaxAttempts(maxAttempts int32) *agenticv1alpha1.ApprovalPolicy {
 	return &agenticv1alpha1.ApprovalPolicy{
 		ObjectMeta: metav1.ObjectMeta{Name: "cluster"},
 		Spec: agenticv1alpha1.ApprovalPolicySpec{
-			MaxAttempts: maxAttempts,
 			Stages: []agenticv1alpha1.ApprovalPolicyStage{
 				{Name: agenticv1alpha1.SandboxStepAnalysis, Approval: agenticv1alpha1.ApprovalModeAutomatic},
 				{Name: agenticv1alpha1.SandboxStepVerification, Approval: agenticv1alpha1.ApprovalModeAutomatic},

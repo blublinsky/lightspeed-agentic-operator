@@ -115,8 +115,17 @@ func (r *AgenticRunReconciler) completeStep(ctx context.Context, run *agenticv1a
 				metav1.ConditionTrue, stepReason, stepMsg)
 		} else if resultCR != nil {
 			log.Info("agent reported failure", "reason", reason)
-			patchErr = r.patchStepResult(ctx, run, step, condType, resultCR.GetName(),
-				metav1.ConditionFalse, ReasonSandboxFailed, reason)
+			if step == "verification" {
+				// OLS-3817: an objective verification failure (the agent ran and
+				// its VerificationResult reports the remediation did not work)
+				// escalates directly instead of retrying execution or terminating.
+				// Set Verified=False and Escalated=Unknown so DerivePhase routes to
+				// Escalating and the reconciler dispatches handleEscalation.
+				patchErr = r.patchVerificationFailedEscalating(ctx, run, resultCR.GetName(), reason)
+			} else {
+				patchErr = r.patchStepResult(ctx, run, step, condType, resultCR.GetName(),
+					metav1.ConditionFalse, ReasonSandboxFailed, reason)
+			}
 		} else {
 			log.Error(nil, "sandbox result validation failed", "reason", reason)
 			patchErr = r.patchStepCondition(ctx, run, condType, metav1.ConditionFalse, ReasonSandboxFailed, reason)
@@ -189,6 +198,34 @@ func (r *AgenticRunReconciler) patchStepResult(ctx context.Context, run *agentic
 	})
 	if err := r.statusPatch(ctx, run, base); err != nil {
 		logf.FromContext(ctx).Error(err, "pod handler: failed to patch step result", LogKeyCondition, condType)
+		return err
+	}
+	return nil
+}
+
+// patchVerificationFailedEscalating records an objective verification failure and
+// routes the run onto the escalation path (OLS-3817). It appends the verification
+// result ref and, in a single status patch, sets Verified=False/VerificationFailed
+// plus Escalated=Unknown/VerificationFailed so DerivePhase yields Escalating.
+func (r *AgenticRunReconciler) patchVerificationFailedEscalating(ctx context.Context, run *agenticv1alpha1.AgenticRun, crName, reason string) error {
+	base := run.DeepCopy()
+	appendResultRef(run, "verification", crName, agenticv1alpha1.ActionOutcomeFailed)
+	meta.SetStatusCondition(&run.Status.Conditions, metav1.Condition{
+		Type:               agenticv1alpha1.AgenticRunConditionVerified,
+		Status:             metav1.ConditionFalse,
+		Reason:             agenticv1alpha1.ReasonVerificationFailed,
+		Message:            fmt.Sprintf("Verification failed: %s", reason),
+		ObservedGeneration: run.Generation,
+	})
+	meta.SetStatusCondition(&run.Status.Conditions, metav1.Condition{
+		Type:               agenticv1alpha1.AgenticRunConditionEscalated,
+		Status:             metav1.ConditionUnknown,
+		Reason:             agenticv1alpha1.ReasonVerificationFailed,
+		Message:            "Verification failed, escalating",
+		ObservedGeneration: run.Generation,
+	})
+	if err := r.statusPatch(ctx, run, base); err != nil {
+		logf.FromContext(ctx).Error(err, "pod handler: failed to patch verification-failed escalation")
 		return err
 	}
 	return nil

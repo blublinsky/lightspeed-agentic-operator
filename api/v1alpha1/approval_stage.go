@@ -4,7 +4,7 @@ package v1alpha1
 // The discriminant arm is always non-nil (including empty {}) so JSON
 // serialization satisfies CRD CEL has(self.<arm>) rules. agent is only
 // set when non-empty (omitted means no override).
-func NewApprovalStage(typ ApprovalStageType, decision ApprovalDecision, agent string, option *int32, maxAttempts int32) ApprovalStage {
+func NewApprovalStage(typ ApprovalStageType, decision ApprovalDecision, agent string, option *int32) ApprovalStage {
 	stage := ApprovalStage{Type: typ, Decision: decision}
 	switch typ {
 	case ApprovalStageAnalysis:
@@ -20,9 +20,6 @@ func NewApprovalStage(typ ApprovalStageType, decision ApprovalDecision, agent st
 		}
 		if option != nil {
 			e.Option = option
-		}
-		if maxAttempts > 0 {
-			e.MaxAttempts = maxAttempts
 		}
 		stage.Execution = e
 	case ApprovalStageVerification:

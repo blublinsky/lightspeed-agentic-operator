@@ -364,7 +364,6 @@ func TestCreateIdempotent_ExecutionResult(t *testing.T) {
 	fc := fake.NewClientBuilder().WithScheme(scheme).
 		WithStatusSubresource(&agenticv1alpha1.ExecutionResult{}).Build()
 
-	retryIdx := int32(0)
 	cr := &agenticv1alpha1.ExecutionResult{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      "test-execution-1",
@@ -372,8 +371,6 @@ func TestCreateIdempotent_ExecutionResult(t *testing.T) {
 		},
 		Spec: agenticv1alpha1.ExecutionResultSpec{
 			AgenticRunName: "test-run",
-
-			RetryIndex: &retryIdx,
 		},
 		Status: agenticv1alpha1.ExecutionResultStatus{
 			Conditions: []metav1.Condition{

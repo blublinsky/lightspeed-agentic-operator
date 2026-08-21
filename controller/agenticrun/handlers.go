@@ -18,14 +18,13 @@ const (
 	ErrUpdateToAnalyzingRevision = "update to Analyzing (revision)"
 	ErrUpdateToCompletedAdvisory = "update to Completed (advisory)"
 	ErrUpdateAfterExecSkip       = "update after execution skip"
-
-	ErrUpdateToExecuting        = "update to Executing"
-	ErrUpdateToVerifying        = "update to Verifying"
-	ErrResolveSelectedOption    = "resolve selected option"
-	ErrGetOverrideAgent         = "get override Agent"
-	ErrGetEscalationLLMProvider = "get LLMProvider"
-	ErrUpdateToEscalating       = "update to Escalating"
-	ErrUpdateToDenied           = "update to Denied"
+	ErrUpdateToExecuting         = "update to Executing"
+	ErrUpdateToVerifying         = "update to Verifying"
+	ErrResolveSelectedOption     = "resolve selected option"
+	ErrGetOverrideAgent          = "get override Agent"
+	ErrGetEscalationLLMProvider  = "get LLMProvider"
+	ErrUpdateToEscalating        = "update to Escalating"
+	ErrUpdateToDenied            = "update to Denied"
 )
 
 // handleAnalysis checks approval for the analysis step and runs it.

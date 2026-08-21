@@ -239,25 +239,6 @@ func resetExecutionAndVerification(steps *agenticv1alpha1.StepsStatus) {
 	steps.Verification.Sandbox = agenticv1alpha1.SandboxInfo{}
 }
 
-func maxAttempts(approval *agenticv1alpha1.AgenticRunApproval, policy *agenticv1alpha1.ApprovalPolicy) int {
-	ceiling := 1
-	if policy != nil && policy.Spec.MaxAttempts > 0 {
-		ceiling = int(policy.Spec.MaxAttempts)
-	}
-	if approval != nil {
-		for _, s := range approval.Spec.Stages {
-			if s.Type == agenticv1alpha1.ApprovalStageExecution && s.Execution != nil && s.Execution.MaxAttempts > 0 {
-				v := int(s.Execution.MaxAttempts)
-				if v > ceiling {
-					return ceiling
-				}
-				return v
-			}
-		}
-	}
-	return ceiling
-}
-
 type escalationData struct {
 	Name                string
 	Namespace           string

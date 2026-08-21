@@ -204,51 +204,6 @@ func TestTrimThenSelectedOption_EndToEnd(t *testing.T) {
 	}
 }
 
-func TestMaxAttempts(t *testing.T) {
-	makeApproval := func(maxAttempts int32) *agenticv1alpha1.AgenticRunApproval {
-		return &agenticv1alpha1.AgenticRunApproval{
-			Spec: agenticv1alpha1.AgenticRunApprovalSpec{
-				Stages: []agenticv1alpha1.ApprovalStage{
-					{
-						Type:      agenticv1alpha1.ApprovalStageExecution,
-						Execution: &agenticv1alpha1.ExecutionApproval{MaxAttempts: maxAttempts},
-					},
-				},
-			},
-		}
-	}
-	makePolicy := func(maxAttempts int32) *agenticv1alpha1.ApprovalPolicy {
-		return &agenticv1alpha1.ApprovalPolicy{
-			Spec: agenticv1alpha1.ApprovalPolicySpec{MaxAttempts: maxAttempts},
-		}
-	}
-
-	tests := []struct {
-		name     string
-		approval *agenticv1alpha1.AgenticRunApproval
-		policy   *agenticv1alpha1.ApprovalPolicy
-		want     int
-	}{
-		{name: "nil approval and nil policy defaults to 1", want: 1},
-		{name: "nil approval with policy=3 uses policy", policy: makePolicy(3), want: 3},
-		{name: "admin sets 3, user picks 1 → operator uses 1", approval: makeApproval(1), policy: makePolicy(3), want: 1},
-		{name: "admin sets 3, user picks 2 → operator uses 2", approval: makeApproval(2), policy: makePolicy(3), want: 2},
-		{name: "admin sets 3, user picks 3 → operator uses 3", approval: makeApproval(3), policy: makePolicy(3), want: 3},
-		{name: "user exceeds admin ceiling → capped to ceiling", approval: makeApproval(3), policy: makePolicy(1), want: 1},
-		{name: "user sets maxAttempts, no policy → capped to default 1", approval: makeApproval(3), want: 1},
-		{name: "approval without execution stage → uses policy", approval: &agenticv1alpha1.AgenticRunApproval{}, policy: makePolicy(2), want: 2},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			got := maxAttempts(tt.approval, tt.policy)
-			if got != tt.want {
-				t.Errorf("maxAttempts() = %d, want %d", got, tt.want)
-			}
-		})
-	}
-}
-
 func TestTrimNonSelectedOptions_OutOfRange(t *testing.T) {
 	scheme := testScheme()
 

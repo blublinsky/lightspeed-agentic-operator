@@ -13,7 +13,7 @@
 // can observe in-flight RBAC.
 //
 // Build:  make -C test/agent docker-build
-// Image:  quay.io/openshift-lightspeed/ols-qe:lightspeed-mock-agent
+// Image:  quay.io/openshift-lightspeed/ols-qe:lightspeed-mock-agent1
 package main
 
 import (
@@ -46,6 +46,20 @@ const (
 	MockCrash     = "MOCK_CRASH"      // exit 1 immediately, no Result CR → SandboxFailed
 	MockNoStatus  = "MOCK_NO_STATUS"  // create Result CR but don't patch status, exit 0 → SandboxFailed (partial write)
 	MockAgentFail = "MOCK_AGENT_FAIL" // exit 0, Result CR with failureReason + Completed=True → AgentFailed
+	// MockVerifyFail makes ONLY the verification step report an objective
+	// failure (VerificationResult Completed reason=Failed with a failing check);
+	// analysis and execution still succeed. Drives the escalate-on-verification-
+	// failure path (OLS-3817): Verified=False → Escalating.
+	//
+	// Propagation: the operator only embeds the request text in the ANALYSIS
+	// query (buildAnalysisQuery); the verification query is built from the
+	// approved option + execution result (buildVerificationQuery), NOT the
+	// request. So the keyword cannot reach the verification step directly. The
+	// analysis mock therefore stamps this marker into the RemediationOption it
+	// emits; the operator serializes that option into the verification query
+	// (OptionJSON), which is how the verification step sees it. See
+	// setStatus/AnalysisResult below.
+	MockVerifyFail = "MOCK_VERIFY_FAIL"
 )
 
 func main() {
@@ -60,7 +74,10 @@ func main() {
 	step := stepFromSchema(schemaRaw)
 	targetNS := pickNamespace(ctxRaw)
 	queryStr := string(query)
-	log.Printf("step=%s target_ns=%s query_len=%d", step, targetNS, len(query))
+	verifyFail := strings.Contains(queryStr, MockVerifyFail)
+	// Build stamp: if this line is absent from a sandbox pod's logs, the cluster
+	// is running a STALE mock image and the fix under test never ran. See OLS-3817.
+	log.Printf("mock-agent build=OLS-3817-verifyfail-via-option step=%s target_ns=%s query_len=%d verify_fail=%v", step, targetNS, len(query), verifyFail)
 
 	// Failure modes triggered by keywords in the query text.
 	switch {
@@ -92,7 +109,7 @@ func main() {
 		return
 	}
 
-	setStatus(cr, targetNS)
+	setStatus(cr, targetNS, verifyFail)
 	if err := c.Status().Update(ctx, cr); err != nil {
 		log.Fatalf("update status: %v", err)
 	}
@@ -202,7 +219,7 @@ func newResultCR(step string, tmplRaw []byte) client.Object {
 	}
 }
 
-func setStatus(obj client.Object, targetNS string) {
+func setStatus(obj client.Object, targetNS string, verifyFail bool) {
 	now := metav1.Now()
 	completed := []metav1.Condition{{
 		Type:               "Completed",
@@ -219,9 +236,16 @@ func setStatus(obj client.Object, targetNS string) {
 			Summary:   "mock diagnosis",
 			RootCause: "mock root cause",
 		}
+		// When the request asked for a verification failure, stamp the marker
+		// into the option summary so it survives into the verification query
+		// (OptionJSON) — the request text itself never reaches that step.
+		optionSummary := "mock option summary"
+		if verifyFail {
+			optionSummary = "mock option summary " + MockVerifyFail
+		}
 		cr.Status.Options = []agenticv1alpha1.RemediationOption{{
 			Title:   "mock-remediation",
-			Summary: "mock option summary",
+			Summary: optionSummary,
 			Diagnosis: agenticv1alpha1.DiagnosisResult{
 				Summary:   "mock diagnosis",
 				RootCause: "mock root cause",
@@ -261,6 +285,25 @@ func setStatus(obj client.Object, targetNS string) {
 		}}
 
 	case *agenticv1alpha1.VerificationResult:
+		if verifyFail {
+			// Objective verification failure (OLS-3817): the agent ran and
+			// reports the remediation did not work. Signal it via the
+			// Completed condition reason=Failed so the operator escalates.
+			cr.Status.Conditions = []metav1.Condition{{
+				Type:               "Completed",
+				Status:             metav1.ConditionTrue,
+				Reason:             agenticv1alpha1.ResultReasonFailed,
+				LastTransitionTime: now,
+			}}
+			cr.Status.Checks = []agenticv1alpha1.VerifyCheck{{
+				Name:   "mock-check",
+				Source: "mock",
+				Value:  "not-ok",
+				Result: "Failed",
+			}}
+			cr.Status.Summary = "mock verification failure (MOCK_VERIFY_FAIL)"
+			break
+		}
 		cr.Status.Conditions = completed
 		cr.Status.Checks = []agenticv1alpha1.VerifyCheck{{
 			Name:   "mock-check",

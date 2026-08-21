@@ -71,40 +71,6 @@ func TestBuildInputConfigMap(t *testing.T) {
 	}
 }
 
-func TestBuildResultTemplate_ExecutionRetryIndex(t *testing.T) {
-	retry := int32(2)
-	run := &agenticv1alpha1.AgenticRun{
-		ObjectMeta: metav1.ObjectMeta{Name: "r", Namespace: "ns", UID: "u"},
-		Status: agenticv1alpha1.AgenticRunStatus{
-			Steps: agenticv1alpha1.StepsStatus{
-				Execution: agenticv1alpha1.ExecutionStepStatus{
-					RetryCount: &retry,
-					Results:    []agenticv1alpha1.StepResultRef{{}, {}},
-				},
-			},
-		},
-	}
-	raw, err := buildResultTemplate(run, "execution", run.Namespace)
-	if err != nil {
-		t.Fatalf("buildResultTemplate: %v", err)
-	}
-	var tmpl map[string]any
-	if err := json.Unmarshal([]byte(raw), &tmpl); err != nil {
-		t.Fatal(err)
-	}
-	if tmpl["kind"] != "ExecutionResult" {
-		t.Errorf("kind = %v", tmpl["kind"])
-	}
-	spec, _ := tmpl["spec"].(map[string]any)
-	if spec["retryIndex"] != float64(2) {
-		t.Errorf("retryIndex = %v, want 2", spec["retryIndex"])
-	}
-	meta, _ := tmpl["metadata"].(map[string]any)
-	if meta["name"] != resultCRName("r", "execution", 3) {
-		t.Errorf("name = %v, want index 3", meta["name"])
-	}
-}
-
 func TestBuildResultTemplate_UnknownStep(t *testing.T) {
 	run := &agenticv1alpha1.AgenticRun{ObjectMeta: metav1.ObjectMeta{Name: "r", Namespace: "ns", UID: "u"}}
 	_, err := buildResultTemplate(run, "nope", run.Namespace)

@@ -17,35 +17,35 @@ func TestNewApprovalStage_MarshalsDiscriminantArms(t *testing.T) {
 	}{
 		{
 			name:        "analysis empty agent",
-			stage:       NewApprovalStage(ApprovalStageAnalysis, "", "", nil, 0),
+			stage:       NewApprovalStage(ApprovalStageAnalysis, "", "", nil),
 			wantContain: []string{`"type":"Analysis"`, `"analysis":{}`},
 			wantOmit:    []string{`"execution"`, `"verification"`, `"escalation"`, `"agent"`},
 		},
 		{
 			name:        "analysis with agent",
-			stage:       NewApprovalStage(ApprovalStageAnalysis, "", "fast", nil, 0),
+			stage:       NewApprovalStage(ApprovalStageAnalysis, "", "fast", nil),
 			wantContain: []string{`"type":"Analysis"`, `"analysis":{"agent":"fast"}`},
 		},
 		{
 			name:        "verification empty agent",
-			stage:       NewApprovalStage(ApprovalStageVerification, "", "", nil, 0),
+			stage:       NewApprovalStage(ApprovalStageVerification, "", "", nil),
 			wantContain: []string{`"type":"Verification"`, `"verification":{}`},
 			wantOmit:    []string{`"analysis"`, `"execution"`, `"escalation"`},
 		},
 		{
 			name:        "execution option zero",
-			stage:       NewApprovalStage(ApprovalStageExecution, "", "", ptr.To(int32(0)), 0),
+			stage:       NewApprovalStage(ApprovalStageExecution, "", "", ptr.To(int32(0))),
 			wantContain: []string{`"type":"Execution"`, `"execution":{"option":0}`},
 		},
 		{
 			name:        "deny analysis",
-			stage:       NewApprovalStage(ApprovalStageAnalysis, ApprovalDecisionDenied, "", nil, 0),
+			stage:       NewApprovalStage(ApprovalStageAnalysis, ApprovalDecisionDenied, "", nil),
 			wantContain: []string{`"type":"Analysis"`, `"decision":"Denied"`, `"analysis":{}`},
 			wantOmit:    []string{`"agent"`},
 		},
 		{
 			name:        "escalation empty",
-			stage:       NewApprovalStage(ApprovalStageEscalation, "", "", nil, 0),
+			stage:       NewApprovalStage(ApprovalStageEscalation, "", "", nil),
 			wantContain: []string{`"type":"Escalation"`, `"escalation":{}`},
 		},
 	}
@@ -77,5 +77,5 @@ func TestNewApprovalStage_UnknownTypePanics(t *testing.T) {
 			t.Fatal("expected panic for unknown ApprovalStageType")
 		}
 	}()
-	_ = NewApprovalStage(ApprovalStageType("Nope"), "", "", nil, 0)
+	_ = NewApprovalStage(ApprovalStageType("Nope"), "", "", nil)
 }

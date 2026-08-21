@@ -64,19 +64,19 @@ func ensureAgenticRunApproval(
 			switch ps.Name {
 			case agenticv1alpha1.SandboxStepAnalysis:
 				autoStages = append(autoStages, agenticv1alpha1.NewApprovalStage(
-					agenticv1alpha1.ApprovalStageAnalysis, "", "", nil, 0))
+					agenticv1alpha1.ApprovalStageAnalysis, "", "", nil))
 			case agenticv1alpha1.SandboxStepExecution:
 				if run.Spec.Execution.IsZero() {
 					continue
 				}
 				autoStages = append(autoStages, agenticv1alpha1.NewApprovalStage(
-					agenticv1alpha1.ApprovalStageExecution, "", "", nil, 0))
+					agenticv1alpha1.ApprovalStageExecution, "", "", nil))
 			case agenticv1alpha1.SandboxStepVerification:
 				if run.Spec.Verification.IsZero() {
 					continue
 				}
 				autoStages = append(autoStages, agenticv1alpha1.NewApprovalStage(
-					agenticv1alpha1.ApprovalStageVerification, "", "", nil, 0))
+					agenticv1alpha1.ApprovalStageVerification, "", "", nil))
 			case agenticv1alpha1.SandboxStepEscalation:
 				continue
 			}
