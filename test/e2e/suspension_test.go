@@ -31,7 +31,6 @@ const suspensionVAPName = "agentic.openshift.io-agenticrun-suspension"
 // New CREATE while suspended is covered by TestSuspension_AdmissionRejectsCreate.
 func TestSuspension(t *testing.T) {
 	c := newClient(t)
-	createFixtures(t, c)
 	ctx := context.Background()
 
 	prop := createAgenticRun(t, c, "suspend-inflight")
@@ -84,7 +83,6 @@ func TestSuspension(t *testing.T) {
 // that the install path shipped the VAP and binding.
 func TestSuspension_AdmissionRejectsCreate(t *testing.T) {
 	c := newClient(t)
-	createFixtures(t, c)
 	ctx := context.Background()
 
 	assertSuspensionVAPInstalled(t, c)
@@ -120,7 +118,6 @@ func TestSuspension_AdmissionRejectsCreate(t *testing.T) {
 // with no AgenticOLSConfig, VAP parameterNotFoundAction Allow permits CREATE.
 func TestSuspension_AdmissionAllowsCreateWhenConfigAbsent(t *testing.T) {
 	c := newClient(t)
-	createFixtures(t, c)
 	ctx := context.Background()
 
 	assertSuspensionVAPInstalled(t, c)
@@ -162,7 +159,6 @@ func TestSuspension_AdmissionAllowsCreateWhenConfigAbsent(t *testing.T) {
 // switch activates.
 func TestSuspension_InFlight(t *testing.T) {
 	c := newClient(t)
-	createFixtures(t, c)
 	ctx := context.Background()
 
 	prop := createAgenticRun(t, c, "suspend-inflight-proposed")
@@ -195,7 +191,6 @@ func TestSuspension_InFlight(t *testing.T) {
 // CREATE is rejected by admission (rule 11a).
 func TestSuspension_ResumeNewAgenticRun(t *testing.T) {
 	c := newClient(t)
-	createFixtures(t, c)
 	ctx := context.Background()
 
 	config := &agenticv1alpha1.AgenticOLSConfig{

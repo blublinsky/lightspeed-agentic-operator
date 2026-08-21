@@ -46,6 +46,11 @@ const (
 	MockCrash     = "MOCK_CRASH"      // exit 1 immediately, no Result CR → SandboxFailed
 	MockNoStatus  = "MOCK_NO_STATUS"  // create Result CR but don't patch status, exit 0 → SandboxFailed (partial write)
 	MockAgentFail = "MOCK_AGENT_FAIL" // exit 0, Result CR with failureReason + Completed=True → AgentFailed
+	// MockVerifyFail makes ONLY the verification step report an objective
+	// failure (VerificationResult Completed reason=Failed with a failing check);
+	// analysis and execution still succeed. Drives the escalate-on-verification-
+	// failure path (OLS-3817): Verified=False → Escalating. Other steps ignore it.
+	MockVerifyFail = "MOCK_VERIFY_FAIL"
 )
 
 func main() {
@@ -66,7 +71,7 @@ func main() {
 	switch {
 	case strings.Contains(queryStr, MockTimeout):
 		log.Println("MOCK_TIMEOUT: sleeping forever")
-		select {}
+		time.Sleep(24 * time.Hour)
 	case strings.Contains(queryStr, MockCrash):
 		log.Fatalf("MOCK_CRASH: exiting without creating Result CR")
 	case strings.Contains(queryStr, MockAgentFail):
@@ -92,7 +97,7 @@ func main() {
 		return
 	}
 
-	setStatus(cr, targetNS)
+	setStatus(cr, targetNS, strings.Contains(queryStr, MockVerifyFail))
 	if err := c.Status().Update(ctx, cr); err != nil {
 		log.Fatalf("update status: %v", err)
 	}
@@ -124,13 +129,6 @@ func stepFromSchema(raw []byte) string {
 		return "analysis"
 	}
 }
-
-// verifyFailNamespace is a sentinel target namespace that makes the mock
-// agent's VerificationResult report an objective failure instead of the
-// default success. e2e tests that exercise verification-failure/escalation
-// behavior (OLS-3817) target this namespace; every other namespace keeps
-// getting the canned "Passed" verification result.
-const verifyFailNamespace = "e2e-verify-fail"
 
 func compactJSON(raw json.RawMessage) []byte {
 	var buf bytes.Buffer
@@ -209,7 +207,7 @@ func newResultCR(step string, tmplRaw []byte) client.Object {
 	}
 }
 
-func setStatus(obj client.Object, targetNS string) {
+func setStatus(obj client.Object, targetNS string, verifyFail bool) {
 	now := metav1.Now()
 	completed := []metav1.Condition{{
 		Type:               "Completed",
@@ -268,7 +266,7 @@ func setStatus(obj client.Object, targetNS string) {
 		}}
 
 	case *agenticv1alpha1.VerificationResult:
-		if targetNS == verifyFailNamespace {
+		if verifyFail {
 			// Objective verification failure (OLS-3817): the agent ran and
 			// reports the remediation did not work. Signal it via the
 			// Completed condition reason=Failed so the operator escalates.
@@ -284,7 +282,7 @@ func setStatus(obj client.Object, targetNS string) {
 				Value:  "not-ok",
 				Result: "Failed",
 			}}
-			cr.Status.Summary = "mock verification failure (sentinel)"
+			cr.Status.Summary = "mock verification failure (MOCK_VERIFY_FAIL)"
 			break
 		}
 		cr.Status.Conditions = completed

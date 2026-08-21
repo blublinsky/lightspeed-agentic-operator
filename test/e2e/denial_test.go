@@ -22,8 +22,6 @@ func TestDenialFlow_ProposedToDenied(t *testing.T) {
 	c := newClient(t)
 	ctx := context.Background()
 
-	t.Log("Creating fixtures (LLMProvider, Agent, ApprovalPolicy, Secret)")
-	createFixtures(t, c)
 	prop := createAgenticRun(t, c, "e2e-denial-flow")
 	t.Logf("AgenticRun created: %s/%s", testNS, prop.Name)
 

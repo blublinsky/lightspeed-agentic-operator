@@ -11,7 +11,8 @@ metadata:
     pipelinesascode.tekton.dev/on-cel-expression: event == "pull_request" && target_branch
       == "main" && ("Dockerfile".pathChanged() || "go.mod".pathChanged() || "go.sum".pathChanged()
       || "api/**".pathChanged() || "cmd/**".pathChanged() || "controller/**".pathChanged()
-      || "LICENSE".pathChanged() || ".tekton/lightspeed-agentic-operator-pull-request.yaml".pathChanged())
+      || "test/**".pathChanged() || "LICENSE".pathChanged()
+      || ".tekton/lightspeed-agentic-operator-pull-request.yaml".pathChanged())
   labels:
     appstudio.openshift.io/application: ols
     appstudio.openshift.io/component: lightspeed-agentic-operator

@@ -3,6 +3,7 @@
 package e2e
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"os"
@@ -12,11 +13,11 @@ import (
 
 	admissionregistrationv1 "k8s.io/api/admissionregistration/v1"
 	corev1 "k8s.io/api/core/v1"
-	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
 	"k8s.io/apimachinery/pkg/util/wait"
+	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/kubernetes/scheme"
 	"k8s.io/client-go/tools/clientcmd"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -45,9 +46,7 @@ var testNS = func() string {
 
 // --- Client ---
 
-func newClient(t *testing.T) client.Client {
-	t.Helper()
-
+func buildClient() (client.Client, error) {
 	kubeconfig := os.Getenv("KUBECONFIG")
 	if kubeconfig == "" {
 		home, _ := os.UserHomeDir()
@@ -56,7 +55,7 @@ func newClient(t *testing.T) client.Client {
 
 	cfg, err := clientcmd.BuildConfigFromFlags("", kubeconfig)
 	if err != nil {
-		t.Fatalf("build kubeconfig: %v", err)
+		return nil, fmt.Errorf("build kubeconfig: %w", err)
 	}
 
 	s := scheme.Scheme
@@ -65,9 +64,14 @@ func newClient(t *testing.T) client.Client {
 
 	c, err := client.New(cfg, client.Options{Scheme: s})
 	if err != nil {
-		t.Fatalf("create client: %v", err)
+		return nil, fmt.Errorf("create client: %w", err)
 	}
-	return c
+	return c, nil
+}
+
+func newClient(t *testing.T) client.Client {
+	t.Helper()
+	return suiteClient
 }
 
 // --- Pointer helpers ---
@@ -77,13 +81,18 @@ func ptrInt32(v int32) *int32 { return &v }
 
 // --- Cleanup ---
 
+// cleanupTimeout is how long cleanup waits for operator finalizers before
+// force-stripping. Long enough for normal finalizer processing, short enough
+// to not stall the suite if a finalizer is genuinely stuck.
+const cleanupTimeout = 2 * time.Minute
+
 // cleanup deletes objects, letting the operator's finalizers run naturally.
-// It polls briefly for GC to complete; only force-strips finalizers as a
-// fallback when the operator appears stuck.
+// It polls until the object is fully gone (using cleanupTimeout), so the
+// next test never races against a lingering finalizer. Only force-strips
+// finalizers as a last resort when the operator appears stuck.
 func cleanup(t *testing.T, c client.Client, objs ...client.Object) {
 	t.Helper()
 	ctx := context.Background()
-	const cleanupTimeout = 15 * time.Second
 
 	for _, obj := range objs {
 		kind := obj.GetObjectKind().GroupVersionKind().Kind
@@ -101,7 +110,13 @@ func cleanup(t *testing.T, c client.Client, objs ...client.Object) {
 		_ = c.Delete(ctx, obj)
 
 		err := wait.PollUntilContextTimeout(ctx, 1*time.Second, cleanupTimeout, true, func(ctx context.Context) (bool, error) {
-			return c.Get(ctx, key, obj) != nil, nil
+			if err := c.Get(ctx, key, obj); err != nil {
+				return true, nil
+			}
+			if obj.GetDeletionTimestamp() != nil && len(obj.GetFinalizers()) > 0 {
+				t.Logf("cleanup: %s/%s waiting for finalizer %v", kind, name, obj.GetFinalizers())
+			}
+			return false, nil
 		})
 		if err == nil {
 			t.Logf("cleanup: %s/%s deleted", kind, name)
@@ -120,285 +135,19 @@ func cleanup(t *testing.T, c client.Client, objs ...client.Object) {
 	}
 }
 
-// ensureCrashLoopPod creates a pod in the staging namespace that immediately
-// exits with an error, producing a visible CrashLoopBackOff. This gives real
-// LLM providers something to diagnose when the AgenticRun request says
-// "Pod crash-looping in staging namespace".
-func ensureCrashLoopPod(t *testing.T, c client.Client) {
-	t.Helper()
-	ctx := context.Background()
+// --- AgenticRun builder ---
 
-	pod := &corev1.Pod{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      "e2e-crasher",
-			Namespace: "staging",
-			Labels:    map[string]string{"app": "e2e-crasher"},
-		},
-		Spec: corev1.PodSpec{
-			RestartPolicy: corev1.RestartPolicyAlways,
-			Containers: []corev1.Container{{
-				Name:    "crasher",
-				Image:   "busybox:latest",
-				Command: []string{"sh", "-c", "exit 1"},
-			}},
-		},
-	}
-
-	if err := c.Delete(ctx, pod); err != nil && !apierrors.IsNotFound(err) {
-		t.Fatalf("delete previous crash-loop pod: %v", err)
-	}
-	if err := wait.PollUntilContextTimeout(ctx, time.Second, 2*time.Minute, true, func(ctx context.Context) (bool, error) {
-		var existing corev1.Pod
-		if err := c.Get(ctx, types.NamespacedName{Name: pod.Name, Namespace: pod.Namespace}, &existing); err != nil {
-			if apierrors.IsNotFound(err) {
-				return true, nil
-			}
-			return false, err
-		}
-		return false, nil
-	}); err != nil {
-		t.Fatalf("wait for previous crash-loop pod deletion: %v", err)
-	}
-
-	if err := c.Create(ctx, pod); err != nil {
-		t.Fatalf("create crash-loop pod: %v", err)
-	}
-	t.Cleanup(func() {
-		if err := c.Delete(context.Background(), pod); err != nil && !apierrors.IsNotFound(err) {
-			t.Errorf("cleanup crash-loop pod: %v", err)
-		}
-	})
-
-	err := wait.PollUntilContextTimeout(ctx, 2*time.Second, 2*time.Minute, true, func(ctx context.Context) (bool, error) {
-		var p corev1.Pod
-		if err := c.Get(ctx, types.NamespacedName{Name: pod.Name, Namespace: pod.Namespace}, &p); err != nil {
-			return false, nil
-		}
-		for _, cs := range p.Status.ContainerStatuses {
-			if cs.RestartCount > 0 {
-				return true, nil
-			}
-		}
-		return false, nil
-	})
-	if err != nil {
-		t.Fatalf("crash-loop pod never restarted: %v", err)
-	}
-	t.Log("crash-loop pod is CrashLoopBackOff in staging namespace")
-}
-
-// ensureNamespace creates the namespace if absent (idempotent — ignores AlreadyExists).
-func ensureNamespace(t *testing.T, c client.Client, name string) {
-	t.Helper()
-	ns := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: name}}
-	if err := c.Create(context.Background(), ns); err != nil && !apierrors.IsAlreadyExists(err) {
-		t.Fatalf("create namespace %s: %v", name, err)
-	}
-}
-
-// --- Fixture builders ---
-
-// e2eFixtures holds the prerequisite CRs needed for any run flow.
-type e2eFixtures struct {
-	LLM       *agenticv1alpha1.LLMProvider
-	Agent     *agenticv1alpha1.Agent
-	Policy    *agenticv1alpha1.ApprovalPolicy
-	LLMSecret *corev1.Secret
-}
-
-// createFixtures creates the prerequisite chain (LLMProvider, Agent, ApprovalPolicy, Secret)
-// and registers cleanup. Cleans up leftovers from previous failed runs first.
-func createFixtures(t *testing.T, c client.Client) *e2eFixtures {
-	t.Helper()
-
-	if os.Getenv("E2E_PROVIDER") != "" {
-		return createRealProviderFixtures(t, c)
-	}
-
-	ctx := context.Background()
-
-	f := &e2eFixtures{
-		LLM: &agenticv1alpha1.LLMProvider{
-			ObjectMeta: metav1.ObjectMeta{Name: "e2e-llm"},
-			Spec: agenticv1alpha1.LLMProviderSpec{
-				Type: agenticv1alpha1.LLMProviderGoogleCloudVertex,
-				GoogleCloudVertex: agenticv1alpha1.GoogleCloudVertexConfig{
-					CredentialsSecret: agenticv1alpha1.SecretReference{Name: "e2e-llm-secret"},
-					ProjectID:         "e2e-project",
-					Region:            "us-central1",
-					ModelProvider:     agenticv1alpha1.GoogleCloudVertexModelProviderAnthropic,
-				},
-			},
-		},
-		Agent: &agenticv1alpha1.Agent{
-			ObjectMeta: metav1.ObjectMeta{Name: "e2e-agent"},
-			Spec: agenticv1alpha1.AgentSpec{
-				LLMProvider: agenticv1alpha1.LLMProviderReference{Name: "e2e-llm"},
-				Model:       "claude-opus-4-6",
-			},
-		},
-		Policy: &agenticv1alpha1.ApprovalPolicy{
-			ObjectMeta: metav1.ObjectMeta{Name: "cluster"},
-			Spec: agenticv1alpha1.ApprovalPolicySpec{
-				Stages: []agenticv1alpha1.ApprovalPolicyStage{
-					{Name: agenticv1alpha1.SandboxStepAnalysis, Approval: agenticv1alpha1.ApprovalModeAutomatic},
-				},
-			},
-		},
-		LLMSecret: &corev1.Secret{
-			ObjectMeta: metav1.ObjectMeta{Name: "e2e-llm-secret", Namespace: testNS},
-			Data:       map[string][]byte{"credentials.json": []byte(`{"fake":"creds"}`)},
-		},
-	}
-
-	// Ensure target namespace exists (used by RBAC tests).
-	stagingNS := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "staging"}}
-	if err := c.Create(ctx, stagingNS); err != nil && !apierrors.IsAlreadyExists(err) {
-		t.Fatalf("create staging namespace: %v", err)
-	}
-	ensureCrashLoopPod(t, c)
-
-	all := []client.Object{f.LLM, f.Agent, f.Policy, f.LLMSecret}
-	cleanup(t, c, all...)
-	for _, obj := range all {
-		obj.SetResourceVersion("")
-		obj.SetUID("")
-		if err := c.Create(ctx, obj); err != nil {
-			t.Fatalf("create %T %s: %v", obj, obj.GetName(), err)
-		}
-	}
-	t.Cleanup(func() { cleanup(t, c, all...) })
-	return f
-}
-
-func createRealProviderFixtures(t *testing.T, c client.Client) *e2eFixtures {
-	t.Helper()
-	ctx := context.Background()
-
-	provider := os.Getenv("E2E_PROVIDER")
-	model := os.Getenv("E2E_MODEL")
-	keyPath := os.Getenv("E2E_PROVIDER_KEY_PATH")
-
-	if model == "" || keyPath == "" {
-		t.Fatalf("E2E_PROVIDER=%s requires E2E_MODEL and E2E_PROVIDER_KEY_PATH", provider)
-	}
-
-	creds, err := os.ReadFile(keyPath)
-	if err != nil {
-		t.Fatalf("read credentials file %s: %v", keyPath, err)
-	}
-
-	secretName := fmt.Sprintf("e2e-%s-secret", provider)
-	llmName := fmt.Sprintf("e2e-%s-llm", provider)
-
-	var llmSpec agenticv1alpha1.LLMProviderSpec
-	var secretData map[string][]byte
-
-	switch provider {
-	case "claude", "gemini":
-		projectID := os.Getenv("VERTEX_PROJECT_ID")
-		region := os.Getenv("VERTEX_REGION")
-		if projectID == "" {
-			t.Fatal("VERTEX_PROJECT_ID must be set for claude/gemini providers")
-		}
-		if region == "" {
-			region = "us-central1"
-		}
-
-		var modelProvider agenticv1alpha1.GoogleCloudVertexModelProvider
-		switch {
-		case strings.HasPrefix(model, "claude"):
-			modelProvider = agenticv1alpha1.GoogleCloudVertexModelProviderAnthropic
-		case strings.HasPrefix(model, "gemini"):
-			modelProvider = agenticv1alpha1.GoogleCloudVertexModelProviderGoogle
-		default:
-			t.Fatalf("cannot infer modelProvider from model %q", model)
-		}
-
-		secretData = map[string][]byte{"GOOGLE_APPLICATION_CREDENTIALS": creds}
-		llmSpec = agenticv1alpha1.LLMProviderSpec{
-			Type: agenticv1alpha1.LLMProviderGoogleCloudVertex,
-			GoogleCloudVertex: agenticv1alpha1.GoogleCloudVertexConfig{
-				CredentialsSecret: agenticv1alpha1.SecretReference{Name: secretName},
-				ProjectID:         projectID,
-				Region:            region,
-				ModelProvider:     modelProvider,
-			},
-		}
-
-	case "openai":
-		secretData = map[string][]byte{"OPENAI_API_KEY": creds}
-		llmSpec = agenticv1alpha1.LLMProviderSpec{
-			Type: agenticv1alpha1.LLMProviderOpenAI,
-			OpenAI: agenticv1alpha1.OpenAIConfig{
-				CredentialsSecret: agenticv1alpha1.SecretReference{Name: secretName},
-			},
-		}
-
-	default:
-		t.Fatalf("unsupported E2E_PROVIDER: %s", provider)
-	}
-
-	f := &e2eFixtures{
-		LLM: &agenticv1alpha1.LLMProvider{
-			ObjectMeta: metav1.ObjectMeta{Name: llmName},
-			Spec:       llmSpec,
-		},
-		Agent: &agenticv1alpha1.Agent{
-			ObjectMeta: metav1.ObjectMeta{Name: "e2e-agent"},
-			Spec: agenticv1alpha1.AgentSpec{
-				LLMProvider: agenticv1alpha1.LLMProviderReference{Name: llmName},
-				Model:       model,
-			},
-		},
-		Policy: &agenticv1alpha1.ApprovalPolicy{
-			ObjectMeta: metav1.ObjectMeta{Name: "cluster"},
-			Spec: agenticv1alpha1.ApprovalPolicySpec{
-				Stages: []agenticv1alpha1.ApprovalPolicyStage{
-					{Name: agenticv1alpha1.SandboxStepAnalysis, Approval: agenticv1alpha1.ApprovalModeAutomatic},
-				},
-			},
-		},
-		LLMSecret: &corev1.Secret{
-			ObjectMeta: metav1.ObjectMeta{Name: secretName, Namespace: testNS},
-			Data:       secretData,
-		},
-	}
-
-	stagingNS := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "staging"}}
-	if err := c.Create(ctx, stagingNS); err != nil && !apierrors.IsAlreadyExists(err) {
-		t.Fatalf("create staging namespace: %v", err)
-	}
-	ensureCrashLoopPod(t, c)
-
-	all := []client.Object{f.LLM, f.Agent, f.Policy, f.LLMSecret}
-	cleanup(t, c, all...)
-	for _, obj := range all {
-		obj.SetResourceVersion("")
-		obj.SetUID("")
-		if err := c.Create(ctx, obj); err != nil {
-			t.Fatalf("create %T %s: %v", obj, obj.GetName(), err)
-		}
-	}
-	t.Cleanup(func() { cleanup(t, c, all...) })
-
-	t.Logf("Real provider fixtures created: provider=%s model=%s llm=%s", provider, model, llmName)
-	return f
-}
-
-// createAgenticRun creates a AgenticRun + pre-created AgenticRunApproval (CEL workaround),
-// targeting the "staging" namespace. Cleans up leftovers from previous runs. Returns the
-// created AgenticRun.
+// createAgenticRun creates a AgenticRun, cleans up leftovers from previous
+// runs, and registers cleanup. Returns the created AgenticRun.
 func createAgenticRun(t *testing.T, c client.Client, name string) *agenticv1alpha1.AgenticRun {
 	t.Helper()
-	return createAgenticRunTargeting(t, c, name, "staging", "Pod crash-looping in staging namespace")
+	return createAgenticRunWithRequest(t, c, name, "Pod crash-looping in staging namespace")
 }
 
-// createAgenticRunTargeting creates a AgenticRun + pre-created AgenticRunApproval (CEL
-// workaround) against an arbitrary target namespace and request string — e.g. the mock
-// agent's verifyFailNamespace sentinel to drive a failing verification response. Cleans up
-// leftovers from previous runs. Returns the created AgenticRun.
-func createAgenticRunTargeting(t *testing.T, c client.Client, name, targetNamespace, request string) *agenticv1alpha1.AgenticRun {
+// createAgenticRunWithRequest is like createAgenticRun but allows a custom
+// request string. Embed mock failure keywords (MOCK_CRASH, MOCK_TIMEOUT, etc.)
+// in the request to trigger failure modes.
+func createAgenticRunWithRequest(t *testing.T, c client.Client, name, request string) *agenticv1alpha1.AgenticRun {
 	t.Helper()
 	ctx := context.Background()
 
@@ -406,7 +155,7 @@ func createAgenticRunTargeting(t *testing.T, c client.Client, name, targetNamesp
 		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: testNS},
 		Spec: agenticv1alpha1.AgenticRunSpec{
 			Request:          request,
-			TargetNamespaces: []string{targetNamespace},
+			TargetNamespaces: []string{"staging"},
 			Tools:            agenticv1alpha1.ToolsSpec{Skills: []agenticv1alpha1.SkillsSource{{Image: "quay.io/openshift-lightspeed/ols-qe:lightspeed-mock-agent", Paths: []string{"/skills"}}}},
 			Analysis:         agenticv1alpha1.AgenticRunStep{Agent: "e2e-agent"},
 			Execution:        agenticv1alpha1.AgenticRunStep{Agent: "e2e-agent"},
@@ -414,8 +163,6 @@ func createAgenticRunTargeting(t *testing.T, c client.Client, name, targetNamesp
 		},
 	}
 
-	// Clean leftovers from previous runs. Sandbox resources use UID-based names
-	// so collisions are impossible; the AgenticRun finalizer handles their cleanup.
 	cleanup(t, c, &agenticv1alpha1.AgenticRun{ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: testNS}})
 	cleanup(t, c, &agenticv1alpha1.AgenticRunApproval{ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: testNS}})
 
@@ -442,10 +189,15 @@ var terminalPhases = map[agenticv1alpha1.AgenticRunPhase]bool{
 // phases never transition further.
 func waitForPhase(t *testing.T, c client.Client, name string, target agenticv1alpha1.AgenticRunPhase) agenticv1alpha1.AgenticRun {
 	t.Helper()
+	return waitForPhaseWithTimeout(t, c, name, target, pollTimeout)
+}
+
+func waitForPhaseWithTimeout(t *testing.T, c client.Client, name string, target agenticv1alpha1.AgenticRunPhase, timeout time.Duration) agenticv1alpha1.AgenticRun {
+	t.Helper()
 	ctx := context.Background()
 	var updated agenticv1alpha1.AgenticRun
 
-	err := wait.PollUntilContextTimeout(ctx, pollInterval, pollTimeout, true, func(ctx context.Context) (bool, error) {
+	err := wait.PollUntilContextTimeout(ctx, pollInterval, timeout, true, func(ctx context.Context) (bool, error) {
 		if err := c.Get(ctx, types.NamespacedName{Name: name, Namespace: testNS}, &updated); err != nil {
 			return false, nil
 		}
@@ -588,4 +340,125 @@ func approveVerification(t *testing.T, c client.Client, name string) {
 		t.Fatalf("approve verification: %v", err)
 	}
 	t.Logf("approved verification")
+}
+
+// --- OTEL trace verification ---
+
+const otelCollectorLabelSelector = "app=lightspeed-otel-collector"
+
+// collectorLogs returns the OTEL collector pod logs, or empty string
+// (with t.Skip) if the collector is not deployed.
+func collectorLogs(t *testing.T) string {
+	t.Helper()
+
+	kubeconfig := os.Getenv("KUBECONFIG")
+	if kubeconfig == "" {
+		home, _ := os.UserHomeDir()
+		kubeconfig = home + "/.kube/config"
+	}
+	cfg, err := clientcmd.BuildConfigFromFlags("", kubeconfig)
+	if err != nil {
+		t.Fatalf("build kubeconfig for pod logs: %v", err)
+	}
+	clientset, err := kubernetes.NewForConfig(cfg)
+	if err != nil {
+		t.Fatalf("create kubernetes clientset: %v", err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	pods, err := clientset.CoreV1().Pods(testNS).List(ctx, metav1.ListOptions{
+		LabelSelector: otelCollectorLabelSelector,
+	})
+	if err != nil {
+		t.Fatalf("list OTEL collector pods: %v", err)
+	}
+	var podName string
+	for _, p := range pods.Items {
+		if p.Status.Phase == corev1.PodRunning && p.DeletionTimestamp == nil {
+			podName = p.Name
+			break
+		}
+	}
+	if podName == "" {
+		t.Skip("OTEL collector not deployed, skipping trace assertion")
+		return ""
+	}
+	req := clientset.CoreV1().Pods(testNS).GetLogs(podName, &corev1.PodLogOptions{})
+	stream, err := req.Stream(ctx)
+	if err != nil {
+		t.Fatalf("stream collector logs: %v", err)
+	}
+	defer stream.Close()
+
+	var buf bytes.Buffer
+	if _, err := buf.ReadFrom(stream); err != nil {
+		t.Fatalf("read collector logs: %v", err)
+	}
+	return buf.String()
+}
+
+// assertTracesExported verifies that the OTEL collector received spans
+// for the given AgenticRun (matched by UID) and that each of the
+// expected span names appears in a span block that also carries this
+// run's UID attribute. Retries for up to 30 seconds to allow the batch
+// span processor to flush recently completed spans.
+func assertTracesExported(t *testing.T, run *agenticv1alpha1.AgenticRun, expectedSpans []string) {
+	t.Helper()
+
+	uid := string(run.UID)
+	if uid == "" {
+		t.Fatal("AgenticRun has no UID, cannot verify traces")
+	}
+
+	uidNeedle := fmt.Sprintf("agenticrun.uid: Str(%s)", uid)
+	var missing []string
+
+	err := wait.PollUntilContextTimeout(context.Background(), 5*time.Second, 30*time.Second, true, func(_ context.Context) (bool, error) {
+		logs := collectorLogs(t)
+		if !strings.Contains(logs, uidNeedle) {
+			return false, nil
+		}
+
+		blocks := strings.Split(logs, "Span #")
+		missing = nil
+		for _, span := range expectedSpans {
+			nameNeedle := fmt.Sprintf("Name           : %s", span)
+			found := false
+			for _, block := range blocks {
+				if strings.Contains(block, uidNeedle) && strings.Contains(block, nameNeedle) {
+					found = true
+					break
+				}
+			}
+			if !found {
+				missing = append(missing, span)
+			}
+		}
+		return len(missing) == 0, nil
+	})
+
+	if err != nil {
+		if !strings.Contains(collectorLogs(t), uidNeedle) {
+			t.Errorf("OTEL collector logs do not contain any spans for run UID %s", uid)
+			return
+		}
+		for _, span := range missing {
+			t.Errorf("OTEL collector logs missing span %q for run %s (UID %s)", span, run.Name, uid)
+		}
+	}
+
+	for _, span := range expectedSpans {
+		found := true
+		for _, m := range missing {
+			if m == span {
+				found = false
+				break
+			}
+		}
+		if found {
+			t.Logf("Verified: span %q present for UID %s", span, uid)
+		}
+	}
 }

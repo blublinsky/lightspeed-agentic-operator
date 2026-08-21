@@ -18,16 +18,12 @@ import (
 	agenticv1alpha1 "github.com/openshift/lightspeed-agentic-operator/api/v1alpha1"
 )
 
-// verifyFailNamespace is the target namespace sentinel the mock agent
-// (test/agent/main.go setStatus) recognizes to return a FAILING verification
-// result instead of the default "Passed" one. Must match the constant of the
-// same name in test/agent/main.go.
-//
-// NOTE: this behavior lives in the mock-agent image. The e2e SandboxTemplate
-// pulls quay.io/openshift-lightspeed/ols-qe:lightspeed-mock-agent1, so that
-// image must be rebuilt+pushed (make -C test/agent docker-build docker-push)
-// after changing the sentinel, or this test's run will just Complete.
-const verifyFailNamespace = "e2e-verify-fail"
+// NOTE: verification-failure behavior lives in the mock-agent image, keyed on
+// the MOCK_VERIFY_FAIL request keyword (test/agent/main.go). The e2e
+// SandboxTemplate pulls quay.io/openshift-lightspeed/ols-qe:lightspeed-mock-agent1,
+// so that image must be rebuilt+pushed (make -C test/agent docker-build
+// docker-push) after changing the mock, or the failing test's run will just
+// Complete.
 
 // TestVerificationFlow_VerifyingToCompleted validates the verification phase:
 //
@@ -40,8 +36,6 @@ func TestVerificationFlow_VerifyingToCompleted(t *testing.T) {
 	c := newClient(t)
 	ctx := context.Background()
 
-	t.Log("Creating fixtures (LLMProvider, Agent, ApprovalPolicy, Secret)")
-	createFixtures(t, c)
 	prop := createAgenticRun(t, c, "e2e-verification-flow")
 	t.Logf("AgenticRun created: %s/%s", testNS, prop.Name)
 
@@ -98,6 +92,15 @@ func TestVerificationFlow_VerifyingToCompleted(t *testing.T) {
 	}
 	t.Logf("Verified: verification sandbox info recorded, claimName=%s", updated.Status.Steps.Verification.Sandbox.ClaimName)
 
+	// --- Verify: OTEL traces exported for all steps ---
+	assertTracesExported(t, &updated, []string{
+		"agenticrun.analyze",
+		"agenticrun.human_approval",
+		"agenticrun.execute",
+		"agenticrun.verify",
+		"agenticrun.terminal",
+	})
+
 	// --- Cleanup and verify RBAC removed ---
 	roleName := "ls-exec-" + runUID
 	t.Log("Deleting AgenticRun — verifying RBAC cleanup")
@@ -117,10 +120,10 @@ func TestVerificationFlow_VerifyingToCompleted(t *testing.T) {
 // TestVerificationFlow_FailureEscalatesSingleExecution validates that a
 // verification failure escalates directly, without re-executing:
 //
-//  1. Create AgenticRun targeting the verifyFailNamespace sentinel, drive
-//     through analysis + execution to Verifying
-//  2. Approve verification — the mock agent returns a FAILING check for this
-//     sentinel namespace
+//  1. Create AgenticRun with the MOCK_VERIFY_FAIL keyword, drive through
+//     analysis + execution to Verifying
+//  2. Approve verification — the mock agent reports a FAILING check for the
+//     verification step (analysis and execution still succeed)
 //  3. Assert: escalation is raised (phase Escalating, or Escalated if the
 //     controller auto-advances before the poll observes Escalating),
 //     Verified=False/VerificationFailed, Escalated condition present
@@ -131,13 +134,8 @@ func TestVerificationFlow_FailureEscalatesSingleExecution(t *testing.T) {
 	c := newClient(t)
 	ctx := context.Background()
 
-	t.Log("Creating fixtures (LLMProvider, Agent, ApprovalPolicy, Secret)")
-	createFixtures(t, c)
-	ensureNamespace(t, c, verifyFailNamespace)
-
-	prop := createAgenticRunTargeting(t, c, "e2e-verification-fail-escalates", verifyFailNamespace,
-		"Pod crash-looping in "+verifyFailNamespace+" namespace")
-	t.Logf("AgenticRun created: %s/%s (targeting sentinel namespace %s)", testNS, prop.Name, verifyFailNamespace)
+	prop := createAgenticRunWithRequest(t, c, "e2e-verification-fail-escalates", "MOCK_VERIFY_FAIL")
+	t.Logf("AgenticRun created: %s/%s (MOCK_VERIFY_FAIL — verification will report failure)", testNS, prop.Name)
 
 	t.Log("Waiting for phase: Proposed (analysis complete)")
 	proposed := waitForPhase(t, c, prop.Name, agenticv1alpha1.AgenticRunPhaseProposed)
@@ -151,7 +149,7 @@ func TestVerificationFlow_FailureEscalatesSingleExecution(t *testing.T) {
 	waitForPhase(t, c, prop.Name, agenticv1alpha1.AgenticRunPhaseVerifying)
 	t.Log("Phase reached: Verifying")
 
-	t.Log("Approving verification (mock agent will report a FAILING check for the sentinel namespace)")
+	t.Log("Approving verification (mock agent will report a FAILING check — MOCK_VERIFY_FAIL)")
 	approveVerification(t, c, prop.Name)
 
 	t.Log("Waiting for escalation to be raised (phase Escalating or Escalated)")
