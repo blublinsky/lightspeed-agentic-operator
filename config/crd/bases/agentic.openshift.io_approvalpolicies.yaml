@@ -29,7 +29,11 @@ spec:
           agentic.openshift.io/v1alpha1\n\tkind: ApprovalPolicy\n\tmetadata:\n\t  name:
           cluster\n\tspec:\n\t  stages:\n\t    - name: Analysis\n\t      approval:
           Automatic\n\t    - name: Execution\n\t      approval: Manual\n\t    - name:
-          Verification\n\t      approval: Automatic"
+          Verification\n\t      approval: Automatic\n\t    - name: Escalation\n\t
+          \     approval: Automatic\n\nEscalation runs only after a verification failure
+          and produces a report for\na human. Leaving it unset (default Manual) strands
+          every verification\nfailure at the escalation approval gate, so set it Automatic
+          unless you\nintend to gate the escalation agent itself."
         properties:
           apiVersion:
             description: |-

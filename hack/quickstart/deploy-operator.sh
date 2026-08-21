@@ -244,6 +244,10 @@ spec:
     approval: Manual
   - name: Verification
     approval: Automatic
+  # Escalation is triggered by a verification failure and only produces a
+  # report; keep it Automatic so a failure is not stranded at the gate.
+  - name: Escalation
+    approval: Automatic
 EOF
 info "ApprovalPolicy created"
 

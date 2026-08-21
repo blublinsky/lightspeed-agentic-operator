@@ -46,7 +46,7 @@ func NewDenyCmd(streams genericclioptions.IOStreams) *cobra.Command {
 	}
 
 	o.configFlags.AddFlags(cmd.Flags())
-	cmd.Flags().StringVar(&o.stage, "stage", "", "Step to deny: analysis, execution, or verification (defaults to next pending)")
+	cmd.Flags().StringVar(&o.stage, "stage", "", "Step to deny: analysis, execution, verification, or escalation (defaults to next pending)")
 
 	return cmd
 }
@@ -118,6 +118,9 @@ func (o *DenyOptions) nextPendingStage(p *agenticv1alpha1.AgenticRun, approval *
 		{!p.Spec.Analysis.IsZero(), agenticv1alpha1.ApprovalStageAnalysis, "analysis"},
 		{!p.Spec.Execution.IsZero(), agenticv1alpha1.ApprovalStageExecution, "execution"},
 		{!p.Spec.Verification.IsZero(), agenticv1alpha1.ApprovalStageVerification, "verification"},
+		// Escalation is failure-triggered, not spec-configured: only
+		// pending once the run has reached the Escalating phase.
+		{agenticv1alpha1.DerivePhase(p.Status.Conditions) == agenticv1alpha1.AgenticRunPhaseEscalating, agenticv1alpha1.ApprovalStageEscalation, "escalation"},
 	}
 
 	for _, s := range stages {

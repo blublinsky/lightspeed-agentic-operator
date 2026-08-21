@@ -351,10 +351,15 @@ func TestApprove_Validate(t *testing.T) {
 			wantErr: false,
 		},
 		{
+			name:    "valid stage escalation",
+			opts:    ApproveOptions{stage: "escalation"},
+			wantErr: false,
+		},
+		{
 			name:    "invalid stage",
 			opts:    ApproveOptions{stage: "invalid"},
 			wantErr: true,
-			errMsg:  "must be analysis, execution, or verification",
+			errMsg:  "must be analysis, execution, verification, or escalation",
 		},
 		{
 			name:    "all flag",

@@ -96,6 +96,13 @@ type ApprovalPolicySpec struct {
 //	      approval: Manual
 //	    - name: Verification
 //	      approval: Automatic
+//	    - name: Escalation
+//	      approval: Automatic
+//
+// Escalation runs only after a verification failure and produces a report for
+// a human. Leaving it unset (default Manual) strands every verification
+// failure at the escalation approval gate, so set it Automatic unless you
+// intend to gate the escalation agent itself.
 type ApprovalPolicy struct {
 	metav1.TypeMeta `json:",inline"`
 
