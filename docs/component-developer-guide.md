@@ -114,38 +114,53 @@ That's it. The operator picks it up and runs the workflow.
 Every step (analysis, execution, verification) has a built-in approval gate. The step does not run until approval is present — either auto-approved via the cluster-wide `ApprovalPolicy` or explicitly approved by the user on the `AgenticRunApproval` resource.
 
 ```
-                          +---------+
-                          | Pending |
-                          +----+----+
-                               |
-                          +----v------+
-                          | Analyzing |
-                          +----+------+
-                               |
-                    +----------+-----------+
-                    |                      |
-              +-----v------+       +------v----+
-              | Executing  |       |  Denied   |
-              +-----+------+       +-----------+
-                    |
-              +-----v------+
-              | Verifying  |
-              +-----+------+
-                    |
-          +---------+---------+
-          |                   |
-    +-----v------+    +------v----+    +-----------+
-    | Completed  |    |  Failed   +--->| Escalated |
-    +------------+    +-----------+    +-----------+
+                     +---------+
+                     | Pending |
+                     +----+----+
+                          |
+                     +----v------+
+                     | Analyzing |
+                     +----+------+
+                          |
+                     +----v-----+
+                     | Proposed |
+                     +----+-----+
+                          |
+                     +----v------+
+                     | Executing |
+                     +----+------+
+                          |
+                     +----v------+
+                     | Verifying |
+                     +----+------+
+                          |
+              +-----------+-----------+
+              |                       |
+        +-----v-----+          +------v------+
+        | Completed |          | Escalating  |
+        +-----------+          +------+------+
+                                      |
+                               +------v----+
+                               | Escalated |
+                               +-----------+
+
+  Any step can also reach a terminal state off this spine:
+    Denied  -- an approval was denied on the AgenticRunApproval.
+    Failed  -- a step failed to run: an analysis/execution error, or a
+               verification *system* failure (agent crash, timeout, or no
+               result produced). An *objective* verification failure does
+               NOT land here -- it escalates (Verifying -> Escalating ->
+               Escalated), never re-executing.
 ```
 
 - **Pending** -- AgenticRun created, waiting for reconciliation.
 - **Analyzing** -- Analysis step approved (or pending approval). Agent is running or waiting.
-- **Executing** -- Analysis complete. Execution step approved (or pending approval). Agent is running or waiting.
+- **Proposed** -- Analysis complete, awaiting execution approval (`Analyzed=True`, no `Executed` condition yet).
+- **Executing** -- Execution step approved (or pending approval). Agent is running or waiting.
 - **Denied** -- User denied a step on the AgenticRunApproval. Terminal.
 - **Verifying** -- Execution complete (or skipped). Verification step approved (or pending approval).
 - **Completed** -- Verification passed. Terminal (success).
-- **Failed** -- A step failed. Terminal for analysis/execution failures. Verification failure instead escalates immediately (no retry) -- see **Escalating** / **Escalated**.
+- **Failed** -- A step failed. Terminal for analysis/execution failures and for verification *system* failures (crash/timeout/no result). An objective verification failure instead escalates immediately (no retry) -- see **Escalating** / **Escalated**.
 - **Escalating** -- Verification failed and the operator is producing an `EscalationResult` (the `Escalated` condition is `Unknown`). In-flight, not terminal -- do not treat it as a final state.
 - **Escalated** -- Escalation complete. An `EscalationResult` has been produced with the execution and verification history for a human operator to assess. Terminal.
 
