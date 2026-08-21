@@ -74,7 +74,10 @@ func main() {
 	step := stepFromSchema(schemaRaw)
 	targetNS := pickNamespace(ctxRaw)
 	queryStr := string(query)
-	log.Printf("step=%s target_ns=%s query_len=%d", step, targetNS, len(query))
+	verifyFail := strings.Contains(queryStr, MockVerifyFail)
+	// Build stamp: if this line is absent from a sandbox pod's logs, the cluster
+	// is running a STALE mock image and the fix under test never ran. See OLS-3817.
+	log.Printf("mock-agent build=OLS-3817-verifyfail-via-option step=%s target_ns=%s query_len=%d verify_fail=%v", step, targetNS, len(query), verifyFail)
 
 	// Failure modes triggered by keywords in the query text.
 	switch {
@@ -106,7 +109,7 @@ func main() {
 		return
 	}
 
-	setStatus(cr, targetNS, strings.Contains(queryStr, MockVerifyFail))
+	setStatus(cr, targetNS, verifyFail)
 	if err := c.Status().Update(ctx, cr); err != nil {
 		log.Fatalf("update status: %v", err)
 	}
