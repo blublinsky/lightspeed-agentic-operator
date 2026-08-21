@@ -49,7 +49,16 @@ const (
 	// MockVerifyFail makes ONLY the verification step report an objective
 	// failure (VerificationResult Completed reason=Failed with a failing check);
 	// analysis and execution still succeed. Drives the escalate-on-verification-
-	// failure path (OLS-3817): Verified=False → Escalating. Other steps ignore it.
+	// failure path (OLS-3817): Verified=False → Escalating.
+	//
+	// Propagation: the operator only embeds the request text in the ANALYSIS
+	// query (buildAnalysisQuery); the verification query is built from the
+	// approved option + execution result (buildVerificationQuery), NOT the
+	// request. So the keyword cannot reach the verification step directly. The
+	// analysis mock therefore stamps this marker into the RemediationOption it
+	// emits; the operator serializes that option into the verification query
+	// (OptionJSON), which is how the verification step sees it. See
+	// setStatus/AnalysisResult below.
 	MockVerifyFail = "MOCK_VERIFY_FAIL"
 )
 
@@ -224,9 +233,16 @@ func setStatus(obj client.Object, targetNS string, verifyFail bool) {
 			Summary:   "mock diagnosis",
 			RootCause: "mock root cause",
 		}
+		// When the request asked for a verification failure, stamp the marker
+		// into the option summary so it survives into the verification query
+		// (OptionJSON) — the request text itself never reaches that step.
+		optionSummary := "mock option summary"
+		if verifyFail {
+			optionSummary = "mock option summary " + MockVerifyFail
+		}
 		cr.Status.Options = []agenticv1alpha1.RemediationOption{{
 			Title:   "mock-remediation",
-			Summary: "mock option summary",
+			Summary: optionSummary,
 			Diagnosis: agenticv1alpha1.DiagnosisResult{
 				Summary:   "mock diagnosis",
 				RootCause: "mock root cause",
