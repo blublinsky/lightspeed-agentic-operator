@@ -140,7 +140,8 @@ func TestVerificationFlow_FailureEscalatesSingleExecution(t *testing.T) {
 	t.Logf("AgenticRun created: %s/%s (targeting sentinel namespace %s)", testNS, prop.Name, verifyFailNamespace)
 
 	t.Log("Waiting for phase: Proposed (analysis complete)")
-	waitForPhase(t, c, prop.Name, agenticv1alpha1.AgenticRunPhaseProposed)
+	proposed := waitForPhase(t, c, prop.Name, agenticv1alpha1.AgenticRunPhaseProposed)
+	runUID := string(proposed.UID)
 	t.Log("Phase reached: Proposed")
 
 	t.Log("Approving execution with option 0")
@@ -186,8 +187,10 @@ func TestVerificationFlow_FailureEscalatesSingleExecution(t *testing.T) {
 	t.Logf("Verified: Escalated condition present with status=%s reason=%s", escalated.Status, escalated.Reason)
 
 	// --- Verify: exactly ONE ExecutionResult — proof of no re-execution ---
+	// Result CRs are labelled with the run UID (LabelRun = string(run.UID)),
+	// not the run name — see controller/agenticrun/results.go.
 	var execList agenticv1alpha1.ExecutionResultList
-	if err := c.List(ctx, &execList, client.InNamespace(testNS), client.MatchingLabels{"agentic.openshift.io/run": prop.Name}); err != nil {
+	if err := c.List(ctx, &execList, client.InNamespace(testNS), client.MatchingLabels{"agentic.openshift.io/run": runUID}); err != nil {
 		t.Fatalf("list ExecutionResult: %v", err)
 	}
 	if len(execList.Items) != 1 {
