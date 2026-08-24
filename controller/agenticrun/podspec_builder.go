@@ -65,6 +65,7 @@ func (b *PodSpecBuilder) Build(
 	llm *agenticv1alpha1.LLMProvider,
 	tools *agenticv1alpha1.ToolsSpec,
 	otelCfg *configuration.OTELConfig,
+	rhokpCfg *configuration.RHOKPConfig,
 	step string,
 	runUID string,
 	serviceAccount string,
@@ -171,6 +172,7 @@ func (b *PodSpecBuilder) Build(
 	}
 
 	appendOTELEnvVars(container, &volumes, otelCfg, runUID)
+	appendRHOKPEnvVars(container, &volumes, rhokpCfg)
 
 	podSpec.Volumes = mergeVolumes(podSpec.Volumes, volumes)
 	container.VolumeMounts = mergeVolumeMounts(container.VolumeMounts)
@@ -257,6 +259,38 @@ func appendOTELEnvVars(container *corev1.Container, volumes *[]corev1.Volume, ot
 		container.VolumeMounts = append(container.VolumeMounts, corev1.VolumeMount{
 			Name:      otelCAVolumeName,
 			MountPath: otelCAMountPath,
+			ReadOnly:  true,
+		})
+	}
+}
+
+const (
+	rhokpCAVolumeName = "rhokp-ca"
+	rhokpCAMountPath  = "/var/run/secrets/rhokp-ca"
+	rhokpCASecretKey  = "rhokp-ca.crt"
+)
+
+func appendRHOKPEnvVars(container *corev1.Container, volumes *[]corev1.Volume, rhokpCfg *configuration.RHOKPConfig) {
+	if rhokpCfg == nil || rhokpCfg.Endpoint == "" {
+		return
+	}
+	container.Env = append(container.Env,
+		corev1.EnvVar{Name: "LIGHTSPEED_RHOKP_ENDPOINT", Value: rhokpCfg.Endpoint},
+	)
+
+	if rhokpCfg.CASecretName != "" {
+		container.Env = append(container.Env,
+			corev1.EnvVar{Name: "LIGHTSPEED_RHOKP_CA_CERTIFICATE", Value: rhokpCAMountPath + "/" + rhokpCASecretKey},
+		)
+		*volumes = append(*volumes, corev1.Volume{
+			Name: rhokpCAVolumeName,
+			VolumeSource: corev1.VolumeSource{
+				Secret: &corev1.SecretVolumeSource{SecretName: rhokpCfg.CASecretName},
+			},
+		})
+		container.VolumeMounts = append(container.VolumeMounts, corev1.VolumeMount{
+			Name:      rhokpCAVolumeName,
+			MountPath: rhokpCAMountPath,
 			ReadOnly:  true,
 		})
 	}

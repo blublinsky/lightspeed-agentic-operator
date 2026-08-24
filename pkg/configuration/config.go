@@ -31,12 +31,20 @@ type MCPConfig struct {
 	CASecretName string
 }
 
+// RHOKPConfig holds RHOKP (Red Hat Offline Knowledge Portal) connectivity
+// from the ConfigMap. Present only when OKP is enabled (not ByokRAGOnly).
+type RHOKPConfig struct {
+	Endpoint     string
+	CASecretName string
+}
+
 // Config holds the parsed contents of the lightspeed-agentic-configuration
 // ConfigMap. Nil means the ConfigMap has not been seen yet.
 type Config struct {
 	Sandbox SandboxConfig
 	OTEL    OTELConfig
 	MCP     MCPConfig
+	RHOKP   RHOKPConfig
 }
 
 // Cache is a thread-safe holder for the parsed ConfigMap contents.
@@ -115,6 +123,10 @@ func parseConfigMap(cm *corev1.ConfigMap) (*Config, error) {
 		MCP: MCPConfig{
 			Endpoint:     cm.Data[KeyMCPEndpoint],
 			CASecretName: cm.Data[KeyMCPCASecret],
+		},
+		RHOKP: RHOKPConfig{
+			Endpoint:     cm.Data[KeyRHOKPEndpoint],
+			CASecretName: cm.Data[KeyRHOKPCASecret],
 		},
 	}
 
