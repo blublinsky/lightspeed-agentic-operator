@@ -16,8 +16,10 @@ import (
 	agenticv1alpha1 "github.com/openshift/lightspeed-agentic-operator/api/v1alpha1"
 )
 
-// testManualPolicy returns a policy with all stages set to Manual, matching the
-// production default. Tests using this policy must explicitly approve every step.
+// testManualPolicy returns a policy with Analysis/Execution/Verification set to
+// Manual, matching their production default. It has no Escalation entry, so
+// escalation auto-approves — that stage's production default is Automatic,
+// not Manual (see isStageApproved's Escalation carve-out).
 func testManualPolicy() *agenticv1alpha1.ApprovalPolicy {
 	return testPolicy(agenticv1alpha1.ApprovalModeManual, agenticv1alpha1.ApprovalModeManual, agenticv1alpha1.ApprovalModeManual)
 }
@@ -888,6 +890,29 @@ func TestEscalation_AutoApprove(t *testing.T) {
 	assertPhase(t, r, "fix-crash", agenticv1alpha1.AgenticRunPhaseEscalating)
 
 	// Escalation is auto-approved, should run and complete
+	reconcileOnce(r, "fix-crash")
+	assertPhase(t, r, "fix-crash", agenticv1alpha1.AgenticRunPhaseEscalated)
+}
+
+// ---------------------------------------------------------------------------
+// Escalation: nil policy auto-approves (the production default)
+// ---------------------------------------------------------------------------
+
+func TestEscalation_NilPolicyAutoApproves(t *testing.T) {
+	run := testAgenticRun()
+	agent := newTestAgentCaller()
+	r, fc := newReconcilerWithPolicy(t, run, agent, nil)
+
+	approveAnalysis(t, fc, "fix-crash")
+	reconcileOnce(r, "fix-crash")
+	approveExecution(t, fc, "fix-crash", 0)
+	reconcileOnce(r, "fix-crash")
+	driveToEscalating(t, fc, "fix-crash")
+	assertPhase(t, r, "fix-crash", agenticv1alpha1.AgenticRunPhaseEscalating)
+
+	// No approveEscalation call: with no ApprovalPolicy object at all,
+	// Analysis/Execution/Verification default to Manual (approved above) but
+	// Escalation still defaults to Automatic and runs unattended.
 	reconcileOnce(r, "fix-crash")
 	assertPhase(t, r, "fix-crash", agenticv1alpha1.AgenticRunPhaseEscalated)
 }

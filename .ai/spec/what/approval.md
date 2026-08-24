@@ -24,7 +24,7 @@ Behavioral specification for gating asynchronous workflow steps. **Phase derivat
 18. **Single execution attempt**: Execution runs exactly once per analysis iteration. On verification failure, the operator escalates directly — there are no execution retries. The `maxAttempts` field has been removed from `ApprovalPolicy` and `AgenticRunApproval`.
 19. **CEL invariants on `AgenticRunApproval`**: Users MUST NOT remove prior stages; MUST NOT flip decisions — CRD validation enforces these.
 20. **Append-only human workflow**: Operators SHOULD instruct users to add new stages by patching `spec.stages` append-only rather than replacing the whole list, to respect CEL.
-21. **Escalation stage existence**: Escalation is not in `AgenticRun.spec`; it appears when verification fails. Approval for escalation follows the same Automatic/Manual rules as other stages.
+21. **Escalation stage existence**: Escalation is not in `AgenticRun.spec`; it appears when verification fails. Unlike `Analysis`/`Execution`/`Verification`, it defaults to **Automatic** rather than Manual when unlisted (rules 4, 9c); a policy MAY still gate it explicitly with `approval: Manual`.
 
 ## Configuration Surface
 
