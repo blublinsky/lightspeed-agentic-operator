@@ -16,8 +16,10 @@ import (
 	agenticv1alpha1 "github.com/openshift/lightspeed-agentic-operator/api/v1alpha1"
 )
 
-// testManualPolicy returns a policy with all stages set to Manual, matching the
-// production default. Tests using this policy must explicitly approve every step.
+// testManualPolicy returns a policy with Analysis/Execution/Verification set to
+// Manual, matching their production default. It has no Escalation entry, so
+// escalation auto-approves — that stage's production default is Automatic,
+// not Manual (see isStageApproved's Escalation carve-out).
 func testManualPolicy() *agenticv1alpha1.ApprovalPolicy {
 	return testPolicy(agenticv1alpha1.ApprovalModeManual, agenticv1alpha1.ApprovalModeManual, agenticv1alpha1.ApprovalModeManual)
 }
@@ -893,6 +895,35 @@ func TestEscalation_AutoApprove(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
+// Escalation: nil policy auto-approves (the production default)
+// ---------------------------------------------------------------------------
+
+func TestEscalation_NilPolicyAutoApproves(t *testing.T) {
+	run := testAgenticRun()
+	agent := newTestAgentCaller()
+	r, fc := newReconcilerWithPolicy(t, run, agent, nil)
+
+	approveAnalysis(t, fc, "fix-crash")
+	if _, err := reconcileOnce(r, "fix-crash"); err != nil {
+		t.Fatalf("reconcile after analysis approval: %v", err)
+	}
+	approveExecution(t, fc, "fix-crash", 0)
+	if _, err := reconcileOnce(r, "fix-crash"); err != nil {
+		t.Fatalf("reconcile after execution approval: %v", err)
+	}
+	driveToEscalating(t, fc, "fix-crash")
+	assertPhase(t, r, "fix-crash", agenticv1alpha1.AgenticRunPhaseEscalating)
+
+	// No approveEscalation call: with no ApprovalPolicy object at all,
+	// Analysis/Execution/Verification default to Manual (approved above) but
+	// Escalation still defaults to Automatic and runs unattended.
+	if _, err := reconcileOnce(r, "fix-crash"); err != nil {
+		t.Fatalf("reconcile escalation: %v", err)
+	}
+	assertPhase(t, r, "fix-crash", agenticv1alpha1.AgenticRunPhaseEscalated)
+}
+
+// ---------------------------------------------------------------------------
 // Escalation: re-reconcile while in progress is a no-op
 // ---------------------------------------------------------------------------
 
@@ -905,6 +936,11 @@ func TestEscalation_InProgressIsIdempotent(t *testing.T) {
 		Checks:  []agenticv1alpha1.VerifyCheck{{Name: "pod-running", Result: agenticv1alpha1.CheckResultFailed}},
 	}
 	policy := testPolicy(agenticv1alpha1.ApprovalModeManual, agenticv1alpha1.ApprovalModeManual, agenticv1alpha1.ApprovalModeManual)
+	// Escalation auto-approves by default; gate it Manual so the run parks at
+	// Escalating and re-reconciles stay a no-op until it is approved below.
+	policy.Spec.Stages = append(policy.Spec.Stages, agenticv1alpha1.ApprovalPolicyStage{
+		Name: agenticv1alpha1.SandboxStepEscalation, Approval: agenticv1alpha1.ApprovalModeManual,
+	})
 	r, fc := newReconcilerWithPolicy(t, run, agent, policy)
 
 	// Drive to Escalating phase
@@ -913,9 +949,11 @@ func TestEscalation_InProgressIsIdempotent(t *testing.T) {
 	approveExecution(t, fc, "fix-crash", 0)
 	reconcileOnce(r, "fix-crash")
 	approveVerification(t, fc, "fix-crash")
-	reconcileOnce(r, "fix-crash") // verify fails → escalate immediately
-	reconcileOnce(r, "fix-crash") // re-reconcile is idempotent
-	reconcileOnce(r, "fix-crash") // still Escalating
+	reconcileOnce(r, "fix-crash")                            // verify fails → escalate immediately
+	reconcileOnce(r, "fix-crash")                            // re-reconcile is idempotent
+	if _, err := reconcileOnce(r, "fix-crash"); err != nil { // still Escalating (pending escalation approval)
+		t.Fatalf("reconcile while escalation approval is pending: %v", err)
+	}
 	assertPhase(t, r, "fix-crash", agenticv1alpha1.AgenticRunPhaseEscalating)
 
 	// Approve escalation and run it

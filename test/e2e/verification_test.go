@@ -164,16 +164,18 @@ func TestVerificationFlow_FailureEscalatesSingleExecution(t *testing.T) {
 	t.Log("Verified: Verified=False/VerificationFailed condition present")
 
 	// --- Verify: Escalated condition present with the expected reason ---
-	// Unknown while Escalating (reason VerificationFailed), or True if the
-	// controller auto-advanced to Escalated (terminal reason Complete).
+	// Unknown while Escalating — reason VerificationFailed (not yet started)
+	// or InProgress (escalation agent running; reachable now that escalation
+	// auto-approves by default and the poll can land mid-run) — or True if
+	// the controller auto-advanced to Escalated (terminal reason Complete).
 	escalated := meta.FindStatusCondition(updated.Status.Conditions, agenticv1alpha1.AgenticRunConditionEscalated)
 	if escalated == nil {
 		t.Fatalf("expected Escalated condition, got nil")
 	}
 	switch escalated.Status {
 	case metav1.ConditionUnknown:
-		if escalated.Reason != agenticv1alpha1.ReasonVerificationFailed {
-			t.Fatalf("expected Escalated=Unknown reason %s, got %+v", agenticv1alpha1.ReasonVerificationFailed, escalated)
+		if escalated.Reason != agenticv1alpha1.ReasonVerificationFailed && escalated.Reason != "InProgress" {
+			t.Fatalf("expected Escalated=Unknown reason %s or InProgress, got %+v", agenticv1alpha1.ReasonVerificationFailed, escalated)
 		}
 	case metav1.ConditionTrue:
 		if escalated.Reason != "Complete" {
