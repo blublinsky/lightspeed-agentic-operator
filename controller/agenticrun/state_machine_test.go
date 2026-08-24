@@ -904,16 +904,22 @@ func TestEscalation_NilPolicyAutoApproves(t *testing.T) {
 	r, fc := newReconcilerWithPolicy(t, run, agent, nil)
 
 	approveAnalysis(t, fc, "fix-crash")
-	reconcileOnce(r, "fix-crash")
+	if _, err := reconcileOnce(r, "fix-crash"); err != nil {
+		t.Fatalf("reconcile after analysis approval: %v", err)
+	}
 	approveExecution(t, fc, "fix-crash", 0)
-	reconcileOnce(r, "fix-crash")
+	if _, err := reconcileOnce(r, "fix-crash"); err != nil {
+		t.Fatalf("reconcile after execution approval: %v", err)
+	}
 	driveToEscalating(t, fc, "fix-crash")
 	assertPhase(t, r, "fix-crash", agenticv1alpha1.AgenticRunPhaseEscalating)
 
 	// No approveEscalation call: with no ApprovalPolicy object at all,
 	// Analysis/Execution/Verification default to Manual (approved above) but
 	// Escalation still defaults to Automatic and runs unattended.
-	reconcileOnce(r, "fix-crash")
+	if _, err := reconcileOnce(r, "fix-crash"); err != nil {
+		t.Fatalf("reconcile escalation: %v", err)
+	}
 	assertPhase(t, r, "fix-crash", agenticv1alpha1.AgenticRunPhaseEscalated)
 }
 
