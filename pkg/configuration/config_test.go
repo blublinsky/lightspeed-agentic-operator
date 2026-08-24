@@ -131,6 +131,44 @@ func TestReadFromConfigMap_MissingOptionalFields(t *testing.T) {
 	}
 }
 
+func TestParseConfigMap_RHOKPFields(t *testing.T) {
+	cm := &corev1.ConfigMap{
+		Data: map[string]string{
+			KeySandboxMode:   "bare-pod",
+			KeyRHOKPEndpoint: "https://lightspeed-rhokp.ns.svc:8443",
+			KeyRHOKPCASecret: "lightspeed-agentic-rhokp-ca",
+		},
+	}
+	cfg, err := parseConfigMap(cm)
+	if err != nil {
+		t.Fatalf("parseConfigMap: %v", err)
+	}
+	if cfg.RHOKP.Endpoint != "https://lightspeed-rhokp.ns.svc:8443" {
+		t.Errorf("RHOKP.Endpoint = %q", cfg.RHOKP.Endpoint)
+	}
+	if cfg.RHOKP.CASecretName != "lightspeed-agentic-rhokp-ca" {
+		t.Errorf("RHOKP.CASecretName = %q", cfg.RHOKP.CASecretName)
+	}
+}
+
+func TestParseConfigMap_RHOKPOmitted(t *testing.T) {
+	cm := &corev1.ConfigMap{
+		Data: map[string]string{
+			KeySandboxMode: "bare-pod",
+		},
+	}
+	cfg, err := parseConfigMap(cm)
+	if err != nil {
+		t.Fatalf("parseConfigMap: %v", err)
+	}
+	if cfg.RHOKP.Endpoint != "" {
+		t.Errorf("RHOKP.Endpoint should be empty, got %q", cfg.RHOKP.Endpoint)
+	}
+	if cfg.RHOKP.CASecretName != "" {
+		t.Errorf("RHOKP.CASecretName should be empty, got %q", cfg.RHOKP.CASecretName)
+	}
+}
+
 func TestCollectorConfig_IsValid(t *testing.T) {
 	if (&CollectorConfig{}).IsValid() {
 		t.Error("empty config should not request export")

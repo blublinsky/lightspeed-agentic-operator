@@ -14,6 +14,8 @@ const (
 	KeyOtelCredentialsSecret = "otel-credentials-secret"
 	KeyMCPEndpoint           = "mcp-endpoint"
 	KeyMCPCASecret           = "mcp-ca-secret"
+	KeyRHOKPEndpoint         = "rhokp-endpoint"
+	KeyRHOKPCASecret         = "rhokp-ca-secret"
 
 	// Error constants
 	ErrReadConfigMap         = "read configuration ConfigMap"

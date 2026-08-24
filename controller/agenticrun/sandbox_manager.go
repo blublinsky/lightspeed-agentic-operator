@@ -144,6 +144,7 @@ func (m *SandboxManager) Create(
 		llm,
 		tools,
 		&cfg.OTEL,
+		&cfg.RHOKP,
 		step,
 		string(run.UID),
 		serviceAccount,
