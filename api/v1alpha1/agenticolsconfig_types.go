@@ -35,7 +35,7 @@ const (
 type LifecycleConfig struct {
 	// terminalTTL is the default time-to-live in seconds for terminal
 	// AgenticRun resources (Completed, Failed, Denied, Escalated,
-	// EmergencyStopped, NoActionRequired). After a run reaches a terminal
+	// EmergencyStopped). After a run reaches a terminal
 	// state and this many seconds elapse, the operator deletes the
 	// AgenticRun CR. Kubernetes garbage collection cascades deletion to
 	// owned resources via owner references.

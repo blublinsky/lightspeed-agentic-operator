@@ -206,7 +206,7 @@ func TestDerivePhase(t *testing.T) {
 			conditions: []metav1.Condition{
 				cond(AgenticRunConditionAnalyzed, metav1.ConditionTrue, ReasonNoActionRequired),
 			},
-			want: AgenticRunPhaseNoActionRequired,
+			want: AgenticRunPhaseCompleted,
 		},
 		{
 			name: "no action required overridden by denied",

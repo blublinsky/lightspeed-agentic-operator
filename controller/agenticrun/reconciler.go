@@ -115,13 +115,9 @@ func (r *AgenticRunReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 
 	// --- Terminal phases (before suspension guard so audit cleanup always runs) ---
 	switch phase {
-	case agenticv1alpha1.AgenticRunPhaseNoActionRequired:
-		if !needsRevision(&run) {
-			return r.handleTerminalCleanup(ctx, &run, phase)
-		}
-
 	case agenticv1alpha1.AgenticRunPhaseCompleted:
-		if !(run.Spec.Execution.IsZero() && needsRevision(&run)) {
+		revisable := isNoActionRequired(&run) || run.Spec.Execution.IsZero()
+		if !(revisable && needsRevision(&run)) {
 			return r.handleTerminalCleanup(ctx, &run, phase)
 		}
 
@@ -145,7 +141,7 @@ func (r *AgenticRunReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 		return ctrl.Result{}, nil
 	}
 
-	// --- Suspension guard (non-terminal runs and advisory-only Completed runs needing revision reach here) ---
+	// --- Suspension guard (non-terminal runs and revisable Completed/Failed runs needing revision reach here) ---
 	suspended, err := isSuspended(ctx, r.Client)
 	if err != nil {
 		return ctrl.Result{}, err
@@ -209,15 +205,10 @@ func (r *AgenticRunReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 		}
 		return r.handleEscalation(ctx, &run, resolved, approval, policy)
 
-	case agenticv1alpha1.AgenticRunPhaseNoActionRequired:
-		if needsRevision(&run) {
-			return r.handleRevision(ctx, &run, resolved)
-		}
-		return ctrl.Result{}, nil
-
 	case agenticv1alpha1.AgenticRunPhaseCompleted,
 		agenticv1alpha1.AgenticRunPhaseFailed:
-		if run.Spec.Execution.IsZero() && needsRevision(&run) {
+		revisable := isNoActionRequired(&run) || run.Spec.Execution.IsZero()
+		if revisable && needsRevision(&run) {
 			return r.handleRevision(ctx, &run, resolved)
 		}
 		return ctrl.Result{}, nil

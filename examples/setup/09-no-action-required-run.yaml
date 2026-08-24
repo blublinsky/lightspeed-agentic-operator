@@ -1,5 +1,5 @@
-# Example AgenticRun that triggers NoActionRequired — the analysis agent
-# determines no remediation is needed (false alarm / self-healed).
+# Example AgenticRun where analysis determines no action is required — the
+# run completes without execution (false alarm / self-healed).
 ---
 apiVersion: v1
 kind: Pod

@@ -164,10 +164,15 @@ func terminalReason(run *agenticv1alpha1.AgenticRun) string {
 
 func isTerminal(phase agenticv1alpha1.AgenticRunPhase) bool {
 	switch phase {
-	case agenticv1alpha1.AgenticRunPhaseCompleted, agenticv1alpha1.AgenticRunPhaseFailed, agenticv1alpha1.AgenticRunPhaseDenied, agenticv1alpha1.AgenticRunPhaseEscalated, agenticv1alpha1.AgenticRunPhaseEmergencyStopped, agenticv1alpha1.AgenticRunPhaseNoActionRequired:
+	case agenticv1alpha1.AgenticRunPhaseCompleted, agenticv1alpha1.AgenticRunPhaseFailed, agenticv1alpha1.AgenticRunPhaseDenied, agenticv1alpha1.AgenticRunPhaseEscalated, agenticv1alpha1.AgenticRunPhaseEmergencyStopped:
 		return true
 	}
 	return false
+}
+
+func isNoActionRequired(run *agenticv1alpha1.AgenticRun) bool {
+	c := meta.FindStatusCondition(run.Status.Conditions, agenticv1alpha1.AgenticRunConditionAnalyzed)
+	return c != nil && c.Status == metav1.ConditionTrue && c.Reason == reasonNoActionRequired
 }
 
 func setVerificationSkipped(run *agenticv1alpha1.AgenticRun) {
