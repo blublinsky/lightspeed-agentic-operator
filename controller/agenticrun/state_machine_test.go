@@ -918,9 +918,11 @@ func TestEscalation_InProgressIsIdempotent(t *testing.T) {
 	approveExecution(t, fc, "fix-crash", 0)
 	reconcileOnce(r, "fix-crash")
 	approveVerification(t, fc, "fix-crash")
-	reconcileOnce(r, "fix-crash") // verify fails → escalate immediately
-	reconcileOnce(r, "fix-crash") // re-reconcile is idempotent
-	reconcileOnce(r, "fix-crash") // still Escalating (pending escalation approval)
+	reconcileOnce(r, "fix-crash")                            // verify fails → escalate immediately
+	reconcileOnce(r, "fix-crash")                            // re-reconcile is idempotent
+	if _, err := reconcileOnce(r, "fix-crash"); err != nil { // still Escalating (pending escalation approval)
+		t.Fatalf("reconcile while escalation approval is pending: %v", err)
+	}
 	assertPhase(t, r, "fix-crash", agenticv1alpha1.AgenticRunPhaseEscalating)
 
 	// Approve escalation and run it
