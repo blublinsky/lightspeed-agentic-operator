@@ -56,7 +56,7 @@ type AnalysisResultStatus struct {
 
 	// actionRequired indicates whether the analysis determined that
 	// remediation action is needed. When "False", the run transitions
-	// to NoActionRequired (terminal) instead of Proposed.
+	// to Completed (terminal) instead of Proposed.
 	// +optional
 	ActionRequired ActionRequiredValue `json:"actionRequired,omitempty"`
 

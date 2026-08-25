@@ -181,7 +181,6 @@ var terminalPhases = map[agenticv1alpha1.AgenticRunPhase]bool{
 	agenticv1alpha1.AgenticRunPhaseDenied:           true,
 	agenticv1alpha1.AgenticRunPhaseEscalated:        true,
 	agenticv1alpha1.AgenticRunPhaseEmergencyStopped: true,
-	agenticv1alpha1.AgenticRunPhaseNoActionRequired: true,
 }
 
 // waitForPhase polls until the AgenticRun reaches the target phase. It fails

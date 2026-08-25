@@ -1025,9 +1025,9 @@ func TestNoActionRequired_TerminalWithoutExecution(t *testing.T) {
 	}
 	r, fc := newReconcilerWithPolicy(t, run, agent, testAutoApprovePolicy())
 
-	// Analysis auto-approved → NoActionRequired (terminal)
+	// Analysis auto-approved → Completed (no action required)
 	reconcileOnce(r, "fix-crash")
-	p := assertPhase(t, r, "fix-crash", agenticv1alpha1.AgenticRunPhaseNoActionRequired)
+	p := assertPhase(t, r, "fix-crash", agenticv1alpha1.AgenticRunPhaseCompleted)
 
 	// Verify AnalysisResult CR was created with ActionRequired=False and Diagnosis
 	if len(p.Status.Steps.Analysis.Results) == 0 {
@@ -1054,7 +1054,7 @@ func TestNoActionRequired_TerminalWithoutExecution(t *testing.T) {
 	// Re-reconcile is a no-op (terminal)
 	result, err := reconcileOnce(r, "fix-crash")
 	mustNotRequeue(t, result, err, "terminal no-op re-reconcile")
-	assertPhase(t, r, "fix-crash", agenticv1alpha1.AgenticRunPhaseNoActionRequired)
+	assertPhase(t, r, "fix-crash", agenticv1alpha1.AgenticRunPhaseCompleted)
 }
 
 func TestNoActionRequired_RevisionTriggersReanalysis(t *testing.T) {
@@ -1070,10 +1070,10 @@ func TestNoActionRequired_RevisionTriggersReanalysis(t *testing.T) {
 	}
 	r, fc := newReconcilerWithPolicy(t, run, agent, testAutoApprovePolicy())
 
-	// Analysis → NoActionRequired
+	// Analysis → Completed (no action required)
 	result, err := reconcileOnce(r, "fix-crash")
 	mustNotRequeue(t, result, err, "initial no-action-required analysis")
-	assertPhase(t, r, "fix-crash", agenticv1alpha1.AgenticRunPhaseNoActionRequired)
+	assertPhase(t, r, "fix-crash", agenticv1alpha1.AgenticRunPhaseCompleted)
 
 	// Admin disagrees — submits revision feedback to re-analyze
 	agent.analyzeResult = &AnalysisOutput{

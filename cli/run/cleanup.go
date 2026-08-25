@@ -18,7 +18,7 @@ import (
 
 // validTerminalStates lists the terminal phases accepted by --state.
 var validTerminalStates = []string{
-	"completed", "failed", "denied", "escalated", "emergencystopped", "noactionrequired",
+	"completed", "failed", "denied", "escalated", "emergencystopped",
 }
 
 type CleanupOptions struct {
@@ -52,7 +52,7 @@ func NewCleanupCmd(streams genericclioptions.IOStreams) *cobra.Command {
 		Short: "Delete terminal AgenticRun resources in batch",
 		Long: `Delete terminal AgenticRun resources matching the specified filters.
 
-Terminal states: completed, failed, denied, escalated, emergencystopped, noactionrequired.
+Terminal states: completed, failed, denied, escalated, emergencystopped.
 Kubernetes garbage collection cascades deletion to owned resources via owner references.
 
 This is a destructive, irreversible operation. Unless --yes is passed, the
@@ -88,7 +88,7 @@ is deleted. Use --dry-run to preview matches without any prompt.`,
 
 	o.configFlags.AddFlags(cmd.Flags())
 	cmd.Flags().BoolVarP(&o.allNamespaces, "all-namespaces", "A", false, "Delete terminal runs across all namespaces")
-	cmd.Flags().StringVar(&o.states, "state", "", "Comma-separated terminal states to include (completed,failed,denied,escalated,emergencystopped,noactionrequired)")
+	cmd.Flags().StringVar(&o.states, "state", "", "Comma-separated terminal states to include (completed,failed,denied,escalated,emergencystopped)")
 	cmd.Flags().StringVar(&o.olderThan, "older-than", "", "Only runs terminal longer than this duration (e.g. 7d, 24h, 30m)")
 	cmd.Flags().BoolVar(&o.dryRun, "dry-run", false, "List matching runs without deleting")
 	cmd.Flags().BoolVarP(&o.yes, "yes", "y", false, "Skip confirmation prompt")

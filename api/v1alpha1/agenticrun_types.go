@@ -39,7 +39,6 @@ const (
 	AgenticRunPhaseEscalating       AgenticRunPhase = "Escalating"
 	AgenticRunPhaseEscalated        AgenticRunPhase = "Escalated"
 	AgenticRunPhaseEmergencyStopped AgenticRunPhase = "EmergencyStopped"
-	AgenticRunPhaseNoActionRequired AgenticRunPhase = "NoActionRequired"
 )
 
 // Condition reasons used by DerivePhase for state transitions.
@@ -117,7 +116,7 @@ func DerivePhase(conditions []metav1.Condition) AgenticRunPhase {
 		switch c.Status {
 		case metav1.ConditionTrue:
 			if c.Reason == ReasonNoActionRequired {
-				return AgenticRunPhaseNoActionRequired
+				return AgenticRunPhaseCompleted
 			}
 			return AgenticRunPhaseProposed
 		case metav1.ConditionUnknown:
@@ -387,7 +386,7 @@ type AgenticRunSpec struct {
 
 	// ttlAfterTerminal is the time-to-live in seconds for this AgenticRun
 	// after it reaches a terminal state (Completed, Failed, Denied,
-	// Escalated, EmergencyStopped, NoActionRequired). When the TTL expires,
+	// Escalated, EmergencyStopped). When the TTL expires,
 	// the operator deletes the AgenticRun CR and Kubernetes garbage
 	// collection cascades deletion to owned resources.
 	//
@@ -436,7 +435,7 @@ type AgenticRunStatus struct {
 
 	// terminalTime is the timestamp when the run reached its current
 	// terminal state (Completed, Failed, Denied, Escalated,
-	// EmergencyStopped, NoActionRequired). Set once by the operator and not
+	// EmergencyStopped). Set once by the operator and not
 	// updated again while the run remains terminal; cleared when a
 	// revision request moves the run out of a terminal phase back into
 	// analysis, so a later terminal phase gets a fresh timestamp.
