@@ -6,7 +6,9 @@ import (
 	"testing"
 	"time"
 
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
@@ -18,6 +20,7 @@ import (
 type mockSandboxProvider struct {
 	claimName    string
 	claimErr     error
+	claimErrors  []error // per-call errors; takes precedence over claimErr when non-empty
 	releaseErr   error
 	claimCalls   int
 	releaseCalls int
@@ -25,6 +28,16 @@ type mockSandboxProvider struct {
 
 func (m *mockSandboxProvider) Create(_ context.Context, _ *agenticv1alpha1.AgenticRun, _ string, _ *agenticv1alpha1.Agent, _ *agenticv1alpha1.LLMProvider, _ *agenticv1alpha1.ToolsSpec, _ time.Duration, _ string, _ *agentContext) (string, error) {
 	m.claimCalls++
+	if len(m.claimErrors) > 0 {
+		idx := m.claimCalls - 1
+		if idx >= len(m.claimErrors) {
+			idx = len(m.claimErrors) - 1
+		}
+		if err := m.claimErrors[idx]; err != nil {
+			return "", err
+		}
+		return m.claimName, nil
+	}
 	return m.claimName, m.claimErr
 }
 func (m *mockSandboxProvider) Release(_ context.Context, _ *agenticv1alpha1.AgenticRun, _ string) error {
@@ -267,4 +280,61 @@ func (m *trackingMockSandbox) Release(_ context.Context, run *agenticv1alpha1.Ag
 		return fmt.Errorf("simulated release error for %s", claimName)
 	}
 	return nil
+}
+
+// --- Retry integration tests ---
+
+func TestSandboxAgentCaller_TransientRetryThenSuccess(t *testing.T) {
+	withFastRetry(t)
+	gr := schema.GroupResource{Group: "", Resource: "pods"}
+	sandbox := &mockSandboxProvider{
+		claimName: "ls-analysis-fix-crash",
+		claimErrors: []error{
+			apierrors.NewServerTimeout(gr, "create", 0),
+			nil,
+		},
+	}
+	run := testSandboxAgenticRun()
+	caller := newTestSandboxAgentCallerWithAgenticRun(sandbox, run)
+
+	err := caller.Analyze(context.Background(), run, testSandboxStep(), "Pod crashing")
+	if err != nil {
+		t.Fatalf("expected success after transient retry, got: %v", err)
+	}
+	if sandbox.claimCalls != 2 {
+		t.Errorf("expected 2 Create calls (1 transient + 1 success), got %d", sandbox.claimCalls)
+	}
+}
+
+func TestSandboxAgentCaller_PermanentErrorNoRetry(t *testing.T) {
+	withFastRetry(t)
+	sandbox := &mockSandboxProvider{
+		claimErr: apierrors.NewForbidden(schema.GroupResource{}, "x", fmt.Errorf("escalation")),
+	}
+	caller := newTestSandboxAgentCaller(sandbox)
+
+	err := caller.Analyze(context.Background(), testSandboxAgenticRun(), testSandboxStep(), "Pod crashing")
+	if err == nil {
+		t.Fatal("expected error for permanent failure")
+	}
+	if sandbox.claimCalls != 1 {
+		t.Errorf("permanent error should not retry, got %d calls", sandbox.claimCalls)
+	}
+}
+
+func TestSandboxAgentCaller_TransientExhaustsRetries(t *testing.T) {
+	withFastRetry(t)
+	gr := schema.GroupResource{Group: "", Resource: "pods"}
+	sandbox := &mockSandboxProvider{
+		claimErr: apierrors.NewServerTimeout(gr, "create", 0),
+	}
+	caller := newTestSandboxAgentCaller(sandbox)
+
+	err := caller.Analyze(context.Background(), testSandboxAgenticRun(), testSandboxStep(), "Pod crashing")
+	if err == nil {
+		t.Fatal("expected error after exhausting retries")
+	}
+	if sandbox.claimCalls != maxCreateRetries {
+		t.Errorf("expected %d Create calls, got %d", maxCreateRetries, sandbox.claimCalls)
+	}
 }

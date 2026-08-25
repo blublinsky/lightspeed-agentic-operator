@@ -166,8 +166,12 @@ func (s *SandboxAgentCaller) launchSandbox(
 	agentCtx *agentContext,
 ) error {
 	podDeadline := stepTimeout(stepName) + defaultSandboxTimeout
-	name, err := s.Sandbox.Create(ctx, run, stepName, step.Agent, step.LLM, step.Tools, podDeadline, query, agentCtx)
-	if err != nil {
+	var name string
+	if err := retryOnTransient(ctx, func() error {
+		var createErr error
+		name, createErr = s.Sandbox.Create(ctx, run, stepName, step.Agent, step.LLM, step.Tools, podDeadline, query, agentCtx)
+		return createErr
+	}); err != nil {
 		return fmt.Errorf("%s: %w", ErrClaimSandbox, err)
 	}
 

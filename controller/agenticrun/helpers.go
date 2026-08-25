@@ -5,11 +5,14 @@ import (
 	"context"
 	"embed"
 	"encoding/json"
+	stderrors "errors"
 	"fmt"
+	"net"
 	"reflect"
 	"text/template"
 	"time"
 
+	"k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
@@ -62,7 +65,60 @@ const (
 	LogKeyPhase     = "phase"
 	LogKeyClaim     = "claimName"
 	LogKeyCondition = "condition"
+
+	maxCreateRetries = 3
 )
+
+// retryBaseDelay is the base delay for exponential backoff between transient
+// retries. Package-level var so tests can override it.
+var retryBaseDelay = 5 * time.Second
+
+// isTransient returns true for Kubernetes API errors that are likely to
+// succeed on retry (server timeouts, throttling, temporary unavailability).
+func isTransient(err error) bool {
+	if err == nil {
+		return false
+	}
+	if errors.IsServerTimeout(err) || errors.IsTimeout(err) ||
+		errors.IsTooManyRequests(err) || errors.IsServiceUnavailable(err) ||
+		errors.IsInternalError(err) || errors.IsConflict(err) {
+		return true
+	}
+	var netErr net.Error
+	return stderrors.As(err, &netErr)
+}
+
+// retryBackoff returns the delay before the given attempt (1-indexed).
+// Uses exponential backoff: 5s, 10s, 20s, …
+func retryBackoff(attempt int) time.Duration {
+	return retryBaseDelay * (1 << (attempt - 1))
+}
+
+// retryOnTransient calls fn up to maxCreateRetries times, retrying only
+// when the error is transient. Permanent errors and context cancellation
+// are returned immediately.
+func retryOnTransient(ctx context.Context, fn func() error) error {
+	log := logf.FromContext(ctx)
+	var lastErr error
+	for attempt := 1; attempt <= maxCreateRetries; attempt++ {
+		if err := fn(); err == nil {
+			return nil
+		} else if !isTransient(err) {
+			return err
+		} else {
+			lastErr = err
+		}
+		log.Info("transient failure, retrying", "attempt", attempt, "maxRetries", maxCreateRetries, "error", lastErr)
+		if attempt < maxCreateRetries {
+			select {
+			case <-ctx.Done():
+				return ctx.Err()
+			case <-time.After(retryBackoff(attempt)):
+			}
+		}
+	}
+	return lastErr
+}
 
 func isSuspended(ctx context.Context, c client.Client) (bool, error) {
 	var config agenticv1alpha1.AgenticOLSConfig
