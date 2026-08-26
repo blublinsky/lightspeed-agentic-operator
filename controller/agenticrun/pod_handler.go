@@ -111,7 +111,7 @@ func (r *AgenticRunReconciler) completeStep(ctx context.Context, run *agenticv1a
 				}
 			}
 			log.Info("sandbox step succeeded", "reason", stepReason)
-			patchErr = r.patchStepResult(ctx, run, step, condType, resultCR.GetName(),
+			patchErr = r.patchStepResult(ctx, run, step, condType, resultCR.GetName(), resultCR,
 				metav1.ConditionTrue, stepReason, stepMsg)
 		} else if resultCR != nil {
 			log.Info("agent reported failure", "reason", reason)
@@ -121,9 +121,9 @@ func (r *AgenticRunReconciler) completeStep(ctx context.Context, run *agenticv1a
 				// escalates directly instead of retrying execution or terminating.
 				// Set Verified=False and Escalated=Unknown so DerivePhase routes to
 				// Escalating and the reconciler dispatches handleEscalation.
-				patchErr = r.patchVerificationFailedEscalating(ctx, run, resultCR.GetName(), reason)
+				patchErr = r.patchVerificationFailedEscalating(ctx, run, resultCR.GetName(), resultCR, reason)
 			} else {
-				patchErr = r.patchStepResult(ctx, run, step, condType, resultCR.GetName(),
+				patchErr = r.patchStepResult(ctx, run, step, condType, resultCR.GetName(), resultCR,
 					metav1.ConditionFalse, ReasonSandboxFailed, reason)
 			}
 		} else {
@@ -178,8 +178,10 @@ func (r *AgenticRunReconciler) patchStepCondition(ctx context.Context, run *agen
 }
 
 // patchStepResult patches both the result ref and the step condition in a single
-// status update so the reconciler sees them atomically.
-func (r *AgenticRunReconciler) patchStepResult(ctx context.Context, run *agenticv1alpha1.AgenticRun, step, condType, crName string, status metav1.ConditionStatus, reason, message string) error {
+// status update so the reconciler sees them atomically. The resultCR is the
+// already-loaded Result CR from validateResultCR — its tokenUsage is aggregated
+// into the run's cumulative total without a redundant API server fetch.
+func (r *AgenticRunReconciler) patchStepResult(ctx context.Context, run *agenticv1alpha1.AgenticRun, step, condType, crName string, resultCR client.Object, status metav1.ConditionStatus, reason, message string) error {
 	if condType == "" {
 		return nil
 	}
@@ -189,7 +191,7 @@ func (r *AgenticRunReconciler) patchStepResult(ctx context.Context, run *agentic
 		outcome = agenticv1alpha1.ActionOutcomeFailed
 	}
 	appendResultRef(run, step, crName, outcome)
-	aggregateTokenUsage(ctx, r.Client, run, step, crName, r.Namespace)
+	aggregateTokenUsage(run, resultCR)
 	meta.SetStatusCondition(&run.Status.Conditions, metav1.Condition{
 		Type:               condType,
 		Status:             status,
@@ -208,10 +210,10 @@ func (r *AgenticRunReconciler) patchStepResult(ctx context.Context, run *agentic
 // routes the run onto the escalation path (OLS-3817). It appends the verification
 // result ref and, in a single status patch, sets Verified=False/VerificationFailed
 // plus Escalated=Unknown/VerificationFailed so DerivePhase yields Escalating.
-func (r *AgenticRunReconciler) patchVerificationFailedEscalating(ctx context.Context, run *agenticv1alpha1.AgenticRun, crName, reason string) error {
+func (r *AgenticRunReconciler) patchVerificationFailedEscalating(ctx context.Context, run *agenticv1alpha1.AgenticRun, crName string, resultCR client.Object, reason string) error {
 	base := run.DeepCopy()
 	appendResultRef(run, "verification", crName, agenticv1alpha1.ActionOutcomeFailed)
-	aggregateTokenUsage(ctx, r.Client, run, "verification", crName, r.Namespace)
+	aggregateTokenUsage(run, resultCR)
 	meta.SetStatusCondition(&run.Status.Conditions, metav1.Condition{
 		Type:               agenticv1alpha1.AgenticRunConditionVerified,
 		Status:             metav1.ConditionFalse,
@@ -233,42 +235,12 @@ func (r *AgenticRunReconciler) patchVerificationFailedEscalating(ctx context.Con
 	return nil
 }
 
-// aggregateTokenUsage fetches the Result CR's tokenUsage and adds it to the
-// run's cumulative total. If the Result CR has no tokenUsage the run is left
-// unchanged. The run's TokenUsage is initialised on first non-zero contribution.
-func aggregateTokenUsage(ctx context.Context, c client.Client, run *agenticv1alpha1.AgenticRun, step, crName, namespace string) {
-	key := client.ObjectKey{Name: crName, Namespace: namespace}
-	var tu agenticv1alpha1.TokenUsage
-
-	switch step {
-	case "analysis":
-		cr := &agenticv1alpha1.AnalysisResult{}
-		if err := c.Get(ctx, key, cr); err != nil {
-			return
-		}
-		tu = cr.Status.TokenUsage
-	case "execution":
-		cr := &agenticv1alpha1.ExecutionResult{}
-		if err := c.Get(ctx, key, cr); err != nil {
-			return
-		}
-		tu = cr.Status.TokenUsage
-	case "verification":
-		cr := &agenticv1alpha1.VerificationResult{}
-		if err := c.Get(ctx, key, cr); err != nil {
-			return
-		}
-		tu = cr.Status.TokenUsage
-	case "escalation":
-		cr := &agenticv1alpha1.EscalationResult{}
-		if err := c.Get(ctx, key, cr); err != nil {
-			return
-		}
-		tu = cr.Status.TokenUsage
-	default:
-		return
-	}
-
+// aggregateTokenUsage extracts tokenUsage from the already-loaded Result CR
+// and adds it to the run's cumulative total. If the Result CR has no
+// tokenUsage (IsZero) the run is left unchanged. The run's TokenUsage is
+// initialised on first present contribution.
+func aggregateTokenUsage(run *agenticv1alpha1.AgenticRun, resultCR client.Object) {
+	tu := extractTokenUsage(resultCR)
 	if tu.IsZero() {
 		return
 	}
@@ -284,6 +256,22 @@ func aggregateTokenUsage(ctx context.Context, c client.Client, run *agenticv1alp
 	}
 	if tu.OutputTokens != nil {
 		*run.Status.TokenUsage.OutputTokens += *tu.OutputTokens
+	}
+}
+
+// extractTokenUsage returns the tokenUsage from a Result CR via type switch.
+func extractTokenUsage(obj client.Object) agenticv1alpha1.TokenUsage {
+	switch cr := obj.(type) {
+	case *agenticv1alpha1.AnalysisResult:
+		return cr.Status.TokenUsage
+	case *agenticv1alpha1.ExecutionResult:
+		return cr.Status.TokenUsage
+	case *agenticv1alpha1.VerificationResult:
+		return cr.Status.TokenUsage
+	case *agenticv1alpha1.EscalationResult:
+		return cr.Status.TokenUsage
+	default:
+		return agenticv1alpha1.TokenUsage{}
 	}
 }
 

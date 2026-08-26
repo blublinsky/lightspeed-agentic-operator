@@ -21,8 +21,8 @@ import (
 )
 
 // TokenUsage records the number of LLM tokens consumed during a step.
-// Both fields are set when the struct is present; the parent pointer
-// (*TokenUsage) gates presence.
+// Uses the omitzero / IsZero() pattern: the zero value (both fields nil)
+// is omitted from serialization; any non-nil field makes the struct present.
 //
 // +kubebuilder:validation:MinProperties=1
 type TokenUsage struct {
