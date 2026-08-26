@@ -14,6 +14,26 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 )
 
+// makeTokenUsage is a helper to build a TokenUsage value concisely.
+func makeTokenUsage(in, out int64) agenticv1alpha1.TokenUsage {
+	return agenticv1alpha1.TokenUsage{InputTokens: ptr.To(in), OutputTokens: ptr.To(out)}
+}
+
+// assertTokenUsage is a test helper that checks a TokenUsage value is present
+// (non-zero) and carries the expected input/output counts.
+func assertTokenUsage(t *testing.T, tu agenticv1alpha1.TokenUsage, wantInput, wantOutput int64) {
+	t.Helper()
+	if tu.IsZero() {
+		t.Fatal("expected non-zero tokenUsage")
+	}
+	if tu.InputTokens == nil || *tu.InputTokens != wantInput {
+		t.Errorf("inputTokens = %v, want %d", tu.InputTokens, wantInput)
+	}
+	if tu.OutputTokens == nil || *tu.OutputTokens != wantOutput {
+		t.Errorf("outputTokens = %v, want %d", tu.OutputTokens, wantOutput)
+	}
+}
+
 // newVerifyingReconciler drives a run through analysis and execution and parks it
 // in the Verifying phase with Verified=Unknown (verification sandbox launched but
 // not yet completed). It returns the reconciler, its fake client, and the run so a
@@ -201,9 +221,7 @@ func TestAggregateTokenUsage(t *testing.T) {
 		{
 			name: "init from zero — analysis",
 			resultCR: &agenticv1alpha1.AnalysisResult{
-				Status: agenticv1alpha1.AnalysisResultStatus{
-					TokenUsage: agenticv1alpha1.TokenUsage{InputTokens: ptr.To[int64](100), OutputTokens: ptr.To[int64](50)},
-				},
+				Status: agenticv1alpha1.AnalysisResultStatus{TokenUsage: makeTokenUsage(100, 50)},
 			},
 			wantInput:  100,
 			wantOutput: 50,
@@ -211,11 +229,9 @@ func TestAggregateTokenUsage(t *testing.T) {
 		{
 			name: "sum — execution",
 			resultCR: &agenticv1alpha1.ExecutionResult{
-				Status: agenticv1alpha1.ExecutionResultStatus{
-					TokenUsage: agenticv1alpha1.TokenUsage{InputTokens: ptr.To[int64](200), OutputTokens: ptr.To[int64](80)},
-				},
+				Status: agenticv1alpha1.ExecutionResultStatus{TokenUsage: makeTokenUsage(200, 80)},
 			},
-			initial:    agenticv1alpha1.TokenUsage{InputTokens: ptr.To[int64](100), OutputTokens: ptr.To[int64](50)},
+			initial:    makeTokenUsage(100, 50),
 			wantInput:  300,
 			wantOutput: 130,
 		},
@@ -231,16 +247,14 @@ func TestAggregateTokenUsage(t *testing.T) {
 			resultCR: &agenticv1alpha1.EscalationResult{
 				Status: agenticv1alpha1.EscalationResultStatus{},
 			},
-			initial:    agenticv1alpha1.TokenUsage{InputTokens: ptr.To[int64](100), OutputTokens: ptr.To[int64](50)},
+			initial:    makeTokenUsage(100, 50),
 			wantInput:  100,
 			wantOutput: 50,
 		},
 		{
 			name: "zero values treated as present",
 			resultCR: &agenticv1alpha1.AnalysisResult{
-				Status: agenticv1alpha1.AnalysisResultStatus{
-					TokenUsage: agenticv1alpha1.TokenUsage{InputTokens: ptr.To[int64](0), OutputTokens: ptr.To[int64](0)},
-				},
+				Status: agenticv1alpha1.AnalysisResultStatus{TokenUsage: makeTokenUsage(0, 0)},
 			},
 			wantInput:  0,
 			wantOutput: 0,
@@ -263,27 +277,17 @@ func TestAggregateTokenUsage(t *testing.T) {
 				}
 				return
 			}
-			if run.Status.TokenUsage.IsZero() {
-				t.Fatal("expected non-zero tokenUsage")
-			}
-			if run.Status.TokenUsage.InputTokens == nil || *run.Status.TokenUsage.InputTokens != tt.wantInput {
-				t.Errorf("inputTokens = %v, want %d", run.Status.TokenUsage.InputTokens, tt.wantInput)
-			}
-			if run.Status.TokenUsage.OutputTokens == nil || *run.Status.TokenUsage.OutputTokens != tt.wantOutput {
-				t.Errorf("outputTokens = %v, want %d", run.Status.TokenUsage.OutputTokens, tt.wantOutput)
-			}
+			assertTokenUsage(t, run.Status.TokenUsage, tt.wantInput, tt.wantOutput)
 		})
 	}
 }
 
-// TestCompleteStep_VerificationSuccess_AggregatesTokenUsage exercises the
-// integration path: after a successful verification with tokenUsage on the
-// VerificationResult CR, the run's cumulative tokenUsage is updated.
-func TestCompleteStep_VerificationSuccess_AggregatesTokenUsage(t *testing.T) {
+// setupVerificationResultCR creates a VerificationResult CR with tokenUsage,
+// named exactly as validateResultCR expects. Shared fixture for the table-driven
+// TestCompleteStep_AggregatesTokenUsage.
+func setupVerificationResultCR(t *testing.T, r *AgenticRunReconciler, run *agenticv1alpha1.AgenticRun, outcome agenticv1alpha1.ActionOutcome, checks []agenticv1alpha1.VerifyCheck, summary string, tu agenticv1alpha1.TokenUsage) {
+	t.Helper()
 	ctx := context.Background()
-	r, run := newVerifyingReconciler(t)
-
-	// Create a VerificationResult CR with tokenUsage.
 	now := metav1.Now()
 	crName := resultCRName(run.Name, "verification", nextResultIndex(run, "verification"))
 	cr := &agenticv1alpha1.VerificationResult{
@@ -298,91 +302,74 @@ func TestCompleteStep_VerificationSuccess_AggregatesTokenUsage(t *testing.T) {
 		t.Fatalf("create VerificationResult: %v", err)
 	}
 	cr.Status = agenticv1alpha1.VerificationResultStatus{
-		Checks:     []agenticv1alpha1.VerifyCheck{{Name: "pod-running", Source: "oc", Value: "Running", Result: agenticv1alpha1.CheckResultPassed}},
-		Summary:    "Pod healthy",
-		Conditions: resultConditions(&now, now, agenticv1alpha1.ActionOutcomeSucceeded),
-		TokenUsage: agenticv1alpha1.TokenUsage{InputTokens: ptr.To[int64](500), OutputTokens: ptr.To[int64](200)},
+		Checks:     checks,
+		Summary:    summary,
+		Conditions: resultConditions(&now, now, outcome),
+		TokenUsage: tu,
 	}
 	if err := r.Status().Update(ctx, cr); err != nil {
 		t.Fatalf("update VerificationResult status: %v", err)
-	}
-
-	pod := &corev1.Pod{Status: corev1.PodStatus{Phase: corev1.PodSucceeded}}
-	if err := r.completeStep(ctx, run, pod, "verification", stepConditionType("verification"), ""); err != nil {
-		t.Fatalf("completeStep: %v", err)
-	}
-
-	got, err := getAgenticRun(r, "fix-crash")
-	if err != nil {
-		t.Fatalf("get run: %v", err)
-	}
-
-	if got.Status.TokenUsage.IsZero() {
-		t.Fatal("expected non-zero tokenUsage on run after step completion")
-	}
-	if got.Status.TokenUsage.InputTokens == nil || *got.Status.TokenUsage.InputTokens != 500 {
-		t.Errorf("inputTokens = %v, want 500", got.Status.TokenUsage.InputTokens)
-	}
-	if got.Status.TokenUsage.OutputTokens == nil || *got.Status.TokenUsage.OutputTokens != 200 {
-		t.Errorf("outputTokens = %v, want 200", got.Status.TokenUsage.OutputTokens)
 	}
 }
 
-// TestCompleteStep_VerificationFailedEscalating_AggregatesTokenUsage exercises
-// the verification-failed → escalating path: a VerificationResult with
-// tokenUsage triggers aggregation into the run's cumulative tokenUsage even
-// when the verification reports a failure and the run escalates.
-func TestCompleteStep_VerificationFailedEscalating_AggregatesTokenUsage(t *testing.T) {
-	ctx := context.Background()
-	r, run := newVerifyingReconciler(t)
-
-	// Create a VerificationResult CR with tokenUsage that reports failure.
-	now := metav1.Now()
-	crName := resultCRName(run.Name, "verification", nextResultIndex(run, "verification"))
-	cr := &agenticv1alpha1.VerificationResult{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:            crName,
-			Namespace:       "default",
-			Labels:          resultLabels(string(run.UID), "verification"),
-			OwnerReferences: []metav1.OwnerReference{agenticRunOwnerRef(run)},
+// TestCompleteStep_AggregatesTokenUsage exercises the integration path for
+// tokenUsage aggregation through completeStep on both the success and
+// verification-failed → escalating paths.
+func TestCompleteStep_AggregatesTokenUsage(t *testing.T) {
+	tests := []struct {
+		name       string
+		outcome    agenticv1alpha1.ActionOutcome
+		checks     []agenticv1alpha1.VerifyCheck
+		summary    string
+		tu         agenticv1alpha1.TokenUsage
+		wantPhase  agenticv1alpha1.AgenticRunPhase
+		wantInput  int64
+		wantOutput int64
+	}{
+		{
+			name:       "success path",
+			outcome:    agenticv1alpha1.ActionOutcomeSucceeded,
+			checks:     []agenticv1alpha1.VerifyCheck{{Name: "pod-running", Source: "oc", Value: "Running", Result: agenticv1alpha1.CheckResultPassed}},
+			summary:    "Pod healthy",
+			tu:         makeTokenUsage(500, 200),
+			wantPhase:  agenticv1alpha1.AgenticRunPhaseCompleted,
+			wantInput:  500,
+			wantOutput: 200,
+		},
+		{
+			name:       "verification-failed escalating path",
+			outcome:    agenticv1alpha1.ActionOutcomeFailed,
+			checks:     []agenticv1alpha1.VerifyCheck{{Name: "pod-running", Source: "oc", Value: "CrashLoopBackOff", Result: agenticv1alpha1.CheckResultFailed}},
+			summary:    "Pod still crashing",
+			tu:         makeTokenUsage(300, 120),
+			wantPhase:  agenticv1alpha1.AgenticRunPhaseEscalating,
+			wantInput:  300,
+			wantOutput: 120,
 		},
 	}
-	if err := r.Create(ctx, cr); err != nil {
-		t.Fatalf("create VerificationResult: %v", err)
-	}
-	cr.Status = agenticv1alpha1.VerificationResultStatus{
-		Checks:     []agenticv1alpha1.VerifyCheck{{Name: "pod-running", Source: "oc", Value: "CrashLoopBackOff", Result: agenticv1alpha1.CheckResultFailed}},
-		Summary:    "Pod still crashing",
-		Conditions: resultConditions(&now, now, agenticv1alpha1.ActionOutcomeFailed),
-		TokenUsage: agenticv1alpha1.TokenUsage{InputTokens: ptr.To[int64](300), OutputTokens: ptr.To[int64](120)},
-	}
-	if err := r.Status().Update(ctx, cr); err != nil {
-		t.Fatalf("update VerificationResult status: %v", err)
-	}
 
-	pod := &corev1.Pod{Status: corev1.PodStatus{Phase: corev1.PodSucceeded}}
-	if err := r.completeStep(ctx, run, pod, "verification", stepConditionType("verification"), ""); err != nil {
-		t.Fatalf("completeStep: %v", err)
-	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ctx := context.Background()
+			r, run := newVerifyingReconciler(t)
 
-	got, err := getAgenticRun(r, "fix-crash")
-	if err != nil {
-		t.Fatalf("get run: %v", err)
-	}
+			setupVerificationResultCR(t, r, run, tt.outcome, tt.checks, tt.summary, tt.tu)
 
-	// Verify run escalated.
-	if phase := agenticv1alpha1.DerivePhase(got.Status.Conditions); phase != agenticv1alpha1.AgenticRunPhaseEscalating {
-		t.Fatalf("expected Escalating, got %s", phase)
-	}
-	// Verify tokenUsage was aggregated.
-	if got.Status.TokenUsage.IsZero() {
-		t.Fatal("expected non-zero tokenUsage on run after verification-failed escalation")
-	}
-	if got.Status.TokenUsage.InputTokens == nil || *got.Status.TokenUsage.InputTokens != 300 {
-		t.Errorf("inputTokens = %v, want 300", got.Status.TokenUsage.InputTokens)
-	}
-	if got.Status.TokenUsage.OutputTokens == nil || *got.Status.TokenUsage.OutputTokens != 120 {
-		t.Errorf("outputTokens = %v, want 120", got.Status.TokenUsage.OutputTokens)
+			pod := &corev1.Pod{Status: corev1.PodStatus{Phase: corev1.PodSucceeded}}
+			if err := r.completeStep(ctx, run, pod, "verification", stepConditionType("verification"), ""); err != nil {
+				t.Fatalf("completeStep: %v", err)
+			}
+
+			got, err := getAgenticRun(r, "fix-crash")
+			if err != nil {
+				t.Fatalf("get run: %v", err)
+			}
+
+			if phase := agenticv1alpha1.DerivePhase(got.Status.Conditions); phase != tt.wantPhase {
+				t.Fatalf("expected %s, got %s", tt.wantPhase, phase)
+			}
+			assertTokenUsage(t, got.Status.TokenUsage, tt.wantInput, tt.wantOutput)
+		})
 	}
 }
 

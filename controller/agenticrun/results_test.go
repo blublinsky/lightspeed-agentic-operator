@@ -6,7 +6,6 @@ import (
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
-	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
@@ -402,61 +401,39 @@ func TestCreateIdempotent_ExecutionResult(t *testing.T) {
 }
 
 func TestCopyResultStatus_CopiesTokenUsage(t *testing.T) {
-	tu := agenticv1alpha1.TokenUsage{InputTokens: ptr.To[int64](100), OutputTokens: ptr.To[int64](50)}
+	tu := makeTokenUsage(100, 50)
 
 	tests := []struct {
 		name string
 		src  client.Object
 		dst  client.Object
-		get  func(client.Object) agenticv1alpha1.TokenUsage
 	}{
 		{
 			name: "AnalysisResult",
 			src:  &agenticv1alpha1.AnalysisResult{Status: agenticv1alpha1.AnalysisResultStatus{TokenUsage: tu}},
 			dst:  &agenticv1alpha1.AnalysisResult{},
-			get: func(o client.Object) agenticv1alpha1.TokenUsage {
-				return o.(*agenticv1alpha1.AnalysisResult).Status.TokenUsage
-			},
 		},
 		{
 			name: "ExecutionResult",
 			src:  &agenticv1alpha1.ExecutionResult{Status: agenticv1alpha1.ExecutionResultStatus{TokenUsage: tu}},
 			dst:  &agenticv1alpha1.ExecutionResult{},
-			get: func(o client.Object) agenticv1alpha1.TokenUsage {
-				return o.(*agenticv1alpha1.ExecutionResult).Status.TokenUsage
-			},
 		},
 		{
 			name: "VerificationResult",
 			src:  &agenticv1alpha1.VerificationResult{Status: agenticv1alpha1.VerificationResultStatus{TokenUsage: tu}},
 			dst:  &agenticv1alpha1.VerificationResult{},
-			get: func(o client.Object) agenticv1alpha1.TokenUsage {
-				return o.(*agenticv1alpha1.VerificationResult).Status.TokenUsage
-			},
 		},
 		{
 			name: "EscalationResult",
 			src:  &agenticv1alpha1.EscalationResult{Status: agenticv1alpha1.EscalationResultStatus{TokenUsage: tu}},
 			dst:  &agenticv1alpha1.EscalationResult{},
-			get: func(o client.Object) agenticv1alpha1.TokenUsage {
-				return o.(*agenticv1alpha1.EscalationResult).Status.TokenUsage
-			},
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			copyResultStatus(tt.dst, tt.src)
-			got := tt.get(tt.dst)
-			if got.IsZero() {
-				t.Fatal("tokenUsage not copied")
-			}
-			if got.InputTokens == nil || *got.InputTokens != 100 {
-				t.Errorf("inputTokens = %v, want 100", got.InputTokens)
-			}
-			if got.OutputTokens == nil || *got.OutputTokens != 50 {
-				t.Errorf("outputTokens = %v, want 50", got.OutputTokens)
-			}
+			assertTokenUsage(t, extractTokenUsage(tt.dst), 100, 50)
 		})
 	}
 }
