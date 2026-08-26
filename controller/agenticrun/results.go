@@ -289,12 +289,14 @@ func copyResultStatus(dst, src client.Object) {
 			d.Status.Options = s.Status.Options
 			d.Status.ActionRequired = s.Status.ActionRequired
 			d.Status.Diagnosis = s.Status.Diagnosis
+			d.Status.TokenUsage = s.Status.TokenUsage
 			d.Status.FailureReason = s.Status.FailureReason
 			d.Status.Sandbox = s.Status.Sandbox
 		}
 	case *agenticv1alpha1.ExecutionResult:
 		if s, ok := src.(*agenticv1alpha1.ExecutionResult); ok {
 			d.Status.ActionsTaken = s.Status.ActionsTaken
+			d.Status.TokenUsage = s.Status.TokenUsage
 			d.Status.FailureReason = s.Status.FailureReason
 			d.Status.Sandbox = s.Status.Sandbox
 		}
@@ -302,6 +304,7 @@ func copyResultStatus(dst, src client.Object) {
 		if s, ok := src.(*agenticv1alpha1.VerificationResult); ok {
 			d.Status.Checks = s.Status.Checks
 			d.Status.Summary = s.Status.Summary
+			d.Status.TokenUsage = s.Status.TokenUsage
 			d.Status.FailureReason = s.Status.FailureReason
 			d.Status.Sandbox = s.Status.Sandbox
 		}
@@ -309,6 +312,7 @@ func copyResultStatus(dst, src client.Object) {
 		if s, ok := src.(*agenticv1alpha1.EscalationResult); ok {
 			d.Status.Summary = s.Status.Summary
 			d.Status.Content = s.Status.Content
+			d.Status.TokenUsage = s.Status.TokenUsage
 			d.Status.FailureReason = s.Status.FailureReason
 			d.Status.Sandbox = s.Status.Sandbox
 		}

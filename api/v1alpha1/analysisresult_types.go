@@ -20,6 +20,28 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
+// TokenUsage records the number of LLM tokens consumed during a step.
+// Both fields are set when the struct is present; the parent pointer
+// (*TokenUsage) gates presence.
+//
+// +kubebuilder:validation:MinProperties=1
+type TokenUsage struct {
+	// inputTokens is the number of input (prompt) tokens consumed.
+	// +required
+	// +kubebuilder:validation:Minimum=0
+	InputTokens *int64 `json:"inputTokens,omitempty"`
+	// outputTokens is the number of output (completion) tokens consumed.
+	// +required
+	// +kubebuilder:validation:Minimum=0
+	OutputTokens *int64 `json:"outputTokens,omitempty"`
+}
+
+// IsZero returns true when both token counts are nil, making the struct
+// compatible with the omitzero JSON tag.
+func (t TokenUsage) IsZero() bool {
+	return t.InputTokens == nil && t.OutputTokens == nil
+}
+
 // ActionRequiredValue is a string enum indicating whether the analysis
 // determined that remediation action is required. Uses string values
 // "True"/"False" instead of a boolean to satisfy the kube-api-linter
@@ -76,6 +98,10 @@ type AnalysisResultStatus struct {
 	// sandbox tracks the sandbox pod used for this analysis.
 	// +optional
 	Sandbox SandboxInfo `json:"sandbox,omitzero"`
+
+	// tokenUsage records the number of LLM tokens consumed during this step.
+	// +optional
+	TokenUsage TokenUsage `json:"tokenUsage,omitzero"`
 
 	// failureReason is populated when the step failed due to a system error.
 	// +optional

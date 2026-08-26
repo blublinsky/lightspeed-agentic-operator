@@ -189,6 +189,7 @@ func (r *AgenticRunReconciler) patchStepResult(ctx context.Context, run *agentic
 		outcome = agenticv1alpha1.ActionOutcomeFailed
 	}
 	appendResultRef(run, step, crName, outcome)
+	aggregateTokenUsage(ctx, r.Client, run, step, crName, r.Namespace)
 	meta.SetStatusCondition(&run.Status.Conditions, metav1.Condition{
 		Type:               condType,
 		Status:             status,
@@ -210,6 +211,7 @@ func (r *AgenticRunReconciler) patchStepResult(ctx context.Context, run *agentic
 func (r *AgenticRunReconciler) patchVerificationFailedEscalating(ctx context.Context, run *agenticv1alpha1.AgenticRun, crName, reason string) error {
 	base := run.DeepCopy()
 	appendResultRef(run, "verification", crName, agenticv1alpha1.ActionOutcomeFailed)
+	aggregateTokenUsage(ctx, r.Client, run, "verification", crName, r.Namespace)
 	meta.SetStatusCondition(&run.Status.Conditions, metav1.Condition{
 		Type:               agenticv1alpha1.AgenticRunConditionVerified,
 		Status:             metav1.ConditionFalse,
@@ -229,6 +231,60 @@ func (r *AgenticRunReconciler) patchVerificationFailedEscalating(ctx context.Con
 		return err
 	}
 	return nil
+}
+
+// aggregateTokenUsage fetches the Result CR's tokenUsage and adds it to the
+// run's cumulative total. If the Result CR has no tokenUsage the run is left
+// unchanged. The run's TokenUsage is initialised on first non-zero contribution.
+func aggregateTokenUsage(ctx context.Context, c client.Client, run *agenticv1alpha1.AgenticRun, step, crName, namespace string) {
+	key := client.ObjectKey{Name: crName, Namespace: namespace}
+	var tu agenticv1alpha1.TokenUsage
+
+	switch step {
+	case "analysis":
+		cr := &agenticv1alpha1.AnalysisResult{}
+		if err := c.Get(ctx, key, cr); err != nil {
+			return
+		}
+		tu = cr.Status.TokenUsage
+	case "execution":
+		cr := &agenticv1alpha1.ExecutionResult{}
+		if err := c.Get(ctx, key, cr); err != nil {
+			return
+		}
+		tu = cr.Status.TokenUsage
+	case "verification":
+		cr := &agenticv1alpha1.VerificationResult{}
+		if err := c.Get(ctx, key, cr); err != nil {
+			return
+		}
+		tu = cr.Status.TokenUsage
+	case "escalation":
+		cr := &agenticv1alpha1.EscalationResult{}
+		if err := c.Get(ctx, key, cr); err != nil {
+			return
+		}
+		tu = cr.Status.TokenUsage
+	default:
+		return
+	}
+
+	if tu.IsZero() {
+		return
+	}
+
+	if run.Status.TokenUsage.IsZero() {
+		run.Status.TokenUsage = agenticv1alpha1.TokenUsage{
+			InputTokens:  new(int64),
+			OutputTokens: new(int64),
+		}
+	}
+	if tu.InputTokens != nil {
+		*run.Status.TokenUsage.InputTokens += *tu.InputTokens
+	}
+	if tu.OutputTokens != nil {
+		*run.Status.TokenUsage.OutputTokens += *tu.OutputTokens
+	}
 }
 
 // appendResultRef appends a StepResultRef to the run's status for the given step.

@@ -433,6 +433,11 @@ type AgenticRunStatus struct {
 	// +optional
 	Steps StepsStatus `json:"steps,omitzero"`
 
+	// tokenUsage is the cumulative token usage across all completed steps.
+	// Absent when no steps have completed with token data.
+	// +optional
+	TokenUsage TokenUsage `json:"tokenUsage,omitzero"`
+
 	// terminalTime is the timestamp when the run reached its current
 	// terminal state (Completed, Failed, Denied, Escalated,
 	// EmergencyStopped). Set once by the operator and not
