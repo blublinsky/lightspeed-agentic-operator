@@ -28,8 +28,8 @@ func TestBuildInputConfigMap(t *testing.T) {
 	if err != nil {
 		t.Fatalf("buildInputConfigMap: %v", err)
 	}
-	if cm.Name != "uid-aaaa-bbbb" {
-		t.Errorf("name = %q, want run UID", cm.Name)
+	if cm.Name != "ls-analysis-uid-aaaa-bbbb" {
+		t.Errorf("name = %q, want ls-analysis-uid-aaaa-bbbb", cm.Name)
 	}
 	if cm.Namespace != "op-ns" {
 		t.Errorf("namespace = %q, want op-ns", cm.Namespace)

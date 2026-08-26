@@ -18,8 +18,13 @@ const (
 	ErrUnknownStep           = "unknown step"
 )
 
+// inputConfigMapName returns the per-step ConfigMap name: ls-{step}-{uid}.
+func inputConfigMapName(step string, uid string) string {
+	return fmt.Sprintf("ls-%s-%s", step, uid)
+}
+
 // buildInputConfigMap builds the batch input ConfigMap for a step (rule 7).
-// Name is the AgenticRun UID. Caller creates it in the operator namespace.
+// Name is ls-{step}-{uid}, unique per step to prevent GC conflicts.
 func buildInputConfigMap(
 	operatorNamespace string,
 	run *agenticv1alpha1.AgenticRun,
@@ -41,7 +46,7 @@ func buildInputConfigMap(
 	}
 	return &corev1.ConfigMap{
 		ObjectMeta: metav1.ObjectMeta{
-			Name:      string(run.UID),
+			Name:      inputConfigMapName(step, string(run.UID)),
 			Namespace: operatorNamespace,
 			Labels: map[string]string{
 				LabelRun:  string(run.UID),

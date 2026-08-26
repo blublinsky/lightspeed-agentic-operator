@@ -144,7 +144,7 @@ func TestCreate_BarePod(t *testing.T) {
 
 	var cm corev1.ConfigMap
 	run := testSMRun()
-	if err := fc.Get(context.Background(), types.NamespacedName{Name: string(run.UID), Namespace: "test-ns"}, &cm); err != nil {
+	if err := fc.Get(context.Background(), types.NamespacedName{Name: inputConfigMapName("analysis", string(run.UID)), Namespace: "test-ns"}, &cm); err != nil {
 		t.Fatalf("input ConfigMap not found: %v", err)
 	}
 	if cm.Data[inputConfigMapKeyQuery] != "test query" {
