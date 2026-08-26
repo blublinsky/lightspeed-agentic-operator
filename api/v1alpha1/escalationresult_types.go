@@ -50,6 +50,10 @@ type EscalationResultStatus struct {
 	// +optional
 	Sandbox SandboxInfo `json:"sandbox,omitzero"`
 
+	// tokenUsage records the number of LLM tokens consumed during this step.
+	// +optional
+	TokenUsage TokenUsage `json:"tokenUsage,omitzero"`
+
 	// failureReason is populated when the step failed due to a system error.
 	// +optional
 	// +kubebuilder:validation:MinLength=1

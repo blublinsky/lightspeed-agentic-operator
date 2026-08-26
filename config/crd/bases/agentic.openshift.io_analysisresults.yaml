@@ -657,6 +657,27 @@ spec:
                 - claimName
                 - namespace
                 type: object
+              tokenUsage:
+                description: tokenUsage records the number of LLM tokens consumed
+                  during this step.
+                minProperties: 1
+                properties:
+                  inputTokens:
+                    description: inputTokens is the number of input (prompt) tokens
+                      consumed.
+                    format: int64
+                    minimum: 0
+                    type: integer
+                  outputTokens:
+                    description: outputTokens is the number of output (completion)
+                      tokens consumed.
+                    format: int64
+                    minimum: 0
+                    type: integer
+                required:
+                - inputTokens
+                - outputTokens
+                type: object
             type: object
         required:
         - spec

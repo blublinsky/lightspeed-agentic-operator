@@ -6,6 +6,7 @@ import (
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
 	agenticv1alpha1 "github.com/openshift/lightspeed-agentic-operator/api/v1alpha1"
@@ -396,5 +397,43 @@ func TestCreateIdempotent_ExecutionResult(t *testing.T) {
 	}
 	if got.Status.ActionsTaken[0].Type != "patch" {
 		t.Errorf("action type = %q, want patch", got.Status.ActionsTaken[0].Type)
+	}
+}
+
+func TestCopyResultStatus_CopiesTokenUsage(t *testing.T) {
+	tu := makeTokenUsage(100, 50)
+
+	tests := []struct {
+		name string
+		src  client.Object
+		dst  client.Object
+	}{
+		{
+			name: "AnalysisResult",
+			src:  &agenticv1alpha1.AnalysisResult{Status: agenticv1alpha1.AnalysisResultStatus{TokenUsage: tu}},
+			dst:  &agenticv1alpha1.AnalysisResult{},
+		},
+		{
+			name: "ExecutionResult",
+			src:  &agenticv1alpha1.ExecutionResult{Status: agenticv1alpha1.ExecutionResultStatus{TokenUsage: tu}},
+			dst:  &agenticv1alpha1.ExecutionResult{},
+		},
+		{
+			name: "VerificationResult",
+			src:  &agenticv1alpha1.VerificationResult{Status: agenticv1alpha1.VerificationResultStatus{TokenUsage: tu}},
+			dst:  &agenticv1alpha1.VerificationResult{},
+		},
+		{
+			name: "EscalationResult",
+			src:  &agenticv1alpha1.EscalationResult{Status: agenticv1alpha1.EscalationResultStatus{TokenUsage: tu}},
+			dst:  &agenticv1alpha1.EscalationResult{},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			copyResultStatus(tt.dst, tt.src)
+			assertTokenUsage(t, extractTokenUsage(tt.dst), 100, 50)
+		})
 	}
 }

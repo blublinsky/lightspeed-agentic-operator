@@ -2296,6 +2296,28 @@ spec:
                   should be garbage-collected.
                 format: date-time
                 type: string
+              tokenUsage:
+                description: |-
+                  tokenUsage is the cumulative token usage across all completed steps.
+                  Absent when no steps have completed with token data.
+                minProperties: 1
+                properties:
+                  inputTokens:
+                    description: inputTokens is the number of input (prompt) tokens
+                      consumed.
+                    format: int64
+                    minimum: 0
+                    type: integer
+                  outputTokens:
+                    description: outputTokens is the number of output (completion)
+                      tokens consumed.
+                    format: int64
+                    minimum: 0
+                    type: integer
+                required:
+                - inputTokens
+                - outputTokens
+                type: object
             type: object
         required:
         - spec
