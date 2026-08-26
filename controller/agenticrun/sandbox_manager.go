@@ -9,6 +9,7 @@ import (
 
 	"go.opentelemetry.io/otel/trace"
 	corev1 "k8s.io/api/core/v1"
+	rbacv1 "k8s.io/api/rbac/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
@@ -110,15 +111,26 @@ func (m *SandboxManager) Create(
 	}
 	span.AddEvent("sandbox.sa.created")
 
+	// After this point, K8s resources are created. If any subsequent step
+	// fails before the pod exists, clean up to avoid orphans.
+	var createErr error
+	defer func() {
+		if createErr != nil {
+			m.cleanupOnCreateFailure(ctx, run, step, serviceAccount)
+		}
+	}()
+
 	if step == "execution" && agentCtx != nil && agentCtx.ApprovedOption != nil {
 		rbac := &agentCtx.ApprovedOption.RBAC
 		if len(rbac.NamespaceScoped) > 0 || len(rbac.ClusterScoped) > 0 {
 			base := run.DeepCopy()
 			if err := ensureExecutionRBAC(ctx, m.client, run, rbac, m.namespace); err != nil {
+				createErr = err
 				return "", err
 			}
 			if err := m.client.Patch(ctx, run, client.MergeFrom(base)); err != nil {
-				return "", fmt.Errorf("persist RBAC annotation: %w", err)
+				createErr = fmt.Errorf("persist RBAC annotation: %w", err)
+				return "", createErr
 			}
 		}
 	}
@@ -126,14 +138,17 @@ func (m *SandboxManager) Create(
 	schema := outputSchemaForStep(step, run)
 	inputCM, err := buildInputConfigMap(m.namespace, run, step, query, schema, agentCtx)
 	if err != nil {
+		createErr = err
 		return "", err
 	}
 	if err := m.createInputConfigMap(ctx, inputCM); err != nil {
+		createErr = err
 		return "", err
 	}
 	span.AddEvent("sandbox.configmap.created")
 
 	if err := ensureResultRBAC(ctx, m.client, run, step, serviceAccount, m.namespace); err != nil {
+		createErr = err
 		return "", err
 	}
 	span.AddEvent("sandbox.rbac.created")
@@ -152,7 +167,8 @@ func (m *SandboxManager) Create(
 		traceparentFromContext(ctx),
 	)
 	if err != nil {
-		return "", fmt.Errorf("%s: %w", errBuildPodSpec, err)
+		createErr = fmt.Errorf("%s: %w", errBuildPodSpec, err)
+		return "", createErr
 	}
 
 	if deadline > 0 {
@@ -165,6 +181,7 @@ func (m *SandboxManager) Create(
 	if cfg.Sandbox.Mode == sandboxModeSandboxClaim {
 		claimName, claimUID, err := m.createSandboxClaim(ctx, run, name, step, podSpec)
 		if err != nil {
+			createErr = err
 			return "", err
 		}
 		ownerRef = metav1.OwnerReference{
@@ -177,6 +194,7 @@ func (m *SandboxManager) Create(
 	} else {
 		podName, podUID, err := m.createBarePod(ctx, run, name, step, podSpec)
 		if err != nil {
+			createErr = err
 			return "", err
 		}
 		ownerRef = metav1.OwnerReference{
@@ -190,7 +208,7 @@ func (m *SandboxManager) Create(
 
 	span.AddEvent("sandbox.pod.created")
 
-	if err := m.setInputConfigMapOwner(ctx, string(run.UID), ownerRef); err != nil {
+	if err := m.setInputConfigMapOwner(ctx, inputConfigMapName(step, string(run.UID)), ownerRef); err != nil {
 		return "", err
 	}
 	if err := setResultRBACOwner(ctx, m.client, string(run.UID), step, ownerRef, m.namespace); err != nil {
@@ -231,6 +249,42 @@ func (m *SandboxManager) setSAOwner(ctx context.Context, saName string, owner me
 		return fmt.Errorf("set owner on sandbox SA %s: %w", saName, err)
 	}
 	return nil
+}
+
+// cleanupOnCreateFailure removes resources created during Create() before the
+// pod existed (ConfigMap, result RBAC, SA). Best-effort: logs errors but does
+// not return them — the original creation error takes priority.
+func (m *SandboxManager) cleanupOnCreateFailure(ctx context.Context, run *agenticv1alpha1.AgenticRun, step, serviceAccount string) {
+	log := logf.FromContext(ctx)
+	cmName := inputConfigMapName(step, string(run.UID))
+	cm := &corev1.ConfigMap{}
+	cm.Name = cmName
+	cm.Namespace = m.namespace
+	if err := m.client.Delete(ctx, cm); err != nil && !apierrors.IsNotFound(err) {
+		log.Error(err, "cleanup: failed to delete input ConfigMap", LogKeyName, cmName)
+	}
+	roleName := resultRoleName(string(run.UID), step)
+	role := &rbacv1.Role{ObjectMeta: metav1.ObjectMeta{Name: roleName, Namespace: m.namespace}}
+	if err := m.client.Delete(ctx, role); err != nil && !apierrors.IsNotFound(err) {
+		log.Error(err, "cleanup: failed to delete result Role", LogKeyName, roleName)
+	}
+	rb := &rbacv1.RoleBinding{ObjectMeta: metav1.ObjectMeta{Name: roleName, Namespace: m.namespace}}
+	if err := m.client.Delete(ctx, rb); err != nil && !apierrors.IsNotFound(err) {
+		log.Error(err, "cleanup: failed to delete result RoleBinding", LogKeyName, roleName)
+	}
+	if step == "execution" {
+		if err := cleanupExecutionRBAC(ctx, m.client, run); err != nil {
+			log.Error(err, "cleanup: failed to delete execution RBAC")
+		}
+	}
+	if serviceAccount != "" {
+		sa := &corev1.ServiceAccount{}
+		sa.Name = serviceAccount
+		sa.Namespace = m.namespace
+		if err := m.client.Delete(ctx, sa); err != nil && !apierrors.IsNotFound(err) {
+			log.Error(err, "cleanup: failed to delete SA", LogKeyName, serviceAccount)
+		}
+	}
 }
 
 // setInputConfigMapOwner replaces the owner refs on the input ConfigMap with
