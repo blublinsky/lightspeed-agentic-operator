@@ -17,7 +17,7 @@ Jira tracking: OLS-3018 (base kill switch), OLS-3267 (hardening).
 ### Emergency Suspension (`spec.suspended`)
 
 5. **Activation**: Setting `spec.suspended` to `true` MUST immediately prevent the run reconciler from starting any new workflow steps (analysis, execution, verification, escalation) for any run cluster-wide.
-6. **In-flight termination**: When `spec.suspended` becomes `true`, all non-terminal runs MUST be terminated: sandbox pods MUST be released via `Agent.ReleaseSandboxes` (which handles pod deletion, SA cleanup, reader CRB subject removal, and execution RBAC cleanup via `SandboxManager.Release`), and the `EmergencyStopped` condition MUST be set on each run.
+6. **In-flight termination**: When `spec.suspended` becomes `true`, all non-terminal runs MUST be terminated with `EmergencyStopped`. The operator MUST invoke the shared hard-stop contract: revoke sandbox ServiceAccount access and execution RBAC, delete bare Pods with zero grace, delete SandboxClaims, and terminate active backing Pods. Cleanup MUST use both run status and managed-resource discovery; cleanup errors remain retryable after the run condition is written. See `agentic-run-termination.md`.
 7. **EmergencyStopped condition**: The operator MUST set condition type `EmergencyStopped` with status `True`, reason `SystemSuspended`, and message `"Terminated by system kill switch (AgenticOLSConfig.spec.suspended=true)"`.
 8. **EmergencyStopped is terminal — no automatic restart**: `EmergencyStopped` is a terminal phase. Runs in this state MUST NOT resume when `spec.suspended` is set back to `false`. To retry work, the admin creates new runs. This is a safety invariant: the kill switch exists for emergencies where agent behavior is harmful, so automatically restarting the same runs that caused the emergency would re-introduce the exact problem the admin stopped. Resumption MUST always require explicit human action (creating new runs).
 9. **DerivePhase precedence**: `EmergencyStopped=True` MUST be checked **before** all other conditions in `DerivePhase()`. It takes precedence over `Escalated`, `Denied`, and all progress conditions.
@@ -43,19 +43,19 @@ Primary enforcement so new runs never persist while the system is suspended. Spi
 
 5a. **Status subresource**: `AgenticOLSConfig` MUST have a `/status` subresource. The status MUST include a `conditions` array following the standard `metav1.Condition` shape.
 5b. **Suspended condition**: When `spec.suspended` is set to `true`, the operator MUST set condition type `Suspended` with status `True`. The condition transitions through two reasons:
-   - `Draining`: Set immediately when non-terminal runs still exist. Message SHOULD include the pending count (e.g., `"Waiting for 3 runs to terminate"`).
-   - `AdminActivated`: Set once all runs are terminal. Message SHOULD include the count of runs emergency-stopped (e.g., `"System suspended; 12 runs emergency-stopped"`).
+   - `Draining`: Set immediately while any active managed sandbox workload or associated sandbox access remains. Message SHOULD include the active sandbox count and MUST surface list/deletion/verification errors.
+   - `AdminActivated`: Set only after the operator confirms that no active managed sandbox workload or associated access remains. Message SHOULD include the count of runs emergency-stopped (e.g., `"System suspended; 12 runs emergency-stopped"`).
 5c. **Suspended condition on deactivation**: When `spec.suspended` is set back to `false`, the operator MUST update the `Suspended` condition to status `False`, reason `AdminDeactivated`, preserving the new `lastTransitionTime`.
 5d. **Suspension Events**: The operator MUST emit a Kubernetes Event on the `AgenticOLSConfig` object when suspension is activated and when suspension is deactivated. Event format:
    - Activation: `type: Warning`, reason `SuspensionActivated`, message `"System suspended; {N} runs emergency-stopped"`.
    - Deactivation: `type: Normal`, reason `SuspensionDeactivated`, message `"System resumed; agentic operations re-enabled"`.
-5e. **Status update timing**: The `Suspended` condition MUST be set immediately when `spec.suspended` becomes `true` — with reason `Draining` if non-terminal runs remain, or reason `AdminActivated` if all are already terminal. As runs terminate, the controller re-reconciles (it watches AgenticRuns as a secondary resource) and updates the condition from `Draining` to `AdminActivated` with the final count. The activation Event MUST be emitted only on the `AdminActivated` transition, not during `Draining`. A dedicated `AgenticOLSConfig` controller handles this status lifecycle.
+5e. **Status update timing**: The `Suspended` condition MUST be set immediately when `spec.suspended` becomes `true` — with reason `Draining` if any active managed sandbox workload or associated access remains, or reason `AdminActivated` if none remains. As teardown completes, the controller re-reconciles (it watches AgenticRuns and managed sandbox resources as applicable) and updates the condition from `Draining` to `AdminActivated`. The activation Event MUST be emitted only on the `AdminActivated` transition, not during `Draining`. A dedicated `AgenticOLSConfig` controller handles this status lifecycle.
 
 ### Reconciler Integration
 
 12. **Watch and re-queue**: The run reconciler MUST watch `AgenticOLSConfig` and re-queue all non-terminal runs when the CR changes (same pattern as the existing `ApprovalPolicy` watch).
-13. **Reconcile guard**: The suspension check MUST execute after the deletion handler but before finalizer addition, terminal phase routing, approval resolution, and phase dispatch.
-14. **Order of operations on termination**: For each non-terminal run when suspended: (a) release sandboxes via `Agent.ReleaseSandboxes` (best-effort, log errors — `Release` handles pod deletion, SA GC, reader CRB cleanup, and execution RBAC cleanup for each step), (b) set `EmergencyStopped` condition, (c) status patch. Errors in (a) MUST NOT prevent (b) and (c).
+13. **Reconcile guard**: The suspension check MUST execute after the deletion handler and before finalizer addition, terminal phase routing, approval resolution, revision handling, and phase dispatch. Per-run cancellation is evaluated immediately after the suspension check and before those same operations.
+14. **Order of operations on termination**: For each non-terminal run when suspended: (a) invoke hard-stop cleanup, including direct discovery of active managed workloads; (b) set `EmergencyStopped` condition; (c) status patch. Cleanup errors MUST NOT prevent the condition/status write, but MUST keep the config status `Draining` and trigger retry. The same ordering applies to per-run cancellation, except it sets the phase-relevant failure condition with reason `CancelledByUser`.
 15. **Config fetch failure**: If the `AgenticOLSConfig` CR cannot be fetched and the error is not `NotFound`, the reconciler MUST return the error for retry. `NotFound` MUST be treated as `suspended=false`.
 
 ### Console Visibility
@@ -94,16 +94,16 @@ Primary enforcement so new runs never persist while the system is suspended. Spi
 - `EmergencyStopped` MUST be added to `isTerminal()` in the reconciler and any console/CLI equivalents.
 - The `AgenticOLSConfig` controller RBAC MUST include `get`, `list`, `watch` on `agenticolsconfigs` for the run reconciler's service account.
 - The `oc agentic suspend` / `resume` commands require the user to have `patch` permissions on `AgenticOLSConfig`.
-- Termination of in-flight runs via Approach A (reconciler re-queue) is bounded by `maxConcurrentReconciles`; at default concurrency (5) with 100 runs, termination completes in approximately 4-8 seconds. This is acceptable for v1. If real-world scale requires faster termination, a batch-sweep approach (Approach B) can be added to the `AgenticOLSConfig` reconciler without changing any other component.
+- Termination of in-flight runs via reconciler re-queue is bounded by `maxConcurrentReconciles`; global completion additionally waits for direct managed-sandbox discovery and teardown. If real-world scale requires faster termination, a batch-sweep optimization can be added without changing the termination outcomes.
 - Admission-time blocking (rules 11a–11i) requires OpenShift 4.17+ (Kubernetes 1.30+, where `ValidatingAdmissionPolicy` is GA). Quickstart documents OpenShift 4.22+.
 - No additional operator ServiceAccount RBAC is required for the VAP/binding: they are cluster-scoped install-time resources applied by the install path (kustomize / quickstart), not created by the operator at runtime.
 
 
 ## Planned Changes
 
-- [PLANNED: future] Batch-sweep termination (Approach B): if Approach A's reconciler-based termination proves too slow at scale, add a direct sweep in the `AgenticOLSConfig` reconciler that lists and terminates all non-terminal runs in a single pass with goroutine fan-out.
+- [PLANNED: future] Batch-sweep optimization: if reconciler-based termination proves too slow at scale, add direct fan-out without changing the hard-stop or status semantics.
 - [PLANNED: future] Additional config fields (e.g., system-wide defaults, feature gates) can be added to the `AgenticOLSConfig` spec as needed.
 - [DONE: OLS-3267] Implement admission-time blocking per rules 11a–11i (VAP + binding manifests, kustomize + quickstart wiring, E2E for CREATE rejection while suspended).
-- [PLANNED: OLS-3267] Sandbox pod isolation on suspension — isolate running sandbox pods without deleting them for post-incident forensics. Blocked on durable sandbox pod log mechanism (separate RFE).
+- [PLANNED: OLS-4018] Sandbox hard-stop on suspension — delete active managed Pods/SandboxClaims with zero grace, revoke associated access, and keep suspension `Draining` until teardown is confirmed. Durable audit storage, Result CRs already published, and Kubernetes audit are the forensic sources.
 - [PLANNED: future] Extend admission-time blocking beyond `AgenticRun` CREATE (e.g. reject `AgenticRunApproval` updates while suspended) only if product needs require it.
 - [DONE: OLS-3295] Renamed `Proposal` references to `AgenticRun` in kill switch logic, CLI commands, and console display.

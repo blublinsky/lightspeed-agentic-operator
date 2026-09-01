@@ -23,7 +23,7 @@ Audience: AI agents. Behavioral rules and phase semantics live in **what/** spec
 
 | File | Types / primary responsibilities | Key functions / methods |
 |------|----------------------------------|-------------------------|
-| `reconciler.go` | `AgenticRunReconciler` (embeds `client.Client`, `Agent AgentCaller`, `Log`) | `Reconcile`, `SetupWithManager` |
+| `reconciler.go` | `AgenticRunReconciler` (embeds `client.Client`, `Agent AgentCaller`, `Log`) | `Reconcile`, `SetupWithManager`, termination guard ordering |
 | `handlers.go` | (methods on `AgenticRunReconciler`) | `handleAnalysis`, `handleRevision`, `handleExecution`, `handleVerification`, `handleEscalation`, `handleFailed`, `denyAgenticRun`, `conditionTime`, `hasMutationSuccess`, `isObservationAction`, `analysisFailureMessage`, `executionFailureMessage` |
 | `helpers.go` | `revisionData`, `analysisQuery`, `executionQuery`, `verificationQuery`, `escalationData`; embedded templates via `//go:embed templates/*.tmpl` | `renderTemplate`, `failStep`, `statusPatch`, `hasSandboxClaims`, `isTerminal`, `setVerificationSkipped`, `getLatestAnalysisResult`, `selectedOption`, `trimNonSelectedOptions`, `resetExecutionAndVerification`, `buildEscalationRequest`, `needsRevision`, `buildRevisionContext`, `buildAnalysisQuery`, `buildExecutionQuery`, `buildVerificationQuery`, `prettyJSON` |
 | `approval.go` | — | `getApprovalPolicy`, `getAgenticRunApproval`, `ensureAgenticRunApproval`, `isStageApproved`, `isStageDenied`, `getStageOverrideAgent`, `getStageOption` |
@@ -122,7 +122,7 @@ Unified sandbox lifecycle manager. Fully encapsulates SA, RBAC, ConfigMap, and p
 - **Constructor:** Struct literal with `Sandbox SandboxLifecycle`, `K8sClient`, `Namespace`, `Audit`.
 - **[OLS-3066] Batch flow:** Each `Analyze`/`Execute`/`Verify`/`Escalate` method calls `launchSandbox` which: (a) calls `Sandbox.Create` (which fully encapsulates SA, RBAC, ConfigMap, and pod creation — see `SandboxManager.Create` above), (b) patches sandbox info on the run, (c) returns nil (handler returns `ctrl.Result{}, nil`; re-entry is watch-driven via pod events and the background timeout ticker). No `WaitReady`, no HTTP call, no `serviceAccount` parameter.
 - **`buildAgentContext`:** Unchanged — `TargetNamespaces`, `ApprovedOption` / `ExecutionResult` per step, `PreviousAttempts` from failed `StepResultRef` outcomes.
-- **`ReleaseSandboxes`:** Iterates `Status.Steps.{Analysis,Execution,Verification,Escalation}.Sandbox.ClaimName` and calls `Sandbox.Release` for each non-empty. `Release` handles all cleanup (pod, SA reader-subjects, execution RBAC).
+- **`ReleaseSandboxes`:** Releases status-referenced sandboxes and, for stop paths, participates in managed-resource discovery. `Release` handles pod/claim deletion, sandbox ServiceAccount reader-subject removal, and execution RBAC cleanup. Cleanup errors are retryable after terminal status.
 
 ## `AgentHTTPClient` [OLS-3066: removed]
 
@@ -208,7 +208,7 @@ AgenticRunReconciler.Reconcile
 - **`cmd/main.go` scheme:** Registers core + `agenticv1alpha1` + `consolev1` + `openshiftv1`. No separate `controller/setup.go` — all wiring is inline in `main.go`. Watching or applying arbitrary CRDs from tests may need extended schemes (see `reconciler_test.go`).
 - **Max concurrent reconciles:** `SetupWithManager` reads cluster `ApprovalPolicy` via API reader for `MaxConcurrentRuns`, else `DefaultMaxConcurrentRuns` from API package.
 - **Policy watch:** Enqueues **all** non-terminal runs on any `ApprovalPolicy` event — can be chatty.
-- **AgenticOLSConfig watch:** Same pattern as policy watch — enqueues all non-terminal runs on any `AgenticOLSConfig` change. When `suspended` flips to `true`, all re-queued runs hit the suspension guard and get terminated.
+- **AgenticOLSConfig watch:** Enqueues runs affected by configuration changes. When `suspended` flips to `true`, non-terminal runs hit the global termination guard; the config controller also tracks managed sandbox teardown so `Draining` does not become `AdminActivated` prematurely. Stop-triggered terminal runs remain eligible for cleanup requeues.
 - **Workflow resolution errors:** Patched onto `AgenticRunConditionAnalyzed` false — see API for exact condition ordering vs `DerivePhase`.
 - **`selectedOption` vs trim:** Verification uses latest analysis result’s **first** option (`Options[0]`) when resolving; execution path uses `trimNonSelectedOptions` which respects `AgenticRunApproval` execution option index when multiple options exist.
 - **No execution retries:** Execution runs exactly once per analysis iteration; verification failure escalates directly via the `Escalating` phase — there is no `maxAttempts`/retry loop (see **what/run-lifecycle.md** and **what/approval.md**).
