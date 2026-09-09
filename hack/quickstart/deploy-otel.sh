@@ -3,6 +3,7 @@
 # Deploy the OTEL collector for quickstart.
 #
 # By default, accepts OTLP gRPC/HTTP and drops all data (nop exporter).
+# With --traces=ENDPOINT, exports traces to an OTLP gRPC endpoint.
 # With --postgres, deploys a Postgres instance and routes agentic logs
 # to it for the console audit UI.
 #
@@ -13,6 +14,8 @@
 # Usage:
 #   bash hack/quickstart/deploy-otel.sh
 #   bash hack/quickstart/deploy-otel.sh --postgres
+#   bash hack/quickstart/deploy-otel.sh \
+#     --traces=jaeger-otlp-grpc.observability.svc.cluster.local:4317
 #   bash hack/quickstart/deploy-otel.sh --image=quay.io/my-org/my-collector:tag
 #
 # Prerequisites:
@@ -20,13 +23,15 @@
 #   - Namespace openshift-lightspeed exists
 #
 # Flags:
-#   --image=IMAGE   OTEL collector image (default: Konflux :main).
-#   --postgres      Deploy Postgres and wire the collector to export logs to it.
+#   --image=IMAGE       OTEL collector image (default: Konflux :main).
+#   --postgres          Deploy Postgres and wire the collector to export logs to it.
+#   --traces=ENDPOINT   Export traces to this OTLP gRPC endpoint without TLS.
 
 set -euo pipefail
 
 NAMESPACE="${NAMESPACE:-openshift-lightspeed}"
 OTEL_IMAGE="quay.io/redhat-user-workloads/crt-nshift-lightspeed-tenant/lightspeed-otel-collector:main"
+TRACE_ENDPOINT=""
 WITH_POSTGRES=0
 
 COLLECTOR_NAME="lightspeed-otel-collector"
@@ -38,6 +43,8 @@ while [ $# -gt 0 ]; do
     --image=*)   OTEL_IMAGE="${1#*=}"; shift ;;
     --image)     [ $# -lt 2 ] && { echo "Missing value for $1" >&2; exit 1; }; OTEL_IMAGE="$2"; shift 2 ;;
     --postgres)  WITH_POSTGRES=1; shift ;;
+    --traces=*)  TRACE_ENDPOINT="${1#*=}"; shift ;;
+    --traces)    [ $# -lt 2 ] && { echo "Missing value for $1" >&2; exit 1; }; TRACE_ENDPOINT="$2"; shift 2 ;;
     *) echo "Unknown flag: $1" >&2; exit 1 ;;
   esac
 done
@@ -104,6 +111,7 @@ COLLECTOR_CONFIG='
         send_batch_size: 100
     exporters:
       nop: {}
+      __TRACE_EXPORTER_CONFIG__
       postgres:
         connection_string: ${env:POSTGRES_CONNECTION_STRING}
         schema: templogs
@@ -152,7 +160,7 @@ COLLECTOR_CONFIG='
           exporters: [nop]
         traces:
           receivers: [otlp]
-          exporters: [nop]
+          exporters: [__TRACE_EXPORTER_NAME__]
       telemetry:
         logs:
           level: info'
@@ -177,6 +185,7 @@ COLLECTOR_CONFIG='
         send_batch_size: 100
     exporters:
       nop: {}
+      __TRACE_EXPORTER_CONFIG__
     extensions:
       health_check:
         endpoint: "0.0.0.0:13133"
@@ -189,11 +198,25 @@ COLLECTOR_CONFIG='
           exporters: [nop]
         traces:
           receivers: [otlp]
-          exporters: [nop]
+          exporters: [__TRACE_EXPORTER_NAME__]
       telemetry:
         logs:
           level: info'
 fi
+
+if [ -n "${TRACE_ENDPOINT}" ]; then
+  TRACE_EXPORTER_NAME="otlp/traces"
+  TRACE_EXPORTER_CONFIG="otlp/traces:
+        endpoint: ${TRACE_ENDPOINT}
+        tls:
+          insecure: true"
+  info "Trace export enabled: ${TRACE_ENDPOINT} (insecure OTLP gRPC)"
+else
+  TRACE_EXPORTER_NAME="nop"
+  TRACE_EXPORTER_CONFIG=""
+fi
+COLLECTOR_CONFIG="${COLLECTOR_CONFIG//__TRACE_EXPORTER_NAME__/${TRACE_EXPORTER_NAME}}"
+COLLECTOR_CONFIG="${COLLECTOR_CONFIG//__TRACE_EXPORTER_CONFIG__/${TRACE_EXPORTER_CONFIG}}"
 
 # --- Deployment env/volumes (conditional on Postgres) -------------------------
 

@@ -29,6 +29,7 @@ SANDBOX_IMAGE=""
 CONSOLE_IMAGE=""
 ALERTS_ADAPTER_IMAGE=""
 OTEL_IMAGE=""
+TRACE_ENDPOINT=""
 WITH_POSTGRES=0
 
 usage() {
@@ -42,6 +43,7 @@ Options:
   --alerts-adapter-image=IMAGE    Alerts adapter image (default: Konflux :main)
   --otel-image=IMAGE              OTEL collector image (default: Konflux :main)
   --postgres                      Deploy Postgres backend for OTEL audit logs
+  --traces=ENDPOINT               Export traces to an OTLP gRPC endpoint without TLS
   -h, --help                      Show this help and exit
 EOF
 }
@@ -59,6 +61,8 @@ while [ $# -gt 0 ]; do
     --otel-image=*)            OTEL_IMAGE="${1#*=}"; shift ;;
     --otel-image)              [ $# -lt 2 ] && { echo "Missing value for $1" >&2; exit 1; }; OTEL_IMAGE="$2"; shift 2 ;;
     --postgres)                WITH_POSTGRES=1; shift ;;
+    --traces=*)                TRACE_ENDPOINT="${1#*=}"; shift ;;
+    --traces)                  [ $# -lt 2 ] && { echo "Missing value for $1" >&2; exit 1; }; TRACE_ENDPOINT="$2"; shift 2 ;;
     -h|--help)                 usage; exit 0 ;;
     *)                         echo "Unknown flag: $1 (try --help)" >&2; exit 1 ;;
   esac
@@ -114,6 +118,9 @@ if [ -n "${OTEL_IMAGE}" ]; then
 fi
 if [ "${WITH_POSTGRES}" = "1" ]; then
   OTEL_ARGS="${OTEL_ARGS} --postgres"
+fi
+if [ -n "${TRACE_ENDPOINT}" ]; then
+  OTEL_ARGS="${OTEL_ARGS} --traces=${TRACE_ENDPOINT}"
 fi
 bash "${SCRIPT_DIR}/deploy-otel.sh" ${OTEL_ARGS}
 

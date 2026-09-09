@@ -32,6 +32,16 @@ Deploy with Postgres backend for OTEL audit logs:
 bash hack/quickstart/install.sh --postgres
 ```
 
+Export traces to a Jaeger OTLP gRPC endpoint:
+
+```bash
+bash hack/quickstart/install.sh \
+  --traces=jaeger-otlp-grpc.observability.svc.cluster.local:4317
+```
+
+The `--traces` endpoint uses insecure OTLP gRPC. This matches the Jaeger
+instance deployed by `hack/deploy-jaeger.sh`.
+
 Or deploy components individually (run from the repo root — scripts
 call each other via `hack/quickstart/`):
 
@@ -77,6 +87,7 @@ bash hack/quickstart/undeploy-otel.sh
 | `--alerts-adapter-image=IMAGE` | Alerts adapter image (default: Konflux `:main`) |
 | `--otel-image=IMAGE` | OTEL collector image (default: Konflux `:main`) |
 | `--postgres` | Deploy Postgres backend for OTEL audit logs |
+| `--traces=ENDPOINT` | Export traces to an insecure OTLP gRPC endpoint |
 
 ### Individual scripts
 
@@ -87,6 +98,7 @@ bash hack/quickstart/undeploy-otel.sh
 | `deploy-alerts-adapter.sh` | `--image=IMAGE` | Konflux `:main` |
 | `deploy-otel.sh` | `--image=IMAGE` | Konflux `:main` |
 | `deploy-otel.sh` | `--postgres` | Deploy Postgres backend for audit logs |
+| `deploy-otel.sh` | `--traces=ENDPOINT` | Export traces to an insecure OTLP gRPC endpoint |
 | `deploy-configmap.sh` | `--sandbox-image=IMAGE` | Konflux `:main` |
 
 All images use the Konflux floating `:main` tag by default.
