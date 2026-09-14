@@ -1706,9 +1706,9 @@ spec:
             - message: targetNamespaces is immutable once set
               rule: '!has(oldSelf.targetNamespaces) || (has(self.targetNamespaces)
                 && self.targetNamespaces == oldSelf.targetNamespaces)'
-            - message: targetCluster is immutable once set
-              rule: '!has(oldSelf.targetCluster) || (has(self.targetCluster) && self.targetCluster
-                == oldSelf.targetCluster)'
+            - message: targetCluster is immutable
+              rule: has(self.targetCluster) == has(oldSelf.targetCluster) && (!has(self.targetCluster)
+                || self.targetCluster == oldSelf.targetCluster)
             - message: analysisOutput is immutable once set
               rule: '!has(oldSelf.analysisOutput) || (has(self.analysisOutput) &&
                 self.analysisOutput == oldSelf.analysisOutput)'

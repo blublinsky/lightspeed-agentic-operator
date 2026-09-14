@@ -2,6 +2,7 @@ package agenticrun
 
 import (
 	"context"
+	"crypto/sha256"
 	"fmt"
 	"time"
 
@@ -24,9 +25,13 @@ const (
 
 	spokeDialTimeout = 10 * time.Second
 
+	// maxLabelValueLen is the Kubernetes limit for label values.
+	maxLabelValueLen = 63
+
 	ErrGetSpokeKubeconfig   = "get spoke kubeconfig Secret"
 	ErrParseSpokeKubeconfig = "parse spoke kubeconfig"
 	ErrCreateSpokeClient    = "create spoke client"
+	ErrSpokeInsecureTLS     = "spoke kubeconfig has insecure TLS or non-HTTPS endpoint"
 	ErrRequestSpokeToken    = "request spoke SA token"
 
 	// spokeTokenExpiration is the lifetime of per-step SA tokens on spoke.
@@ -46,15 +51,27 @@ type SpokeAccess struct {
 	Namespace string // always spokeManagedNamespace
 }
 
+// truncateLabelValue ensures a value fits in a Kubernetes label (max 63 chars).
+// Values within the limit are returned unchanged. Longer values are truncated
+// and suffixed with a 7-char SHA-256 hash for uniqueness.
+func truncateLabelValue(v string) string {
+	if len(v) <= maxLabelValueLen {
+		return v
+	}
+	h := fmt.Sprintf("%x", sha256.Sum256([]byte(v)))
+	return v[:maxLabelValueLen-8] + "-" + h[:7]
+}
+
 // spokeLabels returns labels for resources created on the spoke cluster.
 // Includes the standard run/component labels plus spoke-specific labels
-// for cross-cluster auditability.
+// for cross-cluster auditability. Long values are truncated to fit the
+// 63-char Kubernetes label limit.
 func spokeLabels(runUID, runName, targetCluster, component string) map[string]string {
 	return map[string]string{
 		LabelRun:          runUID,
 		LabelComponent:    component,
-		LabelSpokeCluster: targetCluster,
-		LabelAgenticRun:   runName,
+		LabelSpokeCluster: truncateLabelValue(targetCluster),
+		LabelAgenticRun:   truncateLabelValue(runName),
 	}
 }
 
@@ -88,6 +105,13 @@ func spokeAccessForRun(ctx context.Context, hubClient client.Client, run *agenti
 	if err != nil {
 		return nil, fmt.Errorf("%s %s: %w", ErrParseSpokeKubeconfig, secretName, err)
 	}
+
+	// Reject non-HTTPS endpoints and insecure TLS — spoke credentials must
+	// never be sent over cleartext or to unverified servers.
+	if !rest.IsConfigTransportTLS(*cfg) || cfg.TLSClientConfig.Insecure {
+		return nil, fmt.Errorf("%s: %s", ErrSpokeInsecureTLS, secretName)
+	}
+
 	cfg.Timeout = spokeDialTimeout
 
 	spokeClient, err := NewClientFromConfig(cfg)

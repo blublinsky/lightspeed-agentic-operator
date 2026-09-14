@@ -117,17 +117,17 @@ func (m *SandboxManager) Create(
 
 	serviceAccount := sandboxSAName(run, step)
 
-	// Register cleanup before ensureSA so that SA + reader subject
-	// creation failures are also cleaned up.
-	var createErr error
+	// Register cleanup before ensureSA so that any failure after SA
+	// creation triggers spoke resource cleanup. Uses the named return
+	// retErr so owner-update failures (which don't set createErr) are
+	// also covered.
 	defer func() {
-		if createErr != nil {
+		if retErr != nil {
 			m.cleanupOnCreateFailure(ctx, run, step, serviceAccount, spoke)
 		}
 	}()
 
 	if err := m.ensureSA(ctx, run, serviceAccount, step, spoke); err != nil {
-		createErr = err
 		return "", err
 	}
 
@@ -152,13 +152,11 @@ func (m *SandboxManager) Create(
 			}
 			base := run.DeepCopy()
 			if err := ensureExecutionRBAC(ctx, rbacClient, run, rbac, rbacNS); err != nil {
-				createErr = err
 				return "", err
 			}
 			// Annotation is persisted on hub (run lives on hub).
 			if err := m.client.Patch(ctx, run, client.MergeFrom(base)); err != nil {
-				createErr = fmt.Errorf("persist RBAC annotation: %w", err)
-				return "", createErr
+				return "", fmt.Errorf("persist RBAC annotation: %w", err)
 			}
 		}
 	}
@@ -166,11 +164,9 @@ func (m *SandboxManager) Create(
 	schema := outputSchemaForStep(step, run)
 	inputCM, err := buildInputConfigMap(m.namespace, run, step, agent, schema, agentCtx)
 	if err != nil {
-		createErr = err
 		return "", err
 	}
 	if err := m.createInputConfigMap(ctx, inputCM); err != nil {
-		createErr = err
 		return "", err
 	}
 	span.AddEvent("sandbox.configmap.created")
@@ -180,7 +176,6 @@ func (m *SandboxManager) Create(
 	// automount disabled, so this binding is dormant until OLS-3951 provides
 	// hub-write credentials. The Role/RoleBinding are GC'd via owner ref.
 	if err := ensureResultRBAC(ctx, m.client, run, step, serviceAccount, m.namespace); err != nil {
-		createErr = err
 		return "", err
 	}
 	span.AddEvent("sandbox.rbac.created")
@@ -204,8 +199,7 @@ func (m *SandboxManager) Create(
 		maxTurns,
 	)
 	if err != nil {
-		createErr = fmt.Errorf("%s: %w", errBuildPodSpec, err)
-		return "", createErr
+		return "", fmt.Errorf("%s: %w", errBuildPodSpec, err)
 	}
 
 	// Spoke sandbox pods don't need hub SA tokens — spoke access is via
@@ -224,7 +218,6 @@ func (m *SandboxManager) Create(
 	if cfg.Sandbox.Mode == sandboxModeSandboxClaim {
 		claimName, claimUID, err := m.createSandboxClaim(ctx, run, name, step, podSpec)
 		if err != nil {
-			createErr = err
 			return "", err
 		}
 		ownerRef = metav1.OwnerReference{
@@ -237,7 +230,6 @@ func (m *SandboxManager) Create(
 	} else {
 		podName, podUID, err := m.createBarePod(ctx, run, name, step, podSpec)
 		if err != nil {
-			createErr = err
 			return "", err
 		}
 		ownerRef = metav1.OwnerReference{

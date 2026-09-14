@@ -6,6 +6,9 @@ import (
 	"strings"
 	"time"
 
+	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 
@@ -225,9 +228,26 @@ func (s *SandboxAgentCaller) ReleaseSandboxes(ctx context.Context, run *agenticv
 		spoke, spokeErr := spokeAccessForRun(ctx, s.K8sClient, run, s.Namespace)
 		if spokeErr != nil {
 			log.Error(spokeErr, "orphaned RBAC cleanup: spoke unreachable")
+			if firstErr == nil {
+				firstErr = spokeErr
+			}
 		} else if spoke != nil {
 			if err := cleanupExecutionRBAC(ctx, spoke.Client, run); err != nil {
 				log.Error(err, "failed to clean up orphaned spoke execution RBAC")
+				if firstErr == nil {
+					firstErr = err
+				}
+			}
+			exeSA := sandboxSAName(run, "execution")
+			if err := removeReaderSubjectOnSpoke(ctx, spoke.Client, exeSA, spoke.Namespace); err != nil {
+				log.Error(err, "failed to remove orphaned spoke reader subjects", LogKeyName, exeSA)
+				if firstErr == nil {
+					firstErr = err
+				}
+			}
+			sa := &corev1.ServiceAccount{ObjectMeta: metav1.ObjectMeta{Name: exeSA, Namespace: spoke.Namespace}}
+			if err := spoke.Client.Delete(ctx, sa); err != nil && !apierrors.IsNotFound(err) {
+				log.Error(err, "failed to delete orphaned spoke SA", LogKeyName, exeSA)
 				if firstErr == nil {
 					firstErr = err
 				}

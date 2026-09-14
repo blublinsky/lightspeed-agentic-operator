@@ -198,6 +198,121 @@ func TestSpokeAccessForRun_MissingKubeconfigKey(t *testing.T) {
 	}
 }
 
+func TestSpokeAccessForRun_RejectsHTTP(t *testing.T) {
+	orig := NewClientFromConfig
+	NewClientFromConfig = fakeNewClient
+	t.Cleanup(func() { NewClientFromConfig = orig })
+
+	kubeconfig := []byte(`
+apiVersion: v1
+kind: Config
+clusters:
+- cluster:
+    server: http://api.spoke.example.com:6443
+  name: spoke
+contexts:
+- context:
+    cluster: spoke
+    user: spoke-user
+  name: spoke
+current-context: spoke
+users:
+- name: spoke-user
+  user:
+    token: test-token
+`)
+
+	secret := &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "spoke-kubeconfig-http-spoke",
+			Namespace: testOperatorNS,
+		},
+		Data: map[string][]byte{
+			kubeconfigKey: kubeconfig,
+		},
+	}
+
+	hubClient := fake.NewClientBuilder().
+		WithScheme(testScheme()).
+		WithObjects(secret).
+		Build()
+
+	run := &agenticv1alpha1.AgenticRun{
+		Spec: agenticv1alpha1.AgenticRunSpec{
+			TargetCluster: "http-spoke",
+		},
+	}
+
+	sa, err := spokeAccessForRun(context.Background(), hubClient, run, testOperatorNS)
+	if err == nil {
+		t.Fatal("expected error for HTTP kubeconfig")
+	}
+	if sa != nil {
+		t.Fatal("expected nil SpokeAccess on error")
+	}
+	if !contains(err.Error(), ErrSpokeInsecureTLS) {
+		t.Errorf("error = %q, want it to contain %q", err.Error(), ErrSpokeInsecureTLS)
+	}
+}
+
+func TestSpokeAccessForRun_RejectsInsecureTLS(t *testing.T) {
+	orig := NewClientFromConfig
+	NewClientFromConfig = fakeNewClient
+	t.Cleanup(func() { NewClientFromConfig = orig })
+
+	kubeconfig := []byte(`
+apiVersion: v1
+kind: Config
+clusters:
+- cluster:
+    server: https://api.spoke.example.com:6443
+    insecure-skip-tls-verify: true
+  name: spoke
+contexts:
+- context:
+    cluster: spoke
+    user: spoke-user
+  name: spoke
+current-context: spoke
+users:
+- name: spoke-user
+  user:
+    token: test-token
+`)
+
+	secret := &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "spoke-kubeconfig-insecure-spoke",
+			Namespace: testOperatorNS,
+		},
+		Data: map[string][]byte{
+			kubeconfigKey: kubeconfig,
+		},
+	}
+
+	hubClient := fake.NewClientBuilder().
+		WithScheme(testScheme()).
+		WithObjects(secret).
+		Build()
+
+	run := &agenticv1alpha1.AgenticRun{
+		Spec: agenticv1alpha1.AgenticRunSpec{
+			TargetCluster: "insecure-spoke",
+		},
+	}
+
+	sa, err := spokeAccessForRun(context.Background(), hubClient, run, testOperatorNS)
+	if err == nil {
+		t.Fatal("expected error for insecure TLS kubeconfig")
+	}
+	if sa != nil {
+		t.Fatal("expected nil SpokeAccess on error")
+	}
+	if !contains(err.Error(), ErrSpokeInsecureTLS) {
+		t.Errorf("error = %q, want it to contain %q", err.Error(), ErrSpokeInsecureTLS)
+	}
+}
+
 // ---------------------------------------------------------------------------
 // spokeLabels
 // ---------------------------------------------------------------------------
@@ -218,6 +333,55 @@ func TestSpokeLabels(t *testing.T) {
 		if labels[k] != v {
 			t.Errorf("label %q = %q, want %q", k, labels[k], v)
 		}
+	}
+}
+
+func TestSpokeLabels_LongValuesTruncated(t *testing.T) {
+	// 80-char cluster name exceeds the 63-char label limit.
+	longCluster := "my-very-long-spoke-cluster-name-that-definitely-exceeds-sixty-three-characters-x"
+	longRun := "my-very-long-agentic-run-name-that-also-exceeds-sixty-three-characters-padding-y"
+
+	labels := spokeLabels("uid-123", longRun, longCluster, "analysis-sa")
+
+	for _, key := range []string{LabelSpokeCluster, LabelAgenticRun} {
+		v := labels[key]
+		if len(v) > maxLabelValueLen {
+			t.Errorf("label %q value length %d exceeds %d: %q", key, len(v), maxLabelValueLen, v)
+		}
+	}
+}
+
+func TestTruncateLabelValue_ShortUnchanged(t *testing.T) {
+	v := "short-value"
+	if got := truncateLabelValue(v); got != v {
+		t.Errorf("expected %q unchanged, got %q", v, got)
+	}
+}
+
+func TestTruncateLabelValue_ExactlyMaxUnchanged(t *testing.T) {
+	v := "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" // 63 chars
+	if len(v) != maxLabelValueLen {
+		t.Fatalf("test setup: len = %d, want %d", len(v), maxLabelValueLen)
+	}
+	if got := truncateLabelValue(v); got != v {
+		t.Errorf("expected %q unchanged, got %q", v, got)
+	}
+}
+
+func TestTruncateLabelValue_LongTruncatedWithHash(t *testing.T) {
+	v := "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-overflow" // 72 chars
+	got := truncateLabelValue(v)
+	if len(got) != maxLabelValueLen {
+		t.Errorf("expected length %d, got %d: %q", maxLabelValueLen, len(got), got)
+	}
+	// same input must produce same output (deterministic)
+	if got2 := truncateLabelValue(v); got != got2 {
+		t.Errorf("non-deterministic: %q vs %q", got, got2)
+	}
+	// different inputs must produce different outputs
+	v2 := "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb-overflow" // 72 chars
+	if got2 := truncateLabelValue(v2); got == got2 {
+		t.Errorf("collision: both %q", got)
 	}
 }
 
