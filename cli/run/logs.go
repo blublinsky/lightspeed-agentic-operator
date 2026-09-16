@@ -122,17 +122,14 @@ func (o *LogsOptions) Run(ctx context.Context) error {
 	}
 
 	if o.stored {
-		step, err := o.resolveStoredStep(p)
-		if err != nil {
-			return err
-		}
+		phase := storedLogsPhase(o.step)
 		if o.adminEndpoint == "" {
-			return o.fetchStoredLogsViaServiceProxy(ctx, p, step)
+			return o.fetchStoredLogsViaServiceProxy(ctx, p, phase)
 		}
 		if o.configFlags != nil && o.configFlags.Insecure != nil && *o.configFlags.Insecure {
 			o.httpClient = newAdminHTTPClient(true)
 		}
-		return o.fetchStoredLogs(ctx, string(p.UID), storedPhase(step))
+		return o.fetchStoredLogs(ctx, string(p.UID), phase)
 	}
 
 	sandbox := o.resolveSandbox(p)
@@ -171,6 +168,13 @@ func storedPhase(step agenticv1alpha1.SandboxStep) string {
 	return strings.ToLower(string(step))
 }
 
+func storedLogsPhase(step string) string {
+	if step == "" {
+		return ""
+	}
+	return storedPhase(NormalizeStep(step))
+}
+
 func serviceProxyPath(namespace, service, port string) string {
 	return strings.Join([]string{
 		"api", "v1", "namespaces", namespace, "services",
@@ -190,19 +194,18 @@ type storedLogPage struct {
 	HasMore      bool              `json:"has_more"`
 }
 
-func (o *LogsOptions) fetchStoredLogsViaServiceProxy(ctx context.Context, p *agenticv1alpha1.AgenticRun, step agenticv1alpha1.SandboxStep) error {
+func (o *LogsOptions) fetchStoredLogsViaServiceProxy(ctx context.Context, p *agenticv1alpha1.AgenticRun, phase string) error {
 	namespace := o.namespace
-	if sandbox := o.resolveSandboxForStep(p, step); sandbox != nil && sandbox.Namespace != "" {
-		namespace = sandbox.Namespace
-	}
 
-	return o.fetchAllStoredLogs(ctx, string(p.UID), storedPhase(step), func(after int64) (storedLogPage, error) {
+	return o.fetchAllStoredLogs(ctx, string(p.UID), phase, func(after int64) (storedLogPage, error) {
 		result := o.clientset.CoreV1().RESTClient().Get().
 			AbsPath(serviceProxyPath(namespace, collectorServiceName, collectorServicePort)).
 			Param("agentic_run_id", string(p.UID)).
-			Param("phase", storedPhase(step)).
 			Param("limit", "1000").
 			Param("format", "json")
+		if phase != "" {
+			result = result.Param("phase", phase)
+		}
 		if after > 0 {
 			result = result.Param("after", strconv.FormatInt(after, 10))
 		}
@@ -244,7 +247,9 @@ func (o *LogsOptions) fetchStoredLogs(ctx context.Context, runUID, phase string)
 		}
 		query := endpoint.Query()
 		query.Set("agentic_run_id", runUID)
-		query.Set("phase", phase)
+		if phase != "" {
+			query.Set("phase", phase)
+		}
 		query.Set("limit", "1000")
 		query.Set("format", "json")
 		if after > 0 {
@@ -311,22 +316,6 @@ func (o *LogsOptions) fetchAllStoredLogs(ctx context.Context, runUID, phase stri
 		}
 	}
 	return nil
-}
-
-func (o *LogsOptions) resolveStoredStep(p *agenticv1alpha1.AgenticRun) (agenticv1alpha1.SandboxStep, error) {
-	if o.step != "" {
-		return NormalizeStep(o.step), nil
-	}
-	if p.Status.Steps.Verification.Sandbox.ClaimName != "" {
-		return agenticv1alpha1.SandboxStepVerification, nil
-	}
-	if p.Status.Steps.Execution.Sandbox.ClaimName != "" {
-		return agenticv1alpha1.SandboxStepExecution, nil
-	}
-	if p.Status.Steps.Analysis.Sandbox.ClaimName != "" {
-		return agenticv1alpha1.SandboxStepAnalysis, nil
-	}
-	return "", fmt.Errorf("no sandbox step found for run %q; specify --step", o.name)
 }
 
 func newAdminHTTPClient(insecureSkipTLSVerify bool) *http.Client {

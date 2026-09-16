@@ -72,6 +72,12 @@ func TestLogs_StoredPhase(t *testing.T) {
 	if got := storedPhase(agenticv1alpha1.SandboxStepAnalysis); got != "analysis" {
 		t.Errorf("storedPhase() = %q, want analysis", got)
 	}
+	if got := storedLogsPhase(""); got != "" {
+		t.Errorf("storedLogsPhase(\"\") = %q, want empty phase", got)
+	}
+	if got := storedLogsPhase("execution"); got != "execution" {
+		t.Errorf("storedLogsPhase(\"execution\") = %q, want execution", got)
+	}
 }
 
 func TestLogs_ServiceProxyPath(t *testing.T) {
@@ -107,6 +113,28 @@ func TestLogs_FetchStoredLogs(t *testing.T) {
 	}
 	if got := out.String(); !strings.Contains(got, "stored execution log") || !strings.Contains(got, "records: 1") {
 		t.Errorf("output = %q, want formatted stored log", got)
+	}
+}
+
+func TestLogs_FetchStoredLogs_AllPhases(t *testing.T) {
+	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if _, ok := r.URL.Query()["phase"]; ok {
+			t.Errorf("phase query parameter = %q, want it omitted", r.URL.Query().Get("phase"))
+		}
+		if _, err := w.Write([]byte(`{"agentic_run_id":"run-uid","records":[{"id":1,"timestamp":"2026-09-16T07:29:21Z","body":"all phases"}],"has_more":false}`)); err != nil {
+			t.Errorf("write response: %v", err)
+		}
+	}))
+	defer server.Close()
+
+	var out strings.Builder
+	o := &LogsOptions{adminEndpoint: server.URL, httpClient: server.Client()}
+	o.IOStreams.Out = &out
+	if err := o.fetchStoredLogs(context.Background(), "run-uid", ""); err != nil {
+		t.Fatalf("fetchStoredLogs() error = %v", err)
+	}
+	if !strings.Contains(out.String(), "all phases") {
+		t.Errorf("output = %q, want all-phase record", out.String())
 	}
 }
 
