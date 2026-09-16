@@ -1,6 +1,9 @@
 package run
 
 import (
+	"context"
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 
@@ -29,6 +32,61 @@ func TestLogs_Validate(t *testing.T) {
 				t.Errorf("Validate() error = %v, wantErr %v", err, tc.wantErr)
 			}
 		})
+	}
+}
+
+func TestLogs_ValidateStoredFollowError(t *testing.T) {
+	o := &LogsOptions{stored: true, follow: true}
+	if err := o.Validate(); err == nil || !strings.Contains(err.Error(), "--follow") {
+		t.Fatalf("Validate() error = %v, want --follow error", err)
+	}
+}
+
+func TestLogs_AdminHTTPClientCanSkipVerification(t *testing.T) {
+	client := newAdminHTTPClient(true)
+	transport, ok := client.Transport.(*http.Transport)
+	if !ok || transport.TLSClientConfig == nil || !transport.TLSClientConfig.InsecureSkipVerify { //nolint:gosec // test verifies the explicit opt-in
+		t.Fatal("expected TLS certificate verification to be disabled")
+	}
+}
+
+func TestLogs_StoredPhase(t *testing.T) {
+	if got := storedPhase(agenticv1alpha1.SandboxStepAnalysis); got != "analysis" {
+		t.Errorf("storedPhase() = %q, want analysis", got)
+	}
+}
+
+func TestLogs_ServiceProxyPath(t *testing.T) {
+	got := serviceProxyPath("openshift-lightspeed", "lightspeed-otel-collector", "8080")
+	want := "api/v1/namespaces/openshift-lightspeed/services/https:lightspeed-otel-collector:8080/proxy/api/v1/logs"
+	if got != want {
+		t.Errorf("serviceProxyPath() = %q, want %q", got, want)
+	}
+}
+
+func TestLogs_FetchStoredLogs(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if got := r.URL.Query().Get("agentic_run_id"); got != "run-uid" {
+			t.Errorf("agentic_run_id = %q, want run-uid", got)
+		}
+		if got := r.URL.Query().Get("phase"); got != "execution" {
+			t.Errorf("phase = %q, want execution", got)
+		}
+		if got := r.URL.Query().Get("format"); got != "text" {
+			t.Errorf("format = %q, want text", got)
+		}
+		_, _ = w.Write([]byte("stored execution log\n"))
+	}))
+	defer server.Close()
+
+	var out strings.Builder
+	o := &LogsOptions{adminEndpoint: server.URL}
+	o.IOStreams.Out = &out
+	if err := o.fetchStoredLogs(context.Background(), "run-uid", "execution"); err != nil {
+		t.Fatalf("fetchStoredLogs() error = %v", err)
+	}
+	if got := out.String(); got != "stored execution log\n" {
+		t.Errorf("output = %q, want stored log", got)
 	}
 }
 
