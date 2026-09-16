@@ -14,6 +14,7 @@
 //
 // Build:  make -C test/agent docker-build
 // Image:  quay.io/openshift-lightspeed/ols-qe:lightspeed-mock-agent1
+// Konflux health-check marker; no runtime behavior change.
 package main
 
 import (
