@@ -184,6 +184,7 @@ func serviceProxyPath(namespace, service, port string) string {
 
 type storedLogRecord struct {
 	ID        int64           `json:"id"`
+	Phase     string          `json:"phase"`
 	Timestamp time.Time       `json:"timestamp"`
 	Body      json.RawMessage `json:"body"`
 }
@@ -306,7 +307,23 @@ func (o *LogsOptions) fetchAllStoredLogs(ctx context.Context, runUID, phase stri
 	if _, err := fmt.Fprintf(o.Out, "agentic_run_id: %s\nrecords: %d\nhas_more: false\n\n", runUID, len(records)); err != nil {
 		return fmt.Errorf("write stored logs: %w", err)
 	}
+	currentPhase := ""
 	for _, record := range records {
+		recordPhase := record.Phase
+		if recordPhase == "" {
+			recordPhase = phase
+		}
+		if recordPhase != "" && recordPhase != currentPhase {
+			if currentPhase != "" {
+				if _, err := fmt.Fprintln(o.Out); err != nil {
+					return fmt.Errorf("write stored logs: %w", err)
+				}
+			}
+			if _, err := fmt.Fprintf(o.Out, "===== %s =====\n\n", recordPhase); err != nil {
+				return fmt.Errorf("write stored logs: %w", err)
+			}
+			currentPhase = recordPhase
+		}
 		var body string
 		if err := json.Unmarshal(record.Body, &body); err != nil {
 			body = string(record.Body)

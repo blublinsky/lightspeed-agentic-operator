@@ -99,7 +99,7 @@ func TestLogs_FetchStoredLogs(t *testing.T) {
 		if got := r.URL.Query().Get("format"); got != "json" {
 			t.Errorf("format = %q, want json", got)
 		}
-		if _, err := w.Write([]byte(`{"agentic_run_id":"run-uid","phase":"execution","records":[{"id":1,"timestamp":"2026-09-16T07:29:21Z","body":"stored execution log"}],"has_more":false}`)); err != nil {
+		if _, err := w.Write([]byte(`{"agentic_run_id":"run-uid","phase":"execution","records":[{"id":1,"phase":"execution","timestamp":"2026-09-16T07:29:21Z","body":"stored execution log"}],"has_more":false}`)); err != nil {
 			t.Errorf("write response: %v", err)
 		}
 	}))
@@ -111,7 +111,7 @@ func TestLogs_FetchStoredLogs(t *testing.T) {
 	if err := o.fetchStoredLogs(context.Background(), "run-uid", "execution"); err != nil {
 		t.Fatalf("fetchStoredLogs() error = %v", err)
 	}
-	if got := out.String(); !strings.Contains(got, "stored execution log") || !strings.Contains(got, "records: 1") {
+	if got := out.String(); !strings.Contains(got, "===== execution =====") || !strings.Contains(got, "stored execution log") || !strings.Contains(got, "records: 1") {
 		t.Errorf("output = %q, want formatted stored log", got)
 	}
 }
@@ -148,9 +148,9 @@ func TestLogs_FetchStoredLogs_Paginates(t *testing.T) {
 		var page string
 		switch r.URL.Query().Get("after") {
 		case "":
-			page = `{"agentic_run_id":"run-uid","records":[{"id":10,"timestamp":"2026-09-16T07:29:21Z","body":"first"}],"has_more":true}`
+			page = `{"agentic_run_id":"run-uid","records":[{"id":10,"phase":"analysis","timestamp":"2026-09-16T07:29:21Z","body":"first"}],"has_more":true}`
 		case "10":
-			page = `{"agentic_run_id":"run-uid","records":[{"id":20,"timestamp":"2026-09-16T07:29:22Z","body":"second"}],"has_more":false}`
+			page = `{"agentic_run_id":"run-uid","records":[{"id":20,"phase":"execution","timestamp":"2026-09-16T07:29:22Z","body":"second"}],"has_more":false}`
 		default:
 			t.Errorf("unexpected after=%q", r.URL.Query().Get("after"))
 		}
@@ -169,7 +169,7 @@ func TestLogs_FetchStoredLogs_Paginates(t *testing.T) {
 	if requests != 2 {
 		t.Errorf("requests = %d, want 2", requests)
 	}
-	if !strings.Contains(out.String(), "first") || !strings.Contains(out.String(), "second") {
+	if !strings.Contains(out.String(), "===== analysis =====") || !strings.Contains(out.String(), "===== execution =====") || !strings.Contains(out.String(), "first") || !strings.Contains(out.String(), "second") {
 		t.Errorf("output = %q, want both pages", out.String())
 	}
 }
