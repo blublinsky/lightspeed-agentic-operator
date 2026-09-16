@@ -42,6 +42,24 @@ func TestLogs_ValidateStoredFollowError(t *testing.T) {
 	}
 }
 
+func TestLogs_ValidateAdminEndpoint(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		endpoint string
+		wantErr  bool
+	}{
+		{name: "https", endpoint: "https://collector.example.com", wantErr: false},
+		{name: "loopback http", endpoint: "http://127.0.0.1:18080", wantErr: false},
+		{name: "external http", endpoint: "http://collector.example.com", wantErr: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if err := validateAdminEndpoint(tc.endpoint); (err != nil) != tc.wantErr {
+				t.Errorf("validateAdminEndpoint() error = %v, wantErr %v", err, tc.wantErr)
+			}
+		})
+	}
+}
+
 func TestLogs_AdminHTTPClientCanSkipVerification(t *testing.T) {
 	client := newAdminHTTPClient(true)
 	transport, ok := client.Transport.(*http.Transport)
@@ -65,7 +83,7 @@ func TestLogs_ServiceProxyPath(t *testing.T) {
 }
 
 func TestLogs_FetchStoredLogs(t *testing.T) {
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if got := r.URL.Query().Get("agentic_run_id"); got != "run-uid" {
 			t.Errorf("agentic_run_id = %q, want run-uid", got)
 		}
@@ -75,12 +93,14 @@ func TestLogs_FetchStoredLogs(t *testing.T) {
 		if got := r.URL.Query().Get("format"); got != "json" {
 			t.Errorf("format = %q, want json", got)
 		}
-		_, _ = w.Write([]byte(`{"agentic_run_id":"run-uid","phase":"execution","records":[{"id":1,"timestamp":"2026-09-16T07:29:21Z","body":"stored execution log"}],"has_more":false}`))
+		if _, err := w.Write([]byte(`{"agentic_run_id":"run-uid","phase":"execution","records":[{"id":1,"timestamp":"2026-09-16T07:29:21Z","body":"stored execution log"}],"has_more":false}`)); err != nil {
+			t.Errorf("write response: %v", err)
+		}
 	}))
 	defer server.Close()
 
 	var out strings.Builder
-	o := &LogsOptions{adminEndpoint: server.URL}
+	o := &LogsOptions{adminEndpoint: server.URL, httpClient: server.Client()}
 	o.IOStreams.Out = &out
 	if err := o.fetchStoredLogs(context.Background(), "run-uid", "execution"); err != nil {
 		t.Fatalf("fetchStoredLogs() error = %v", err)
@@ -92,7 +112,7 @@ func TestLogs_FetchStoredLogs(t *testing.T) {
 
 func TestLogs_FetchStoredLogs_Paginates(t *testing.T) {
 	requests := 0
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		requests++
 		if got := r.URL.Query().Get("limit"); got != "1000" {
 			t.Errorf("limit = %q, want 1000", got)
@@ -106,12 +126,14 @@ func TestLogs_FetchStoredLogs_Paginates(t *testing.T) {
 		default:
 			t.Errorf("unexpected after=%q", r.URL.Query().Get("after"))
 		}
-		_, _ = w.Write([]byte(page))
+		if _, err := w.Write([]byte(page)); err != nil {
+			t.Errorf("write response: %v", err)
+		}
 	}))
 	defer server.Close()
 
 	var out strings.Builder
-	o := &LogsOptions{adminEndpoint: server.URL}
+	o := &LogsOptions{adminEndpoint: server.URL, httpClient: server.Client()}
 	o.IOStreams.Out = &out
 	if err := o.fetchStoredLogs(context.Background(), "run-uid", "execution"); err != nil {
 		t.Fatalf("fetchStoredLogs() error = %v", err)

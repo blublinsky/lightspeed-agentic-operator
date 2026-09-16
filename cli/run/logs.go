@@ -196,7 +196,7 @@ func (o *LogsOptions) fetchStoredLogsViaServiceProxy(ctx context.Context, p *age
 		namespace = sandbox.Namespace
 	}
 
-	return o.fetchAllStoredLogs(ctx, string(p.UID), storedPhase(step), func(after int64) ([]byte, error) {
+	return o.fetchAllStoredLogs(ctx, string(p.UID), storedPhase(step), func(after int64) (storedLogPage, error) {
 		result := o.clientset.CoreV1().RESTClient().Get().
 			AbsPath(serviceProxyPath(namespace, collectorServiceName, collectorServicePort)).
 			Param("agentic_run_id", string(p.UID)).
@@ -206,19 +206,41 @@ func (o *LogsOptions) fetchStoredLogsViaServiceProxy(ctx context.Context, p *age
 		if after > 0 {
 			result = result.Param("after", strconv.FormatInt(after, 10))
 		}
-		body, err := result.Do(ctx).Raw()
+		stream, err := result.Stream(ctx)
 		if err != nil {
-			return nil, fmt.Errorf("fetch stored logs through Collector service proxy: %w", err)
+			return storedLogPage{}, fmt.Errorf("fetch stored logs through Collector service proxy: %w", err)
 		}
-		return body, nil
+		defer stream.Close()
+		var page storedLogPage
+		if err := json.NewDecoder(stream).Decode(&page); err != nil {
+			return storedLogPage{}, fmt.Errorf("decode stored logs response: %w", err)
+		}
+		return page, nil
 	})
 }
 
+func validateAdminEndpoint(rawEndpoint string) error {
+	endpoint, err := url.Parse(rawEndpoint)
+	if err != nil || endpoint.Host == "" {
+		return fmt.Errorf("invalid Collector admin endpoint %q", rawEndpoint)
+	}
+	if endpoint.Scheme == "https" {
+		return nil
+	}
+	if endpoint.Scheme == "http" && (endpoint.Hostname() == "localhost" || endpoint.Hostname() == "127.0.0.1" || endpoint.Hostname() == "::1") {
+		return nil
+	}
+	return fmt.Errorf("Collector admin endpoint must use HTTPS (HTTP is allowed only for loopback endpoints): %q", rawEndpoint)
+}
+
 func (o *LogsOptions) fetchStoredLogs(ctx context.Context, runUID, phase string) error {
-	return o.fetchAllStoredLogs(ctx, runUID, phase, func(after int64) ([]byte, error) {
+	if err := validateAdminEndpoint(o.adminEndpoint); err != nil {
+		return err
+	}
+	return o.fetchAllStoredLogs(ctx, runUID, phase, func(after int64) (storedLogPage, error) {
 		endpoint, err := url.Parse(strings.TrimRight(o.adminEndpoint, "/") + "/api/v1/logs")
 		if err != nil {
-			return nil, fmt.Errorf("invalid Collector admin endpoint: %w", err)
+			return storedLogPage{}, fmt.Errorf("invalid Collector admin endpoint: %w", err)
 		}
 		query := endpoint.Query()
 		query.Set("agentic_run_id", runUID)
@@ -232,36 +254,39 @@ func (o *LogsOptions) fetchStoredLogs(ctx context.Context, runUID, phase string)
 
 		httpClient := o.httpClient
 		if httpClient == nil {
-			httpClient = http.DefaultClient
+			httpClient = &http.Client{Timeout: 30 * time.Second}
 		}
 		request, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint.String(), nil)
 		if err != nil {
-			return nil, fmt.Errorf("create stored log request: %w", err)
+			return storedLogPage{}, fmt.Errorf("create stored log request: %w", err)
 		}
 		response, err := httpClient.Do(request)
 		if err != nil {
-			return nil, fmt.Errorf("fetch stored logs: %w", err)
+			return storedLogPage{}, fmt.Errorf("fetch stored logs: %w", err)
 		}
 		defer response.Body.Close()
 		if response.StatusCode < http.StatusOK || response.StatusCode >= http.StatusMultipleChoices {
-			body, _ := io.ReadAll(io.LimitReader(response.Body, 4<<10))
-			return nil, fmt.Errorf("Collector returned %s: %s", response.Status, strings.TrimSpace(string(body)))
+			body, readErr := io.ReadAll(io.LimitReader(response.Body, 4<<10))
+			if readErr != nil {
+				return storedLogPage{}, fmt.Errorf("read Collector error response: %w", readErr)
+			}
+			return storedLogPage{}, fmt.Errorf("Collector returned %s: %s", response.Status, strings.TrimSpace(string(body)))
 		}
-		return io.ReadAll(response.Body)
+		var page storedLogPage
+		if err := json.NewDecoder(response.Body).Decode(&page); err != nil {
+			return storedLogPage{}, fmt.Errorf("decode stored logs response: %w", err)
+		}
+		return page, nil
 	})
 }
 
-func (o *LogsOptions) fetchAllStoredLogs(ctx context.Context, runUID, phase string, fetchPage func(after int64) ([]byte, error)) error {
+func (o *LogsOptions) fetchAllStoredLogs(ctx context.Context, runUID, phase string, fetchPage func(after int64) (storedLogPage, error)) error {
 	var records []storedLogRecord
 	after := int64(0)
 	for {
-		body, err := fetchPage(after)
+		page, err := fetchPage(after)
 		if err != nil {
 			return err
-		}
-		var page storedLogPage
-		if err := json.Unmarshal(body, &page); err != nil {
-			return fmt.Errorf("decode stored logs response: %w", err)
 		}
 		records = append(records, page.Records...)
 		if !page.HasMore {
@@ -312,7 +337,7 @@ func newAdminHTTPClient(insecureSkipTLSVerify bool) *http.Client {
 			MinVersion:         tls.VersionTLS12,
 		}
 	}
-	return &http.Client{Transport: transport}
+	return &http.Client{Transport: transport, Timeout: 30 * time.Second}
 }
 
 func (o *LogsOptions) resolveSandboxForStep(p *agenticv1alpha1.AgenticRun, step agenticv1alpha1.SandboxStep) *agenticv1alpha1.SandboxInfo {
