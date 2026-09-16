@@ -72,10 +72,10 @@ func TestLogs_FetchStoredLogs(t *testing.T) {
 		if got := r.URL.Query().Get("phase"); got != "execution" {
 			t.Errorf("phase = %q, want execution", got)
 		}
-		if got := r.URL.Query().Get("format"); got != "text" {
-			t.Errorf("format = %q, want text", got)
+		if got := r.URL.Query().Get("format"); got != "json" {
+			t.Errorf("format = %q, want json", got)
 		}
-		_, _ = w.Write([]byte("stored execution log\n"))
+		_, _ = w.Write([]byte(`{"agentic_run_id":"run-uid","phase":"execution","records":[{"id":1,"timestamp":"2026-09-16T07:29:21Z","body":"stored execution log"}],"has_more":false}`))
 	}))
 	defer server.Close()
 
@@ -85,8 +85,42 @@ func TestLogs_FetchStoredLogs(t *testing.T) {
 	if err := o.fetchStoredLogs(context.Background(), "run-uid", "execution"); err != nil {
 		t.Fatalf("fetchStoredLogs() error = %v", err)
 	}
-	if got := out.String(); got != "stored execution log\n" {
-		t.Errorf("output = %q, want stored log", got)
+	if got := out.String(); !strings.Contains(got, "stored execution log") || !strings.Contains(got, "records: 1") {
+		t.Errorf("output = %q, want formatted stored log", got)
+	}
+}
+
+func TestLogs_FetchStoredLogs_Paginates(t *testing.T) {
+	requests := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests++
+		if got := r.URL.Query().Get("limit"); got != "1000" {
+			t.Errorf("limit = %q, want 1000", got)
+		}
+		var page string
+		switch r.URL.Query().Get("after") {
+		case "":
+			page = `{"agentic_run_id":"run-uid","records":[{"id":10,"timestamp":"2026-09-16T07:29:21Z","body":"first"}],"has_more":true}`
+		case "10":
+			page = `{"agentic_run_id":"run-uid","records":[{"id":20,"timestamp":"2026-09-16T07:29:22Z","body":"second"}],"has_more":false}`
+		default:
+			t.Errorf("unexpected after=%q", r.URL.Query().Get("after"))
+		}
+		_, _ = w.Write([]byte(page))
+	}))
+	defer server.Close()
+
+	var out strings.Builder
+	o := &LogsOptions{adminEndpoint: server.URL}
+	o.IOStreams.Out = &out
+	if err := o.fetchStoredLogs(context.Background(), "run-uid", "execution"); err != nil {
+		t.Fatalf("fetchStoredLogs() error = %v", err)
+	}
+	if requests != 2 {
+		t.Errorf("requests = %d, want 2", requests)
+	}
+	if !strings.Contains(out.String(), "first") || !strings.Contains(out.String(), "second") {
+		t.Errorf("output = %q, want both pages", out.String())
 	}
 }
 

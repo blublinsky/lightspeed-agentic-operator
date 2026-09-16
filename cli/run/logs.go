@@ -4,11 +4,14 @@ import (
 	"bufio"
 	"context"
 	"crypto/tls"
+	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
+	"time"
 
 	agenticv1alpha1 "github.com/openshift/lightspeed-agentic-operator/api/v1alpha1"
 	"github.com/spf13/cobra"
@@ -175,58 +178,112 @@ func serviceProxyPath(namespace, service, port string) string {
 	}, "/")
 }
 
+type storedLogRecord struct {
+	ID        int64           `json:"id"`
+	Timestamp time.Time       `json:"timestamp"`
+	Body      json.RawMessage `json:"body"`
+}
+
+type storedLogPage struct {
+	AgenticRunID string            `json:"agentic_run_id"`
+	Records      []storedLogRecord `json:"records"`
+	HasMore      bool              `json:"has_more"`
+}
+
 func (o *LogsOptions) fetchStoredLogsViaServiceProxy(ctx context.Context, p *agenticv1alpha1.AgenticRun, step agenticv1alpha1.SandboxStep) error {
 	namespace := o.namespace
 	if sandbox := o.resolveSandboxForStep(p, step); sandbox != nil && sandbox.Namespace != "" {
 		namespace = sandbox.Namespace
 	}
 
-	result := o.clientset.CoreV1().RESTClient().Get().
-		AbsPath(serviceProxyPath(namespace, collectorServiceName, collectorServicePort)).
-		Param("agentic_run_id", string(p.UID)).
-		Param("phase", storedPhase(step)).
-		Param("format", "text").
-		Do(ctx)
-	body, err := result.Raw()
-	if err != nil {
-		return fmt.Errorf("fetch stored logs through Collector service proxy: %w", err)
-	}
-	if _, err := o.Out.Write(body); err != nil {
-		return fmt.Errorf("write stored logs: %w", err)
-	}
-	return nil
+	return o.fetchAllStoredLogs(ctx, string(p.UID), storedPhase(step), func(after int64) ([]byte, error) {
+		result := o.clientset.CoreV1().RESTClient().Get().
+			AbsPath(serviceProxyPath(namespace, collectorServiceName, collectorServicePort)).
+			Param("agentic_run_id", string(p.UID)).
+			Param("phase", storedPhase(step)).
+			Param("limit", "1000").
+			Param("format", "json")
+		if after > 0 {
+			result = result.Param("after", strconv.FormatInt(after, 10))
+		}
+		body, err := result.Do(ctx).Raw()
+		if err != nil {
+			return nil, fmt.Errorf("fetch stored logs through Collector service proxy: %w", err)
+		}
+		return body, nil
+	})
 }
 
 func (o *LogsOptions) fetchStoredLogs(ctx context.Context, runUID, phase string) error {
-	endpoint, err := url.Parse(strings.TrimRight(o.adminEndpoint, "/") + "/api/v1/logs")
-	if err != nil {
-		return fmt.Errorf("invalid Collector admin endpoint: %w", err)
-	}
-	query := endpoint.Query()
-	query.Set("agentic_run_id", runUID)
-	query.Set("phase", phase)
-	query.Set("format", "text")
-	endpoint.RawQuery = query.Encode()
+	return o.fetchAllStoredLogs(ctx, runUID, phase, func(after int64) ([]byte, error) {
+		endpoint, err := url.Parse(strings.TrimRight(o.adminEndpoint, "/") + "/api/v1/logs")
+		if err != nil {
+			return nil, fmt.Errorf("invalid Collector admin endpoint: %w", err)
+		}
+		query := endpoint.Query()
+		query.Set("agentic_run_id", runUID)
+		query.Set("phase", phase)
+		query.Set("limit", "1000")
+		query.Set("format", "json")
+		if after > 0 {
+			query.Set("after", strconv.FormatInt(after, 10))
+		}
+		endpoint.RawQuery = query.Encode()
 
-	httpClient := o.httpClient
-	if httpClient == nil {
-		httpClient = http.DefaultClient
+		httpClient := o.httpClient
+		if httpClient == nil {
+			httpClient = http.DefaultClient
+		}
+		request, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint.String(), nil)
+		if err != nil {
+			return nil, fmt.Errorf("create stored log request: %w", err)
+		}
+		response, err := httpClient.Do(request)
+		if err != nil {
+			return nil, fmt.Errorf("fetch stored logs: %w", err)
+		}
+		defer response.Body.Close()
+		if response.StatusCode < http.StatusOK || response.StatusCode >= http.StatusMultipleChoices {
+			body, _ := io.ReadAll(io.LimitReader(response.Body, 4<<10))
+			return nil, fmt.Errorf("Collector returned %s: %s", response.Status, strings.TrimSpace(string(body)))
+		}
+		return io.ReadAll(response.Body)
+	})
+}
+
+func (o *LogsOptions) fetchAllStoredLogs(ctx context.Context, runUID, phase string, fetchPage func(after int64) ([]byte, error)) error {
+	var records []storedLogRecord
+	after := int64(0)
+	for {
+		body, err := fetchPage(after)
+		if err != nil {
+			return err
+		}
+		var page storedLogPage
+		if err := json.Unmarshal(body, &page); err != nil {
+			return fmt.Errorf("decode stored logs response: %w", err)
+		}
+		records = append(records, page.Records...)
+		if !page.HasMore {
+			break
+		}
+		if len(page.Records) == 0 || page.Records[len(page.Records)-1].ID <= after {
+			return fmt.Errorf("Collector returned has_more=true without advancing the log cursor")
+		}
+		after = page.Records[len(page.Records)-1].ID
 	}
-	request, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint.String(), nil)
-	if err != nil {
-		return fmt.Errorf("create stored log request: %w", err)
-	}
-	response, err := httpClient.Do(request)
-	if err != nil {
-		return fmt.Errorf("fetch stored logs: %w", err)
-	}
-	defer response.Body.Close()
-	if response.StatusCode < http.StatusOK || response.StatusCode >= http.StatusMultipleChoices {
-		body, _ := io.ReadAll(io.LimitReader(response.Body, 4<<10))
-		return fmt.Errorf("Collector returned %s: %s", response.Status, strings.TrimSpace(string(body)))
-	}
-	if _, err := io.Copy(o.Out, response.Body); err != nil {
+
+	if _, err := fmt.Fprintf(o.Out, "agentic_run_id: %s\nrecords: %d\nhas_more: false\n\n", runUID, len(records)); err != nil {
 		return fmt.Errorf("write stored logs: %w", err)
+	}
+	for _, record := range records {
+		var body string
+		if err := json.Unmarshal(record.Body, &body); err != nil {
+			body = string(record.Body)
+		}
+		if _, err := fmt.Fprintf(o.Out, "%s: %s\n", record.Timestamp.Format(time.RFC3339Nano), body); err != nil {
+			return fmt.Errorf("write stored logs: %w", err)
+		}
 	}
 	return nil
 }
