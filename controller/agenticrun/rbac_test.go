@@ -60,7 +60,7 @@ func TestEnsureExecutionRBAC_NamespaceScopedOnly(t *testing.T) {
 		}},
 	}
 
-	if err := ensureExecutionRBAC(ctx, fc, run, rbacResult, "default"); err != nil {
+	if err := ensureExecutionRBAC(ctx, fc, run, rbacResult, "default", nil); err != nil {
 		t.Fatalf("ensureExecutionRBAC: %v", err)
 	}
 
@@ -135,7 +135,7 @@ func TestEnsureExecutionRBAC_ClusterScopedOnly(t *testing.T) {
 		}},
 	}
 
-	if err := ensureExecutionRBAC(ctx, fc, run, rbacResult, "default"); err != nil {
+	if err := ensureExecutionRBAC(ctx, fc, run, rbacResult, "default", nil); err != nil {
 		t.Fatalf("ensureExecutionRBAC: %v", err)
 	}
 
@@ -183,7 +183,7 @@ func TestEnsureExecutionRBAC_BothScopes(t *testing.T) {
 		}},
 	}
 
-	if err := ensureExecutionRBAC(ctx, fc, run, rbacResult, "default"); err != nil {
+	if err := ensureExecutionRBAC(ctx, fc, run, rbacResult, "default", nil); err != nil {
 		t.Fatalf("ensureExecutionRBAC: %v", err)
 	}
 
@@ -216,7 +216,7 @@ func TestEnsureExecutionRBAC_MultipleNamespaces(t *testing.T) {
 		}},
 	}
 
-	if err := ensureExecutionRBAC(ctx, fc, run, rbacResult, "default"); err != nil {
+	if err := ensureExecutionRBAC(ctx, fc, run, rbacResult, "default", nil); err != nil {
 		t.Fatalf("ensureExecutionRBAC: %v", err)
 	}
 
@@ -259,10 +259,10 @@ func TestEnsureExecutionRBAC_Idempotent(t *testing.T) {
 		}},
 	}
 
-	if err := ensureExecutionRBAC(ctx, fc, run, rbacResult, "default"); err != nil {
+	if err := ensureExecutionRBAC(ctx, fc, run, rbacResult, "default", nil); err != nil {
 		t.Fatalf("first call: %v", err)
 	}
-	if err := ensureExecutionRBAC(ctx, fc, run, rbacResult, "default"); err != nil {
+	if err := ensureExecutionRBAC(ctx, fc, run, rbacResult, "default", nil); err != nil {
 		t.Fatalf("idempotent second call should not error: %v", err)
 	}
 }
@@ -276,7 +276,7 @@ func TestEnsureExecutionRBAC_NilResult(t *testing.T) {
 		ObjectMeta: metav1.ObjectMeta{Name: "no-rbac", Namespace: "default", UID: "uid-no-rbac"},
 	}
 
-	if err := ensureExecutionRBAC(ctx, fc, run, nil, "default"); err != nil {
+	if err := ensureExecutionRBAC(ctx, fc, run, nil, "default", nil); err != nil {
 		t.Fatalf("nil RBACResult should be no-op: %v", err)
 	}
 }
@@ -292,7 +292,7 @@ func TestEnsureExecutionRBAC_EmptyRules(t *testing.T) {
 	}
 	rbacResult := &agenticv1alpha1.RBACResult{}
 
-	if err := ensureExecutionRBAC(ctx, fc, run, rbacResult, "default"); err != nil {
+	if err := ensureExecutionRBAC(ctx, fc, run, rbacResult, "default", nil); err != nil {
 		t.Fatalf("empty RBACResult should be no-op: %v", err)
 	}
 
@@ -320,7 +320,7 @@ func TestEnsureExecutionRBAC_NamespacesFromRBACRules(t *testing.T) {
 		},
 	}
 
-	if err := ensureExecutionRBAC(ctx, fc, run, rbacResult, "default"); err != nil {
+	if err := ensureExecutionRBAC(ctx, fc, run, rbacResult, "default", nil); err != nil {
 		t.Fatalf("ensureExecutionRBAC: %v", err)
 	}
 
@@ -352,7 +352,7 @@ func TestEnsureExecutionRBAC_ResourceNames(t *testing.T) {
 		}},
 	}
 
-	if err := ensureExecutionRBAC(ctx, fc, run, rbacResult, "default"); err != nil {
+	if err := ensureExecutionRBAC(ctx, fc, run, rbacResult, "default", nil); err != nil {
 		t.Fatalf("ensureExecutionRBAC: %v", err)
 	}
 
@@ -395,7 +395,7 @@ func TestCleanupExecutionRBAC_NamespaceAndCluster(t *testing.T) {
 	}
 
 	// Create RBAC
-	if err := ensureExecutionRBAC(ctx, fc, run, rbacResult, "default"); err != nil {
+	if err := ensureExecutionRBAC(ctx, fc, run, rbacResult, "default", nil); err != nil {
 		t.Fatalf("ensure: %v", err)
 	}
 
@@ -452,7 +452,7 @@ func TestCleanupExecutionRBAC_NoAnnotation(t *testing.T) {
 			Verbs: []string{"get"}, Justification: "Read nodes",
 		}},
 	}
-	if err := ensureExecutionRBAC(ctx, fc, run, rbacResult, "default"); err != nil {
+	if err := ensureExecutionRBAC(ctx, fc, run, rbacResult, "default", nil); err != nil {
 		t.Fatalf("ensure: %v", err)
 	}
 
@@ -1349,5 +1349,133 @@ func TestAddReaderSubject_ConflictRetryExhaustion(t *testing.T) {
 	}
 	if callCount != 3 {
 		t.Fatalf("expected 3 update attempts, got %d", callCount)
+	}
+}
+
+func TestEnsureExecutionRBAC_SpokeLabels(t *testing.T) {
+	ctx := context.Background()
+	fc := fake.NewClientBuilder().WithScheme(testScheme()).Build()
+
+	run := &agenticv1alpha1.AgenticRun{
+		ObjectMeta: metav1.ObjectMeta{Name: "spoke-run", Namespace: "ns", UID: "uid-spoke"},
+		Spec: agenticv1alpha1.AgenticRunSpec{
+			TargetNamespaces: []string{"prod"},
+			TargetCluster:    "prod-spoke",
+		},
+	}
+	rbacResult := &agenticv1alpha1.RBACResult{
+		NamespaceScoped: []agenticv1alpha1.RBACRule{{
+			APIGroups: []string{"apps"},
+			Resources: []string{"deployments"},
+			Verbs:     []string{"get"},
+		}},
+	}
+	extraLabels := map[string]string{
+		LabelSpokeCluster: "prod-spoke",
+		LabelAgenticRun:   "spoke-run",
+	}
+
+	if err := ensureExecutionRBAC(ctx, fc, run, rbacResult, "default", extraLabels); err != nil {
+		t.Fatalf("ensureExecutionRBAC: %v", err)
+	}
+
+	roleName := executionRoleName("uid-spoke")
+	var role rbacv1.Role
+	if err := fc.Get(ctx, types.NamespacedName{Name: roleName, Namespace: "prod"}, &role); err != nil {
+		t.Fatalf("Role not found: %v", err)
+	}
+	if role.Labels[LabelSpokeCluster] != "prod-spoke" {
+		t.Errorf("spoke-cluster label = %q, want %q", role.Labels[LabelSpokeCluster], "prod-spoke")
+	}
+	if role.Labels[LabelAgenticRun] != "spoke-run" {
+		t.Errorf("agentic-run label = %q, want %q", role.Labels[LabelAgenticRun], "spoke-run")
+	}
+	if role.Labels[LabelRun] != "uid-spoke" {
+		t.Errorf("run label = %q, want %q", role.Labels[LabelRun], "uid-spoke")
+	}
+}
+
+func TestEnsureExecutionRBAC_NilExtraLabels(t *testing.T) {
+	ctx := context.Background()
+	fc := fake.NewClientBuilder().WithScheme(testScheme()).Build()
+
+	run := &agenticv1alpha1.AgenticRun{
+		ObjectMeta: metav1.ObjectMeta{Name: "hub-run", Namespace: "ns", UID: "uid-hub"},
+		Spec: agenticv1alpha1.AgenticRunSpec{
+			TargetNamespaces: []string{"prod"},
+		},
+	}
+	rbacResult := &agenticv1alpha1.RBACResult{
+		NamespaceScoped: []agenticv1alpha1.RBACRule{{
+			APIGroups: []string{"apps"},
+			Resources: []string{"deployments"},
+			Verbs:     []string{"get"},
+		}},
+	}
+
+	if err := ensureExecutionRBAC(ctx, fc, run, rbacResult, "default", nil); err != nil {
+		t.Fatalf("ensureExecutionRBAC: %v", err)
+	}
+
+	roleName := executionRoleName("uid-hub")
+	var role rbacv1.Role
+	if err := fc.Get(ctx, types.NamespacedName{Name: roleName, Namespace: "prod"}, &role); err != nil {
+		t.Fatalf("Role not found: %v", err)
+	}
+	if _, ok := role.Labels[LabelSpokeCluster]; ok {
+		t.Error("hub-path Role should NOT have spoke-cluster label")
+	}
+	if _, ok := role.Labels[LabelAgenticRun]; ok {
+		t.Error("hub-path Role should NOT have agentic-run label")
+	}
+}
+
+func TestEnsureExecutionRBAC_SpokeLabels_ClusterScoped(t *testing.T) {
+	ctx := context.Background()
+	fc := fake.NewClientBuilder().WithScheme(testScheme()).Build()
+
+	run := &agenticv1alpha1.AgenticRun{
+		ObjectMeta: metav1.ObjectMeta{Name: "spoke-run-cs", Namespace: "ns", UID: "uid-spoke-cs"},
+		Spec: agenticv1alpha1.AgenticRunSpec{
+			TargetCluster: "prod-spoke",
+		},
+	}
+	rbacResult := &agenticv1alpha1.RBACResult{
+		ClusterScoped: []agenticv1alpha1.RBACRule{{
+			APIGroups: []string{""},
+			Resources: []string{"nodes"},
+			Verbs:     []string{"get", "list"},
+		}},
+	}
+	extraLabels := map[string]string{
+		LabelSpokeCluster: "prod-spoke",
+		LabelAgenticRun:   "spoke-run-cs",
+	}
+
+	if err := ensureExecutionRBAC(ctx, fc, run, rbacResult, "default", extraLabels); err != nil {
+		t.Fatalf("ensureExecutionRBAC: %v", err)
+	}
+
+	crName := clusterRoleName("uid-spoke-cs")
+	var cr rbacv1.ClusterRole
+	if err := fc.Get(ctx, types.NamespacedName{Name: crName}, &cr); err != nil {
+		t.Fatalf("ClusterRole not found: %v", err)
+	}
+	if cr.Labels[LabelSpokeCluster] != "prod-spoke" {
+		t.Errorf("ClusterRole spoke-cluster label = %q, want %q", cr.Labels[LabelSpokeCluster], "prod-spoke")
+	}
+	if cr.Labels[LabelAgenticRun] != "spoke-run-cs" {
+		t.Errorf("ClusterRole agentic-run label = %q, want %q", cr.Labels[LabelAgenticRun], "spoke-run-cs")
+	}
+
+	var crb rbacv1.ClusterRoleBinding
+	if err := fc.Get(ctx, types.NamespacedName{Name: crName}, &crb); err != nil {
+		t.Fatalf("ClusterRoleBinding not found: %v", err)
+	}
+	if crb.Labels[LabelSpokeCluster] != "prod-spoke" {
+		t.Errorf("CRB spoke-cluster label = %q, want %q", crb.Labels[LabelSpokeCluster], "prod-spoke")
+	}
+	if crb.Labels[LabelAgenticRun] != "spoke-run-cs" {
+		t.Errorf("CRB agentic-run label = %q, want %q", crb.Labels[LabelAgenticRun], "spoke-run-cs")
 	}
 }

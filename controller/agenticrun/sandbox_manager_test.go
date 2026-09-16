@@ -2,6 +2,7 @@ package agenticrun
 
 import (
 	"context"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -15,6 +16,7 @@ import (
 	"k8s.io/client-go/rest"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
+	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
 
 	agenticv1alpha1 "github.com/openshift/lightspeed-agentic-operator/api/v1alpha1"
 	"github.com/openshift/lightspeed-agentic-operator/pkg/configuration"
@@ -396,7 +398,7 @@ func TestRelease_BarePod(t *testing.T) {
 	fc := fake.NewClientBuilder().WithScheme(testScheme()).WithObjects(pod).Build()
 	mgr := newTestSandboxManager(fc, cache)
 
-	if err := mgr.Release(context.Background(), run, "analysis"); err != nil {
+	if err := mgr.Release(context.Background(), run, "analysis", nil); err != nil {
 		t.Fatalf("Release failed: %v", err)
 	}
 
@@ -413,7 +415,7 @@ func TestRelease_BarePod_Idempotent(t *testing.T) {
 	fc := fake.NewClientBuilder().WithScheme(testScheme()).WithObjects(testReaderCRB()).Build()
 	mgr := newTestSandboxManager(fc, cache)
 
-	if err := mgr.Release(context.Background(), run, "analysis"); err != nil {
+	if err := mgr.Release(context.Background(), run, "analysis", nil); err != nil {
 		t.Fatalf("Release of non-existent pod should succeed, got: %v", err)
 	}
 }
@@ -424,7 +426,7 @@ func TestRelease_SandboxClaim_Idempotent(t *testing.T) {
 	fc := fake.NewClientBuilder().WithScheme(testScheme()).WithObjects(testReaderCRB()).Build()
 	mgr := newTestSandboxManager(fc, cache)
 
-	if err := mgr.Release(context.Background(), run, "analysis"); err != nil {
+	if err := mgr.Release(context.Background(), run, "analysis", nil); err != nil {
 		t.Fatalf("Release of non-existent claim should succeed, got: %v", err)
 	}
 }
@@ -536,15 +538,11 @@ func testSpokeRun() *agenticv1alpha1.AgenticRun {
 	}
 }
 
-func TestCreate_SpokeRun_SAOnSpoke(t *testing.T) {
+// TestCreate_SpokeRun_Gated verifies that targetCluster runs are rejected
+// until OLS-3951 wires sandbox credentials.
+func TestCreate_SpokeRun_Gated(t *testing.T) {
 	origClient := NewClientFromConfig
-	// Inject a fake spoke client that we can inspect.
-	spokeFC := fake.NewClientBuilder().WithScheme(testScheme()).WithObjects(
-		spokeReaderBindings()[0], spokeReaderBindings()[1],
-	).Build()
-	NewClientFromConfig = func(cfg *rest.Config) (client.Client, error) {
-		return spokeFC, nil
-	}
+	NewClientFromConfig = fakeNewClient
 	t.Cleanup(func() { NewClientFromConfig = origClient })
 
 	cache := testCache(t, "bare-pod")
@@ -554,78 +552,11 @@ func TestCreate_SpokeRun_SAOnSpoke(t *testing.T) {
 
 	run := testSpokeRun()
 	_, err := mgr.Create(context.Background(), run, "analysis", testSMAgent(), testLLMForManager(), nil, 15*time.Minute, nil)
-	if err != nil {
-		t.Fatalf("Create failed: %v", err)
+	if err == nil {
+		t.Fatal("expected error for gated targetCluster run")
 	}
-
-	// SA should be on spoke, not hub.
-	saName := sandboxSAName(run, "analysis")
-	var spokeSA corev1.ServiceAccount
-	if err := spokeFC.Get(context.Background(), types.NamespacedName{Name: saName, Namespace: spokeManagedNamespace}, &spokeSA); err != nil {
-		t.Fatalf("SA not found on spoke: %v", err)
-	}
-	// Verify spoke labels.
-	if spokeSA.Labels[LabelSpokeCluster] != "test-spoke" {
-		t.Errorf("spoke-cluster label = %q, want test-spoke", spokeSA.Labels[LabelSpokeCluster])
-	}
-	if spokeSA.Labels[LabelAgenticRun] != "spoke-run" {
-		t.Errorf("agentic-run label = %q, want spoke-run", spokeSA.Labels[LabelAgenticRun])
-	}
-
-	// SA should NOT exist on hub.
-	var hubSA corev1.ServiceAccount
-	if err := hubFC.Get(context.Background(), types.NamespacedName{Name: saName, Namespace: "test-ns"}, &hubSA); err == nil {
-		t.Fatal("SA should NOT exist on hub for spoke run")
-	}
-
-	// Reader CRBs on spoke should have the SA subject.
-	for _, name := range spokeReaderBindingNames {
-		var crb rbacv1.ClusterRoleBinding
-		if err := spokeFC.Get(context.Background(), types.NamespacedName{Name: name}, &crb); err != nil {
-			t.Fatalf("spoke CRB %s not found: %v", name, err)
-		}
-		found := false
-		for _, s := range crb.Subjects {
-			if s.Name == saName {
-				found = true
-				break
-			}
-		}
-		if !found {
-			t.Errorf("SA %s not added to spoke CRB %s", saName, name)
-		}
-	}
-}
-
-func TestCreate_SpokeRun_NoSAOwnerRef(t *testing.T) {
-	origClient := NewClientFromConfig
-	spokeFC := fake.NewClientBuilder().WithScheme(testScheme()).WithObjects(
-		spokeReaderBindings()[0], spokeReaderBindings()[1],
-	).Build()
-	NewClientFromConfig = func(cfg *rest.Config) (client.Client, error) {
-		return spokeFC, nil
-	}
-	t.Cleanup(func() { NewClientFromConfig = origClient })
-
-	cache := testCache(t, "bare-pod")
-	hubFC := fake.NewClientBuilder().WithScheme(testScheme()).
-		WithObjects(testReaderCRB(), testSpokeKubeconfigSecret()).Build()
-	mgr := newTestSandboxManager(hubFC, cache)
-
-	run := testSpokeRun()
-	_, err := mgr.Create(context.Background(), run, "analysis", testSMAgent(), testLLMForManager(), nil, 15*time.Minute, nil)
-	if err != nil {
-		t.Fatalf("Create failed: %v", err)
-	}
-
-	// Spoke SA should NOT have owner refs (cross-cluster GC doesn't work).
-	saName := sandboxSAName(run, "analysis")
-	var sa corev1.ServiceAccount
-	if err := spokeFC.Get(context.Background(), types.NamespacedName{Name: saName, Namespace: spokeManagedNamespace}, &sa); err != nil {
-		t.Fatalf("SA not found on spoke: %v", err)
-	}
-	if len(sa.OwnerReferences) != 0 {
-		t.Fatalf("spoke SA should have no owner refs, got %v", sa.OwnerReferences)
+	if !strings.Contains(err.Error(), "not yet supported") {
+		t.Fatalf("expected 'not yet supported' error, got: %v", err)
 	}
 }
 
@@ -668,7 +599,8 @@ func TestRelease_SpokeRun_CleansUpSpoke(t *testing.T) {
 		t.Fatalf("create hub pod: %v", err)
 	}
 
-	if err := mgr.Release(context.Background(), run, "analysis"); err != nil {
+	spoke := &SpokeAccess{Client: spokeFC, Namespace: spokeManagedNamespace}
+	if err := mgr.Release(context.Background(), run, "analysis", spoke); err != nil {
 		t.Fatalf("Release failed: %v", err)
 	}
 
@@ -711,7 +643,7 @@ func TestRelease_SpokeUnreachable_HubCleanupContinues(t *testing.T) {
 	}
 
 	// Release should not error — spoke failure is logged, hub cleanup proceeds.
-	if err := mgr.Release(context.Background(), run, "analysis"); err != nil {
+	if err := mgr.Release(context.Background(), run, "analysis", nil); err != nil {
 		t.Fatalf("Release should succeed even when spoke is unreachable, got: %v", err)
 	}
 
@@ -753,5 +685,55 @@ func TestCreate_LocalRun_Unchanged(t *testing.T) {
 	var pod corev1.Pod
 	if err := fc.Get(context.Background(), types.NamespacedName{Name: name, Namespace: "test-ns"}, &pod); err != nil {
 		t.Fatalf("pod not found: %v", err)
+	}
+}
+
+// TestCreate_OwnerPatchFailure_DoesNotDeleteWorkload verifies that a
+// post-workload owner-ref patch failure does NOT trigger
+// cleanupOnCreateFailure. The pod should still exist, and its
+// dependencies (ConfigMap, SA, RBAC) should remain intact.
+func TestCreate_OwnerPatchFailure_DoesNotDeleteWorkload(t *testing.T) {
+	fc := fake.NewClientBuilder().
+		WithScheme(testScheme()).
+		WithObjects(testReaderCRB()).
+		WithInterceptorFuncs(interceptor.Funcs{
+			Patch: func(ctx context.Context, c client.WithWatch, obj client.Object, patch client.Patch, opts ...client.PatchOption) error {
+				// Fail the ConfigMap owner-ref patch (setInputConfigMapOwner).
+				if _, ok := obj.(*corev1.ConfigMap); ok {
+					return fmt.Errorf("simulated owner patch failure")
+				}
+				return c.Patch(ctx, obj, patch, opts...)
+			},
+		}).
+		Build()
+
+	cache := testCache(t, "bare-pod")
+	mgr := newTestSandboxManager(fc, cache)
+	run := testSMRun()
+
+	_, err := mgr.Create(context.Background(), run, "analysis", testSMAgent(), testLLMForManager(), nil, 15*time.Minute, nil)
+	if err == nil {
+		t.Fatal("expected error from owner-ref patch failure")
+	}
+
+	// Pod should still exist — cleanup must not delete it.
+	podName := fmt.Sprintf("ls-analysis-%s", run.UID)
+	var pod corev1.Pod
+	if err := fc.Get(context.Background(), types.NamespacedName{Name: podName, Namespace: "test-ns"}, &pod); err != nil {
+		t.Fatalf("pod should still exist after owner-patch failure, got: %v", err)
+	}
+
+	// ConfigMap should still exist — cleanup must not delete it.
+	cmName := inputConfigMapName("analysis", string(run.UID))
+	var cm corev1.ConfigMap
+	if err := fc.Get(context.Background(), types.NamespacedName{Name: cmName, Namespace: "test-ns"}, &cm); err != nil {
+		t.Fatalf("ConfigMap should still exist after owner-patch failure, got: %v", err)
+	}
+
+	// SA should still exist — cleanup must not delete it.
+	saName := sandboxSAName(run, "analysis")
+	var sa corev1.ServiceAccount
+	if err := fc.Get(context.Background(), types.NamespacedName{Name: saName, Namespace: "test-ns"}, &sa); err != nil {
+		t.Fatalf("SA should still exist after owner-patch failure, got: %v", err)
 	}
 }

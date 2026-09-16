@@ -108,6 +108,14 @@ func (m *SandboxManager) Create(
 
 	span := trace.SpanFromContext(ctx)
 
+	// Gate: spoke runs require sandbox credential support (OLS-3951).
+	// Without it the pod cannot reach the spoke or write Result CRs.
+	// Checked before spokeAccessForRun so a missing kubeconfig doesn't
+	// mask the unsupported-feature error.
+	if run.Spec.TargetCluster != "" {
+		return "", fmt.Errorf("%s: targetCluster is not yet supported (requires OLS-3951)", errCreateSandbox)
+	}
+
 	// Resolve spoke access once for the entire Create flow.
 	// nil when targetCluster is empty (hub path — unchanged behavior).
 	spoke, err := spokeAccessForRun(ctx, m.client, run, m.namespace)
@@ -117,17 +125,17 @@ func (m *SandboxManager) Create(
 
 	serviceAccount := sandboxSAName(run, step)
 
-	// Register cleanup before ensureSA so that any failure after SA
-	// creation triggers spoke resource cleanup. Uses the named return
-	// retErr so owner-update failures (which don't set createErr) are
-	// also covered.
+	// Register cleanup so that any failure after SA creation cleans up
+	// spoke resources, RBAC, and the SA itself.
+	var createErr error
 	defer func() {
-		if retErr != nil {
+		if createErr != nil {
 			m.cleanupOnCreateFailure(ctx, run, step, serviceAccount, spoke)
 		}
 	}()
 
 	if err := m.ensureSA(ctx, run, serviceAccount, step, spoke); err != nil {
+		createErr = err
 		return "", err
 	}
 
@@ -146,17 +154,21 @@ func (m *SandboxManager) Create(
 			// Execution RBAC targets spoke when targetCluster is set.
 			rbacClient := m.client // hub client
 			rbacNS := m.namespace  // hub namespace
+			var extraLabels map[string]string
 			if spoke != nil {
 				rbacClient = spoke.Client // spoke client
 				rbacNS = spoke.Namespace  // spoke namespace
+				extraLabels = spokeExtraLabels(run.Name, run.Spec.TargetCluster)
 			}
 			base := run.DeepCopy()
-			if err := ensureExecutionRBAC(ctx, rbacClient, run, rbac, rbacNS); err != nil {
+			if err := ensureExecutionRBAC(ctx, rbacClient, run, rbac, rbacNS, extraLabels); err != nil {
+				createErr = err
 				return "", err
 			}
 			// Annotation is persisted on hub (run lives on hub).
 			if err := m.client.Patch(ctx, run, client.MergeFrom(base)); err != nil {
-				return "", fmt.Errorf("persist RBAC annotation: %w", err)
+				createErr = fmt.Errorf("persist RBAC annotation: %w", err)
+				return "", createErr
 			}
 		}
 	}
@@ -164,9 +176,11 @@ func (m *SandboxManager) Create(
 	schema := outputSchemaForStep(step, run)
 	inputCM, err := buildInputConfigMap(m.namespace, run, step, agent, schema, agentCtx)
 	if err != nil {
+		createErr = err
 		return "", err
 	}
 	if err := m.createInputConfigMap(ctx, inputCM); err != nil {
+		createErr = err
 		return "", err
 	}
 	span.AddEvent("sandbox.configmap.created")
@@ -176,6 +190,7 @@ func (m *SandboxManager) Create(
 	// automount disabled, so this binding is dormant until OLS-3951 provides
 	// hub-write credentials. The Role/RoleBinding are GC'd via owner ref.
 	if err := ensureResultRBAC(ctx, m.client, run, step, serviceAccount, m.namespace); err != nil {
+		createErr = err
 		return "", err
 	}
 	span.AddEvent("sandbox.rbac.created")
@@ -199,7 +214,8 @@ func (m *SandboxManager) Create(
 		maxTurns,
 	)
 	if err != nil {
-		return "", fmt.Errorf("%s: %w", errBuildPodSpec, err)
+		createErr = fmt.Errorf("%s: %w", errBuildPodSpec, err)
+		return "", createErr
 	}
 
 	// Spoke sandbox pods don't need hub SA tokens — spoke access is via
@@ -218,6 +234,7 @@ func (m *SandboxManager) Create(
 	if cfg.Sandbox.Mode == sandboxModeSandboxClaim {
 		claimName, claimUID, err := m.createSandboxClaim(ctx, run, name, step, podSpec)
 		if err != nil {
+			createErr = err
 			return "", err
 		}
 		ownerRef = metav1.OwnerReference{
@@ -230,6 +247,7 @@ func (m *SandboxManager) Create(
 	} else {
 		podName, podUID, err := m.createBarePod(ctx, run, name, step, podSpec)
 		if err != nil {
+			createErr = err
 			return "", err
 		}
 		ownerRef = metav1.OwnerReference{
@@ -243,17 +261,21 @@ func (m *SandboxManager) Create(
 
 	span.AddEvent("sandbox.pod.created")
 
+	// Post-workload owner-ref updates. These do NOT set createErr because
+	// the workload is already running — cleanupOnCreateFailure must not
+	// delete dependencies from under it. Return name (not "") so the
+	// caller can persist it and ReleaseSandboxes can find the workload.
 	if err := m.setInputConfigMapOwner(ctx, inputConfigMapName(step, string(run.UID)), ownerRef); err != nil {
-		return "", err
+		return name, err
 	}
 	if err := setResultRBACOwner(ctx, m.client, string(run.UID), step, ownerRef, m.namespace); err != nil {
-		return "", err
+		return name, err
 	}
 	// Skip SA owner ref for spoke SAs — cross-cluster owner refs don't work.
 	// Spoke SA cleanup is explicit via Release/finalizer path.
 	if spoke == nil {
 		if err := m.setSAOwner(ctx, serviceAccount, ownerRef); err != nil {
-			return "", err
+			return name, err
 		}
 	}
 	return name, nil
@@ -331,31 +353,21 @@ func (m *SandboxManager) cleanupOnCreateFailure(ctx context.Context, run *agenti
 	if err := m.client.Delete(ctx, rb); err != nil && !apierrors.IsNotFound(err) {
 		log.Error(err, "cleanup: failed to delete result RoleBinding", LogKeyName, roleName)
 	}
-	// Execution RBAC: spoke or hub depending on targetCluster.
-	if step == "execution" {
-		if spoke != nil {
-			if err := cleanupExecutionRBAC(ctx, spoke.Client, run); err != nil {
-				log.Error(err, "cleanup: failed to delete spoke execution RBAC")
-			}
-		} else {
-			if err := cleanupExecutionRBAC(ctx, m.client, run); err != nil {
-				log.Error(err, "cleanup: failed to delete execution RBAC")
-			}
-		}
-	}
-	// SA + reader subject cleanup: spoke or hub.
+	// SA + reader subject + execution RBAC cleanup: spoke or hub.
 	if serviceAccount != "" {
 		if spoke != nil {
-			if err := removeReaderSubjectOnSpoke(ctx, spoke.Client, serviceAccount, spoke.Namespace); err != nil {
-				log.Error(err, "cleanup: failed to remove spoke reader subjects", LogKeyName, serviceAccount)
-			}
-			sa := &corev1.ServiceAccount{}
-			sa.Name = serviceAccount
-			sa.Namespace = spoke.Namespace
-			if err := spoke.Client.Delete(ctx, sa); err != nil && !apierrors.IsNotFound(err) {
-				log.Error(err, "cleanup: failed to delete spoke SA", LogKeyName, serviceAccount)
+			if err := spokeCleanupStep(ctx, spoke, run, serviceAccount, step == "execution"); err != nil {
+				log.Error(err, "cleanup: spoke step cleanup", LogKeyName, serviceAccount)
 			}
 		} else {
+			if err := removeReaderSubject(ctx, m.client, serviceAccount, m.namespace); err != nil {
+				log.Error(err, "cleanup: failed to remove reader subjects", LogKeyName, serviceAccount)
+			}
+			if step == "execution" {
+				if err := cleanupExecutionRBAC(ctx, m.client, run); err != nil {
+					log.Error(err, "cleanup: failed to delete execution RBAC")
+				}
+			}
 			sa := &corev1.ServiceAccount{}
 			sa.Name = serviceAccount
 			sa.Namespace = m.namespace
@@ -592,7 +604,10 @@ func podSpecToUnstructured(podSpec *corev1.PodSpec) (map[string]any, error) {
 // automatically via owner references. Cross-namespace execution RBAC (Roles,
 // ClusterRoles) and reader subject bindings are cleaned up explicitly.
 // Idempotent.
-func (m *SandboxManager) Release(ctx context.Context, run *agenticv1alpha1.AgenticRun, step string) error {
+// Release ends the audit span and deletes the sandbox resource. spoke is
+// pre-resolved by the caller (ReleaseSandbox / ReleaseSandboxes) so that
+// bulk teardown reads the kubeconfig Secret only once.
+func (m *SandboxManager) Release(ctx context.Context, run *agenticv1alpha1.AgenticRun, step string, spoke *SpokeAccess) error {
 	if m.audit != nil {
 		m.audit.CompleteStep(run, step, nil)
 	}
@@ -614,29 +629,12 @@ func (m *SandboxManager) Release(ctx context.Context, run *agenticv1alpha1.Agent
 
 	saName := sandboxSAName(run, step)
 
-	// Spoke cleanup: reader subjects, execution RBAC, and SA deletion
-	// all target the spoke. Spoke errors don't block hub cleanup (R4).
-	spoke, spokeErr := spokeAccessForRun(ctx, m.client, run, m.namespace)
-	if spokeErr != nil {
-		log := logf.FromContext(ctx)
-		log.Error(spokeErr, "release: spoke unreachable, skipping spoke cleanup")
-		// Continue with hub cleanup — don't block finalizer.
-	} else if spoke != nil {
-		if err := removeReaderSubjectOnSpoke(ctx, spoke.Client, saName, spoke.Namespace); err != nil && firstErr == nil {
-			firstErr = err
-		}
-		if step == "execution" {
-			if err := cleanupExecutionRBAC(ctx, spoke.Client, run); err != nil && firstErr == nil {
-				firstErr = err
-			}
-		}
-		// Explicit SA deletion on spoke (no cross-cluster GC).
-		sa := &corev1.ServiceAccount{ObjectMeta: metav1.ObjectMeta{Name: saName, Namespace: spoke.Namespace}}
-		if err := spoke.Client.Delete(ctx, sa); err != nil && !apierrors.IsNotFound(err) && firstErr == nil {
+	// Spoke cleanup via shared helper. Hub path is unchanged.
+	if spoke != nil {
+		if err := spokeCleanupStep(ctx, spoke, run, saName, step == "execution"); err != nil && firstErr == nil {
 			firstErr = err
 		}
 	} else {
-		// Hub path: unchanged.
 		if err := removeReaderSubject(ctx, m.client, saName, m.namespace); err != nil && firstErr == nil {
 			firstErr = err
 		}

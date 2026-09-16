@@ -6,8 +6,10 @@ import (
 
 	authenticationv1 "k8s.io/api/authentication/v1"
 	corev1 "k8s.io/api/core/v1"
+	rbacv1 "k8s.io/api/rbac/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/kubernetes"
 	k8sfake "k8s.io/client-go/kubernetes/fake"
 	"k8s.io/client-go/rest"
@@ -313,6 +315,68 @@ users:
 	}
 }
 
+func TestSpokeAccessForRun_RejectsExecProvider(t *testing.T) {
+	orig := NewClientFromConfig
+	NewClientFromConfig = fakeNewClient
+	t.Cleanup(func() { NewClientFromConfig = orig })
+
+	// A kubeconfig that uses exec-based credential plugin.
+	kubeconfig := []byte(`
+apiVersion: v1
+kind: Config
+clusters:
+- cluster:
+    server: https://api.spoke.example.com:6443
+    certificate-authority-data: LS0tLS1CRUdJTi0tLS0t
+  name: spoke
+contexts:
+- context:
+    cluster: spoke
+    user: spoke-user
+  name: spoke
+current-context: spoke
+users:
+- name: spoke-user
+  user:
+    exec:
+      apiVersion: client.authentication.k8s.io/v1
+      command: /malicious-binary
+      interactiveMode: Never
+`)
+
+	secret := &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "spoke-kubeconfig-exec-spoke",
+			Namespace: testOperatorNS,
+		},
+		Data: map[string][]byte{
+			kubeconfigKey: kubeconfig,
+		},
+	}
+
+	hubClient := fake.NewClientBuilder().
+		WithScheme(testScheme()).
+		WithObjects(secret).
+		Build()
+
+	run := &agenticv1alpha1.AgenticRun{
+		Spec: agenticv1alpha1.AgenticRunSpec{
+			TargetCluster: "exec-spoke",
+		},
+	}
+
+	sa, err := spokeAccessForRun(context.Background(), hubClient, run, testOperatorNS)
+	if err == nil {
+		t.Fatal("expected error for exec-provider kubeconfig")
+	}
+	if sa != nil {
+		t.Fatal("expected nil SpokeAccess on error")
+	}
+	if !contains(err.Error(), "external credential providers") {
+		t.Errorf("error = %q, want it to contain 'external credential providers'", err.Error())
+	}
+}
+
 // ---------------------------------------------------------------------------
 // spokeLabels
 // ---------------------------------------------------------------------------
@@ -393,6 +457,57 @@ func TestSpokeLabels_HubResourcesNotLabeled(t *testing.T) {
 	}
 	if _, ok := hubLabels[LabelAgenticRun]; ok {
 		t.Fatal("hub resources should NOT have agentic-run label")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// spokeCleanupStep
+// ---------------------------------------------------------------------------
+
+func TestSpokeCleanupStep_DeletesSAAndRemovesReaderSubject(t *testing.T) {
+	saName := "ls-anl-uid-123"
+	sa := &corev1.ServiceAccount{
+		ObjectMeta: metav1.ObjectMeta{Name: saName, Namespace: spokeManagedNamespace},
+	}
+	crb := &rbacv1.ClusterRoleBinding{
+		ObjectMeta: metav1.ObjectMeta{Name: spokeReaderBindingNames[0]},
+		Subjects: []rbacv1.Subject{{
+			Kind:      rbacv1.ServiceAccountKind,
+			Name:      saName,
+			Namespace: spokeManagedNamespace,
+		}},
+		RoleRef: rbacv1.RoleRef{APIGroup: rbacv1.GroupName, Kind: "ClusterRole", Name: "reader"},
+	}
+
+	fc := fake.NewClientBuilder().WithScheme(testScheme()).WithObjects(sa, crb).Build()
+	spoke := &SpokeAccess{Client: fc, Namespace: spokeManagedNamespace}
+	run := &agenticv1alpha1.AgenticRun{ObjectMeta: metav1.ObjectMeta{UID: "uid-123"}}
+
+	if err := spokeCleanupStep(context.Background(), spoke, run, saName, false); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	var got corev1.ServiceAccount
+	if err := fc.Get(context.Background(), types.NamespacedName{Name: saName, Namespace: spokeManagedNamespace}, &got); err == nil {
+		t.Error("expected SA to be deleted")
+	}
+
+	var gotCRB rbacv1.ClusterRoleBinding
+	if err := fc.Get(context.Background(), types.NamespacedName{Name: spokeReaderBindingNames[0]}, &gotCRB); err != nil {
+		t.Fatalf("CRB lookup: %v", err)
+	}
+	if len(gotCRB.Subjects) != 0 {
+		t.Errorf("expected 0 subjects, got %d", len(gotCRB.Subjects))
+	}
+}
+
+func TestSpokeCleanupStep_IdempotentWhenMissing(t *testing.T) {
+	fc := fake.NewClientBuilder().WithScheme(testScheme()).Build()
+	spoke := &SpokeAccess{Client: fc, Namespace: spokeManagedNamespace}
+	run := &agenticv1alpha1.AgenticRun{ObjectMeta: metav1.ObjectMeta{UID: "uid-gone"}}
+
+	if err := spokeCleanupStep(context.Background(), spoke, run, "ls-anl-uid-gone", false); err != nil {
+		t.Fatalf("expected no error for missing resources, got: %v", err)
 	}
 }
 

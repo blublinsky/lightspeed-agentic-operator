@@ -8,6 +8,7 @@ import (
 
 	authenticationv1 "k8s.io/api/authentication/v1"
 	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/kubernetes"
@@ -62,17 +63,27 @@ func truncateLabelValue(v string) string {
 	return v[:maxLabelValueLen-8] + "-" + h[:7]
 }
 
-// spokeLabels returns labels for resources created on the spoke cluster.
-// Includes the standard run/component labels plus spoke-specific labels
-// for cross-cluster auditability. Long values are truncated to fit the
-// 63-char Kubernetes label limit.
-func spokeLabels(runUID, runName, targetCluster, component string) map[string]string {
+// spokeExtraLabels returns the spoke-specific audit labels (truncated).
+// Used by spokeLabels and as extraLabels for ensureExecutionRBAC.
+func spokeExtraLabels(runName, targetCluster string) map[string]string {
 	return map[string]string{
-		LabelRun:          runUID,
-		LabelComponent:    component,
 		LabelSpokeCluster: truncateLabelValue(targetCluster),
 		LabelAgenticRun:   truncateLabelValue(runName),
 	}
+}
+
+// spokeLabels returns labels for resources created on the spoke cluster.
+// Includes the standard run/component labels plus spoke-specific labels
+// for cross-cluster auditability.
+func spokeLabels(runUID, runName, targetCluster, component string) map[string]string {
+	labels := map[string]string{
+		LabelRun:       runUID,
+		LabelComponent: component,
+	}
+	for k, v := range spokeExtraLabels(runName, targetCluster) {
+		labels[k] = v
+	}
+	return labels
 }
 
 // NewClientFromConfig creates a controller-runtime client from a rest.Config.
@@ -110,6 +121,19 @@ func spokeAccessForRun(ctx context.Context, hubClient client.Client, run *agenti
 	// never be sent over cleartext or to unverified servers.
 	if !rest.IsConfigTransportTLS(*cfg) || cfg.TLSClientConfig.Insecure {
 		return nil, fmt.Errorf("%s: %s", ErrSpokeInsecureTLS, secretName)
+	}
+
+	// Reject kubeconfigs that reference external credential plugins or
+	// filesystem paths. A compromised Secret must not be able to execute
+	// code or read files from the operator container.
+	if cfg.ExecProvider != nil ||
+		cfg.AuthProvider != nil ||
+		cfg.BearerTokenFile != "" ||
+		cfg.TLSClientConfig.CAFile != "" ||
+		cfg.TLSClientConfig.CertFile != "" ||
+		cfg.TLSClientConfig.KeyFile != "" {
+		return nil, fmt.Errorf("%s %s: external credential providers and file references are not allowed",
+			ErrParseSpokeKubeconfig, secretName)
 	}
 
 	cfg.Timeout = spokeDialTimeout
@@ -157,4 +181,24 @@ func requestSpokeToken(ctx context.Context, cfg *rest.Config, saName, spokeNS st
 	}
 
 	return result.Status.Token, nil
+}
+
+// spokeCleanupStep removes reader CRB subjects, optionally cleans execution
+// RBAC, and deletes the per-step SA on the spoke. Idempotent. Processes all
+// operations and returns the first error encountered.
+func spokeCleanupStep(ctx context.Context, spoke *SpokeAccess, run *agenticv1alpha1.AgenticRun, saName string, includeExecutionRBAC bool) error {
+	var firstErr error
+	if err := removeReaderSubjectOnSpoke(ctx, spoke.Client, saName, spoke.Namespace); err != nil && firstErr == nil {
+		firstErr = err
+	}
+	if includeExecutionRBAC {
+		if err := cleanupExecutionRBAC(ctx, spoke.Client, run); err != nil && firstErr == nil {
+			firstErr = err
+		}
+	}
+	sa := &corev1.ServiceAccount{ObjectMeta: metav1.ObjectMeta{Name: saName, Namespace: spoke.Namespace}}
+	if err := spoke.Client.Delete(ctx, sa); err != nil && !apierrors.IsNotFound(err) && firstErr == nil {
+		firstErr = err
+	}
+	return firstErr
 }

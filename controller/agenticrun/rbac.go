@@ -245,12 +245,15 @@ func removeSubjectFromBinding(ctx context.Context, c client.Client, bindingName,
 // ClusterRole+ClusterRoleBinding (cluster-scoped) from the selected option's RBAC result.
 // All bindings reference the per-run SA for isolation between concurrent AgenticRuns.
 // SA creation is handled by SandboxManager.Create. Idempotent.
+// extraLabels are merged into the standard rbacLabels — used by the spoke
+// path to add cross-cluster audit labels.
 func ensureExecutionRBAC(
 	ctx context.Context,
 	c client.Client,
 	run *agenticv1alpha1.AgenticRun,
 	rbacResult *agenticv1alpha1.RBACResult,
 	operatorNS string,
+	extraLabels map[string]string,
 ) error {
 	if rbacResult == nil {
 		return nil
@@ -259,6 +262,9 @@ func ensureExecutionRBAC(
 	saName := sandboxSAName(run, "execution")
 	roleName := executionRoleName(string(run.UID))
 	labels := rbacLabels(string(run.UID), "execution-rbac")
+	for k, v := range extraLabels {
+		labels[k] = v
+	}
 
 	subjects := []rbacv1.Subject{{
 		Kind:      rbacv1.ServiceAccountKind,
