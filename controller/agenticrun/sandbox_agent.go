@@ -234,7 +234,7 @@ func (s *SandboxAgentCaller) ReleaseSandboxes(ctx context.Context, run *agenticv
 	// If execution RBAC was created (annotation present) but patchSandboxInfo
 	// failed (no claim name), Release("execution") was skipped above. Clean up
 	// the RBAC unconditionally to prevent leaks.
-	if !executionReleased && len(annotatedRBACNamespaces(run)) > 0 {
+	if !executionReleased {
 		// spoke already resolved above.
 		if spoke != nil {
 			exeSA := sandboxSAName(run, "execution")
