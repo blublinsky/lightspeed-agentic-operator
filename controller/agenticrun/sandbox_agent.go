@@ -116,7 +116,7 @@ type agentPreviousAttempt struct {
 // explicit cross-namespace/cluster-scoped RBAC teardown.
 type SandboxLifecycle interface {
 	Create(ctx context.Context, run *agenticv1alpha1.AgenticRun, step string, agent *agenticv1alpha1.Agent, llm *agenticv1alpha1.LLMProvider, tools *agenticv1alpha1.ToolsSpec, deadline time.Duration, agentCtx *agentContext) (string, error)
-	Release(ctx context.Context, run *agenticv1alpha1.AgenticRun, step string) error
+	Release(ctx context.Context, run *agenticv1alpha1.AgenticRun, step string, spoke *SpokeAccess) error
 }
 
 // SandboxAgentCaller implements AgentCaller by creating a sandbox pod
@@ -193,12 +193,26 @@ func (s *SandboxAgentCaller) launchSandbox(
 }
 
 func (s *SandboxAgentCaller) ReleaseSandbox(ctx context.Context, run *agenticv1alpha1.AgenticRun, step string) error {
-	return s.Sandbox.Release(ctx, run, step)
+	spoke, spokeErr := spokeAccessForRun(ctx, s.K8sClient, run, s.Namespace)
+	if spokeErr != nil {
+		logf.FromContext(ctx).Error(spokeErr, "release: spoke unreachable, skipping spoke cleanup")
+	}
+	if err := s.Sandbox.Release(ctx, run, step, spoke); err != nil {
+		return err
+	}
+	return spokeErr
 }
 
 func (s *SandboxAgentCaller) ReleaseSandboxes(ctx context.Context, run *agenticv1alpha1.AgenticRun) error {
 	log := logf.FromContext(ctx)
 	var firstErr error
+
+	// Resolve spoke access once for the entire teardown.
+	spoke, spokeErr := spokeAccessForRun(ctx, s.K8sClient, run, s.Namespace)
+	if spokeErr != nil {
+		log.Error(spokeErr, "release: spoke unreachable, skipping spoke cleanup")
+		firstErr = spokeErr
+	}
 
 	executionReleased := false
 	for _, step := range []string{"analysis", "execution", "verification", "escalation"} {
@@ -209,7 +223,7 @@ func (s *SandboxAgentCaller) ReleaseSandboxes(ctx context.Context, run *agenticv
 		if step == "execution" {
 			executionReleased = true
 		}
-		if err := s.Sandbox.Release(ctx, run, step); err != nil {
+		if err := s.Sandbox.Release(ctx, run, step, spoke); err != nil {
 			log.Error(err, "failed to release sandbox", LogKeyClaim, claimName, LogKeyStep, step)
 			if firstErr == nil {
 				firstErr = err
@@ -220,10 +234,15 @@ func (s *SandboxAgentCaller) ReleaseSandboxes(ctx context.Context, run *agenticv
 	// If execution RBAC was created (annotation present) but patchSandboxInfo
 	// failed (no claim name), Release("execution") was skipped above. Clean up
 	// the RBAC unconditionally to prevent leaks.
-	if !executionReleased && len(annotatedRBACNamespaces(run)) > 0 {
-		if err := cleanupExecutionRBAC(ctx, s.K8sClient, run); err != nil {
-			log.Error(err, "failed to clean up orphaned execution RBAC")
-			if firstErr == nil {
+	if !executionReleased {
+		// spoke already resolved above.
+		if spoke != nil {
+			exeSA := sandboxSAName(run, "execution")
+			if err := spokeCleanupStep(ctx, spoke, run, exeSA, true); err != nil && firstErr == nil {
+				firstErr = err
+			}
+		} else {
+			if err := cleanupExecutionRBAC(ctx, s.K8sClient, run); err != nil && firstErr == nil {
 				firstErr = err
 			}
 		}

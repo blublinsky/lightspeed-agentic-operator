@@ -2,6 +2,7 @@ package agenticrun
 
 import (
 	"context"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -12,8 +13,10 @@ import (
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/client-go/rest"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
+	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
 
 	agenticv1alpha1 "github.com/openshift/lightspeed-agentic-operator/api/v1alpha1"
 	"github.com/openshift/lightspeed-agentic-operator/pkg/configuration"
@@ -395,7 +398,7 @@ func TestRelease_BarePod(t *testing.T) {
 	fc := fake.NewClientBuilder().WithScheme(testScheme()).WithObjects(pod).Build()
 	mgr := newTestSandboxManager(fc, cache)
 
-	if err := mgr.Release(context.Background(), run, "analysis"); err != nil {
+	if err := mgr.Release(context.Background(), run, "analysis", nil); err != nil {
 		t.Fatalf("Release failed: %v", err)
 	}
 
@@ -412,7 +415,7 @@ func TestRelease_BarePod_Idempotent(t *testing.T) {
 	fc := fake.NewClientBuilder().WithScheme(testScheme()).WithObjects(testReaderCRB()).Build()
 	mgr := newTestSandboxManager(fc, cache)
 
-	if err := mgr.Release(context.Background(), run, "analysis"); err != nil {
+	if err := mgr.Release(context.Background(), run, "analysis", nil); err != nil {
 		t.Fatalf("Release of non-existent pod should succeed, got: %v", err)
 	}
 }
@@ -423,7 +426,7 @@ func TestRelease_SandboxClaim_Idempotent(t *testing.T) {
 	fc := fake.NewClientBuilder().WithScheme(testScheme()).WithObjects(testReaderCRB()).Build()
 	mgr := newTestSandboxManager(fc, cache)
 
-	if err := mgr.Release(context.Background(), run, "analysis"); err != nil {
+	if err := mgr.Release(context.Background(), run, "analysis", nil); err != nil {
 		t.Fatalf("Release of non-existent claim should succeed, got: %v", err)
 	}
 }
@@ -487,5 +490,250 @@ func TestPodSpecToUnstructured(t *testing.T) {
 	arr, ok := containers.([]any)
 	if !ok || len(arr) == 0 {
 		t.Fatal("expected non-empty containers array")
+	}
+}
+
+// --- Spoke tests ---
+
+func testSpokeKubeconfigSecret() *corev1.Secret {
+	return &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "spoke-kubeconfig-test-spoke",
+			Namespace: "test-ns",
+		},
+		Data: map[string][]byte{
+			"kubeconfig": []byte(`
+apiVersion: v1
+kind: Config
+clusters:
+- cluster:
+    server: https://api.spoke.example.com:6443
+  name: spoke
+contexts:
+- context:
+    cluster: spoke
+    user: spoke-user
+  name: spoke
+current-context: spoke
+users:
+- name: spoke-user
+  user:
+    token: test-token
+`),
+		},
+	}
+}
+
+func testSpokeRun() *agenticv1alpha1.AgenticRun {
+	return &agenticv1alpha1.AgenticRun{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "spoke-run",
+			Namespace: "test-ns",
+			UID:       types.UID("spoke-uid-123"),
+		},
+		Spec: agenticv1alpha1.AgenticRunSpec{
+			Request:       "fix spoke issue",
+			TargetCluster: "test-spoke",
+		},
+	}
+}
+
+// TestCreate_SpokeRun_Gated verifies that targetCluster runs are rejected
+// until OLS-3951 wires sandbox credentials.
+func TestCreate_SpokeRun_Gated(t *testing.T) {
+	origClient := NewClientFromConfig
+	NewClientFromConfig = fakeNewClient
+	t.Cleanup(func() { NewClientFromConfig = origClient })
+
+	cache := testCache(t, "bare-pod")
+	hubFC := fake.NewClientBuilder().WithScheme(testScheme()).
+		WithObjects(testReaderCRB(), testSpokeKubeconfigSecret()).Build()
+	mgr := newTestSandboxManager(hubFC, cache)
+
+	run := testSpokeRun()
+	_, err := mgr.Create(context.Background(), run, "analysis", testSMAgent(), testLLMForManager(), nil, 15*time.Minute, nil)
+	if err == nil {
+		t.Fatal("expected error for gated targetCluster run")
+	}
+	if !strings.Contains(err.Error(), "not yet supported") {
+		t.Fatalf("expected 'not yet supported' error, got: %v", err)
+	}
+}
+
+func TestRelease_SpokeRun_CleansUpSpoke(t *testing.T) {
+	origClient := NewClientFromConfig
+
+	// Pre-populate the spoke with SA + reader CRB subjects.
+	saName := sandboxSAName(testSpokeRun(), "analysis")
+	spokeSA := &corev1.ServiceAccount{
+		ObjectMeta: metav1.ObjectMeta{Name: saName, Namespace: spokeManagedNamespace},
+	}
+	spokeCRBs := spokeReaderBindings()
+	// Add the SA as subject to both CRBs (as Create would have done).
+	for _, crb := range spokeCRBs {
+		crb.Subjects = append(crb.Subjects, rbacv1.Subject{
+			Kind: rbacv1.ServiceAccountKind, Name: saName, Namespace: spokeManagedNamespace,
+		})
+	}
+	spokeFC := fake.NewClientBuilder().WithScheme(testScheme()).WithObjects(
+		spokeCRBs[0], spokeCRBs[1], spokeSA,
+	).Build()
+	NewClientFromConfig = func(cfg *rest.Config) (client.Client, error) {
+		return spokeFC, nil
+	}
+	t.Cleanup(func() { NewClientFromConfig = origClient })
+
+	cache := testCache(t, "bare-pod")
+	hubFC := fake.NewClientBuilder().WithScheme(testScheme()).
+		WithObjects(testReaderCRB(), testSpokeKubeconfigSecret()).Build()
+	mgr := newTestSandboxManager(hubFC, cache)
+
+	run := testSpokeRun()
+	run.Status.Steps.Analysis.Sandbox.ClaimName = "ls-analysis-" + string(run.UID)
+
+	// Create the hub-side pod so releaseBarePod doesn't error.
+	hubPod := &corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{Name: run.Status.Steps.Analysis.Sandbox.ClaimName, Namespace: "test-ns"},
+	}
+	if err := hubFC.Create(context.Background(), hubPod); err != nil {
+		t.Fatalf("create hub pod: %v", err)
+	}
+
+	spoke := &SpokeAccess{Client: spokeFC, Namespace: spokeManagedNamespace}
+	if err := mgr.Release(context.Background(), run, "analysis", spoke); err != nil {
+		t.Fatalf("Release failed: %v", err)
+	}
+
+	// SA should be deleted from spoke.
+	var sa corev1.ServiceAccount
+	if err := spokeFC.Get(context.Background(), types.NamespacedName{Name: saName, Namespace: spokeManagedNamespace}, &sa); err == nil {
+		t.Fatal("spoke SA should be deleted after Release")
+	}
+
+	// SA subject should be removed from spoke CRBs.
+	for _, name := range spokeReaderBindingNames {
+		var crb rbacv1.ClusterRoleBinding
+		if err := spokeFC.Get(context.Background(), types.NamespacedName{Name: name}, &crb); err != nil {
+			t.Fatalf("get spoke CRB %s: %v", name, err)
+		}
+		for _, s := range crb.Subjects {
+			if s.Name == saName {
+				t.Fatalf("SA %s should be removed from spoke CRB %s", saName, name)
+			}
+		}
+	}
+}
+
+func TestRelease_SpokeUnreachable_HubCleanupContinues(t *testing.T) {
+	// Spoke kubeconfig Secret is missing (spoke decommissioned).
+	// Hub cleanup should still proceed.
+	cache := testCache(t, "bare-pod")
+	hubFC := fake.NewClientBuilder().WithScheme(testScheme()).WithObjects(testReaderCRB()).Build()
+	mgr := newTestSandboxManager(hubFC, cache)
+
+	run := testSpokeRun()
+	run.Status.Steps.Analysis.Sandbox.ClaimName = "ls-analysis-" + string(run.UID)
+
+	// Create the hub-side pod.
+	hubPod := &corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{Name: run.Status.Steps.Analysis.Sandbox.ClaimName, Namespace: "test-ns"},
+	}
+	if err := hubFC.Create(context.Background(), hubPod); err != nil {
+		t.Fatalf("create hub pod: %v", err)
+	}
+
+	// Release should not error — spoke failure is logged, hub cleanup proceeds.
+	if err := mgr.Release(context.Background(), run, "analysis", nil); err != nil {
+		t.Fatalf("Release should succeed even when spoke is unreachable, got: %v", err)
+	}
+
+	// Hub pod should be deleted.
+	var pod corev1.Pod
+	if err := hubFC.Get(context.Background(), types.NamespacedName{Name: run.Status.Steps.Analysis.Sandbox.ClaimName, Namespace: "test-ns"}, &pod); err == nil {
+		t.Fatal("hub pod should be deleted")
+	}
+}
+
+func TestCreate_LocalRun_Unchanged(t *testing.T) {
+	// Regression: local run (no targetCluster) still works as before.
+	cache := testCache(t, "bare-pod")
+	fc := fake.NewClientBuilder().WithScheme(testScheme()).WithObjects(testReaderCRB()).Build()
+	mgr := newTestSandboxManager(fc, cache)
+
+	run := testSMRun()
+	name, err := mgr.Create(context.Background(), run, "analysis", testSMAgent(), testLLMForManager(), nil, 15*time.Minute, nil)
+	if err != nil {
+		t.Fatalf("Create failed: %v", err)
+	}
+
+	// SA should be on hub.
+	saName := sandboxSAName(run, "analysis")
+	var sa corev1.ServiceAccount
+	if err := fc.Get(context.Background(), types.NamespacedName{Name: saName, Namespace: "test-ns"}, &sa); err != nil {
+		t.Fatalf("SA not found on hub: %v", err)
+	}
+	// Hub SA should have owner ref (set by setSAOwner).
+	if len(sa.OwnerReferences) == 0 {
+		t.Fatal("hub SA should have owner refs")
+	}
+	// Hub SA should NOT have spoke labels.
+	if _, ok := sa.Labels[LabelSpokeCluster]; ok {
+		t.Fatal("hub SA should not have spoke-cluster label")
+	}
+
+	// Pod should exist.
+	var pod corev1.Pod
+	if err := fc.Get(context.Background(), types.NamespacedName{Name: name, Namespace: "test-ns"}, &pod); err != nil {
+		t.Fatalf("pod not found: %v", err)
+	}
+}
+
+// TestCreate_OwnerPatchFailure_DoesNotDeleteWorkload verifies that a
+// post-workload owner-ref patch failure does NOT trigger
+// cleanupOnCreateFailure. The pod should still exist, and its
+// dependencies (ConfigMap, SA, RBAC) should remain intact.
+func TestCreate_OwnerPatchFailure_DoesNotDeleteWorkload(t *testing.T) {
+	fc := fake.NewClientBuilder().
+		WithScheme(testScheme()).
+		WithObjects(testReaderCRB()).
+		WithInterceptorFuncs(interceptor.Funcs{
+			Patch: func(ctx context.Context, c client.WithWatch, obj client.Object, patch client.Patch, opts ...client.PatchOption) error {
+				// Fail the ConfigMap owner-ref patch (setInputConfigMapOwner).
+				if _, ok := obj.(*corev1.ConfigMap); ok {
+					return fmt.Errorf("simulated owner patch failure")
+				}
+				return c.Patch(ctx, obj, patch, opts...)
+			},
+		}).
+		Build()
+
+	cache := testCache(t, "bare-pod")
+	mgr := newTestSandboxManager(fc, cache)
+	run := testSMRun()
+
+	_, err := mgr.Create(context.Background(), run, "analysis", testSMAgent(), testLLMForManager(), nil, 15*time.Minute, nil)
+	if err == nil {
+		t.Fatal("expected error from owner-ref patch failure")
+	}
+
+	// Pod should still exist — cleanup must not delete it.
+	podName := fmt.Sprintf("ls-analysis-%s", run.UID)
+	var pod corev1.Pod
+	if err := fc.Get(context.Background(), types.NamespacedName{Name: podName, Namespace: "test-ns"}, &pod); err != nil {
+		t.Fatalf("pod should still exist after owner-patch failure, got: %v", err)
+	}
+
+	// ConfigMap should still exist — cleanup must not delete it.
+	cmName := inputConfigMapName("analysis", string(run.UID))
+	var cm corev1.ConfigMap
+	if err := fc.Get(context.Background(), types.NamespacedName{Name: cmName, Namespace: "test-ns"}, &cm); err != nil {
+		t.Fatalf("ConfigMap should still exist after owner-patch failure, got: %v", err)
+	}
+
+	// SA should still exist — cleanup must not delete it.
+	saName := sandboxSAName(run, "analysis")
+	var sa corev1.ServiceAccount
+	if err := fc.Get(context.Background(), types.NamespacedName{Name: saName, Namespace: "test-ns"}, &sa); err != nil {
+		t.Fatalf("SA should still exist after owner-patch failure, got: %v", err)
 	}
 }

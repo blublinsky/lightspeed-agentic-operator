@@ -307,11 +307,28 @@ func (r *AgenticRunReconciler) handleFailed(
 	log := logf.FromContext(ctx)
 	log.Info("handling system failure (terminal)")
 
-	if run.Annotations[rbacNamespacesAnnotation] != "" {
+	spoke, spokeErr := spokeAccessForRun(ctx, r.Client, run, r.Namespace)
+	if spokeErr != nil {
+		log.Error(spokeErr, "RBAC cleanup: spoke unreachable")
+	}
+
+	// Spoke path: clean SAs, reader CRB subjects, and execution RBAC
+	// for all steps via the shared helper.
+	if spoke != nil {
+		for _, step := range []string{"analysis", "execution", "verification", "escalation"} {
+			if err := spokeCleanupStep(ctx, spoke, run, sandboxSAName(run, step), step == "execution"); err != nil {
+				log.Error(err, "spoke cleanup on failure", LogKeyStep, step)
+			}
+		}
+	}
+
+	// Hub path: execution RBAC only (SAs are GC'd via owner refs).
+	if spoke == nil && run.Annotations[rbacNamespacesAnnotation] != "" {
 		if err := cleanupExecutionRBAC(ctx, r.Client, run); err != nil {
 			log.Error(err, "RBAC cleanup on failure")
 		}
 	}
+
 	return ctrl.Result{}, nil
 }
 

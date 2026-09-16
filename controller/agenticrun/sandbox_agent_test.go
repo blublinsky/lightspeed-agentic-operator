@@ -40,7 +40,7 @@ func (m *mockSandboxProvider) Create(_ context.Context, _ *agenticv1alpha1.Agent
 	}
 	return m.claimName, m.claimErr
 }
-func (m *mockSandboxProvider) Release(_ context.Context, _ *agenticv1alpha1.AgenticRun, _ string) error {
+func (m *mockSandboxProvider) Release(_ context.Context, _ *agenticv1alpha1.AgenticRun, _ string, _ *SpokeAccess) error {
 	m.releaseCalls++
 	return m.releaseErr
 }
@@ -283,7 +283,7 @@ type trackingMockSandbox struct {
 func (m *trackingMockSandbox) Create(_ context.Context, _ *agenticv1alpha1.AgenticRun, _ string, _ *agenticv1alpha1.Agent, _ *agenticv1alpha1.LLMProvider, _ *agenticv1alpha1.ToolsSpec, _ time.Duration, _ *agentContext) (string, error) {
 	return "", nil
 }
-func (m *trackingMockSandbox) Release(_ context.Context, run *agenticv1alpha1.AgenticRun, step string) error {
+func (m *trackingMockSandbox) Release(_ context.Context, run *agenticv1alpha1.AgenticRun, step string, _ *SpokeAccess) error {
 	claimName := sandboxClaimName(run, step)
 	*m.released = append(*m.released, claimName)
 	if m.errOnClaim != "" && claimName == m.errOnClaim {
