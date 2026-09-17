@@ -31,15 +31,22 @@ Implementation details for the agentic-operator's role in the templog feature.
 11. The `agenticrun.uid` log attribute stores the raw Kubernetes `metadata.uid` (with hyphens). The collector's `postgresexporter` normalizes it (strips hyphens) when writing to the `agentic_run_id` column. The OTel log record's native `TraceID` field carries the per-phase trace ID and is not used for templog column mapping.
 12. Trace context is propagated to sandbox pods via the W3C `TRACEPARENT` environment variable set from the operator phase span at pod creation.
 
+### CLI Retrieval
+
+13. `oc agentic run logs NAME` reads live sandbox pod logs by default. With `--stored`, it reads the persisted audit records from the Collector admin API after the sandbox pod has been deleted.
+14. Stored-log retrieval uses the AgenticRun `metadata.uid`, requests JSON pages from the Collector, and renders the result in the Collector's text format. An explicit `--step` sends `phase=analysis`, `phase=execution`, or `phase=verification`; without `--step`, the phase parameter is omitted. By default, the command uses the Kubernetes API server's Service proxy to reach the `lightspeed-otel-collector` Service over HTTPS in the AgenticRun/operator namespace; this requires `get` on `services/proxy` there. `--admin-endpoint` MAY override the Service proxy for an externally reachable endpoint. The inherited `--insecure-skip-tls-verify` flag MAY be used only with an explicit endpoint when certificate verification is intentionally bypassed.
+15. When `--step` is omitted with `--stored`, the command retrieves all persisted phases in Collector record order. An explicit `--step` filters to analysis, execution, or verification. `--follow` is valid only for live pod logs and MUST be rejected with `--stored`.
+16. Stored-log retrieval requests the maximum page size and follows the Collector's `after` cursor until `has_more=false`, so the command returns all records. The command MUST reject a non-advancing cursor to avoid an infinite loop. Rendered stored logs MUST include a `===== <phase> =====` header for each phase; the header is also shown for an explicit single-phase filter.
+
 ### AgenticRun Finalizer
 
-13. The `agentic.openshift.io/templog-cleanup` (and RBAC cleanup) finalizers are added the first time the controller reconciles any non-deleting AgenticRun — including already-terminal runs — so TTL or manual delete always runs Collector log cleanup. Both finalizers are processed in a **single reconcile pass** on deletion: RBAC cleanup first (via `ReleaseSandboxes`), then templog cleanup.
-14. When an AgenticRun CR is deleted and the finalizer is present:
+17. The `agentic.openshift.io/templog-cleanup` (and RBAC cleanup) finalizers are added the first time the controller reconciles any non-deleting AgenticRun — including already-terminal runs — so TTL or manual delete always runs Collector log cleanup. Both finalizers are processed in a **single reconcile pass** on deletion: RBAC cleanup first (via `ReleaseSandboxes`), then templog cleanup.
+18. When an AgenticRun CR is deleted and the finalizer is present:
     a. The operator calls the Collector admin API: `DELETE /api/v1/logs?agentic_run_id=<uid>` over HTTPS using the CA cert from the ConfigMap. The raw Kubernetes UID (with hyphens) is passed; the collector normalizes internally.
     b. On success, removes the finalizer — CR deletion proceeds.
     c. On failure, increments a retry counter annotation (`agentic.openshift.io/templog-cleanup-attempts`) and requeues after 30 seconds.
     d. After 3 failed attempts, removes the finalizer regardless — CR deletion proceeds. A warning is logged about orphaned log records.
-15. The finalizer depends on the Collector admin API being reachable. If the Collector is permanently down, the finalizer gives up after 3 retries to avoid blocking CR deletion indefinitely.
+19. The finalizer depends on the Collector admin API being reachable. If the Collector is permanently down, the finalizer gives up after 3 retries to avoid blocking CR deletion indefinitely.
 
 ## Edge Cases
 

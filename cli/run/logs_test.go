@@ -1,6 +1,9 @@
 package run
 
 import (
+	"context"
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 
@@ -29,6 +32,164 @@ func TestLogs_Validate(t *testing.T) {
 				t.Errorf("Validate() error = %v, wantErr %v", err, tc.wantErr)
 			}
 		})
+	}
+}
+
+func TestLogs_ValidateStoredFollowError(t *testing.T) {
+	o := &LogsOptions{stored: true, follow: true}
+	if err := o.Validate(); err == nil || !strings.Contains(err.Error(), "--follow") {
+		t.Fatalf("Validate() error = %v, want --follow error", err)
+	}
+}
+
+func TestLogs_ValidateAdminEndpoint(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		endpoint string
+		wantErr  bool
+	}{
+		{name: "https", endpoint: "https://collector.example.com", wantErr: false},
+		{name: "loopback http", endpoint: "http://127.0.0.1:18080", wantErr: false},
+		{name: "external http", endpoint: "http://collector.example.com", wantErr: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if err := validateAdminEndpoint(tc.endpoint); (err != nil) != tc.wantErr {
+				t.Errorf("validateAdminEndpoint() error = %v, wantErr %v", err, tc.wantErr)
+			}
+		})
+	}
+}
+
+func TestLogs_AdminHTTPClientCanSkipVerification(t *testing.T) {
+	client := newAdminHTTPClient(true)
+	transport, ok := client.Transport.(*http.Transport)
+	if !ok || transport.TLSClientConfig == nil || !transport.TLSClientConfig.InsecureSkipVerify { //nolint:gosec // test verifies the explicit opt-in
+		t.Fatal("expected TLS certificate verification to be disabled")
+	}
+}
+
+func TestLogs_StoredPhase(t *testing.T) {
+	if got := storedPhase(agenticv1alpha1.SandboxStepAnalysis); got != "analysis" {
+		t.Errorf("storedPhase() = %q, want analysis", got)
+	}
+	if got := storedLogsPhase(""); got != "" {
+		t.Errorf("storedLogsPhase(\"\") = %q, want empty phase", got)
+	}
+	if got := storedLogsPhase("execution"); got != "execution" {
+		t.Errorf("storedLogsPhase(\"execution\") = %q, want execution", got)
+	}
+}
+
+func TestLogs_ServiceProxyPath(t *testing.T) {
+	got := serviceProxyPath("openshift-lightspeed", "lightspeed-otel-collector", "8080")
+	want := "api/v1/namespaces/openshift-lightspeed/services/https:lightspeed-otel-collector:8080/proxy/api/v1/logs"
+	if got != want {
+		t.Errorf("serviceProxyPath() = %q, want %q", got, want)
+	}
+}
+
+func TestLogs_FetchStoredLogs(t *testing.T) {
+	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if got := r.URL.Query().Get("agentic_run_id"); got != "run-uid" {
+			t.Errorf("agentic_run_id = %q, want run-uid", got)
+		}
+		if got := r.URL.Query().Get("phase"); got != "execution" {
+			t.Errorf("phase = %q, want execution", got)
+		}
+		if got := r.URL.Query().Get("format"); got != "json" {
+			t.Errorf("format = %q, want json", got)
+		}
+		if _, err := w.Write([]byte(`{"agentic_run_id":"run-uid","phase":"execution","records":[{"id":1,"phase":"execution","timestamp":"2026-09-16T07:29:21Z","body":"stored execution log"}],"has_more":false}`)); err != nil {
+			t.Errorf("write response: %v", err)
+		}
+	}))
+	defer server.Close()
+
+	var out strings.Builder
+	o := &LogsOptions{adminEndpoint: server.URL, httpClient: server.Client()}
+	o.IOStreams.Out = &out
+	if err := o.fetchStoredLogs(context.Background(), "run-uid", "execution"); err != nil {
+		t.Fatalf("fetchStoredLogs() error = %v", err)
+	}
+	if got := out.String(); !strings.Contains(got, "===== execution =====") || !strings.Contains(got, "stored execution log") || !strings.Contains(got, "records: 1") {
+		t.Errorf("output = %q, want formatted stored log", got)
+	}
+}
+
+func TestLogs_FetchStoredLogs_EmptyExplicitPhase(t *testing.T) {
+	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if _, err := w.Write([]byte(`{"agentic_run_id":"run-uid","records":[],"has_more":false}`)); err != nil {
+			t.Errorf("write response: %v", err)
+		}
+	}))
+	defer server.Close()
+
+	var out strings.Builder
+	o := &LogsOptions{adminEndpoint: server.URL, httpClient: server.Client()}
+	o.IOStreams.Out = &out
+	if err := o.fetchStoredLogs(context.Background(), "run-uid", "execution"); err != nil {
+		t.Fatalf("fetchStoredLogs() error = %v", err)
+	}
+	if !strings.Contains(out.String(), "===== execution =====") {
+		t.Errorf("output = %q, want empty execution phase header", out.String())
+	}
+}
+
+func TestLogs_FetchStoredLogs_AllPhases(t *testing.T) {
+	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if _, ok := r.URL.Query()["phase"]; ok {
+			t.Errorf("phase query parameter = %q, want it omitted", r.URL.Query().Get("phase"))
+		}
+		if _, err := w.Write([]byte(`{"agentic_run_id":"run-uid","records":[{"id":1,"timestamp":"2026-09-16T07:29:21Z","body":"all phases"}],"has_more":false}`)); err != nil {
+			t.Errorf("write response: %v", err)
+		}
+	}))
+	defer server.Close()
+
+	var out strings.Builder
+	o := &LogsOptions{adminEndpoint: server.URL, httpClient: server.Client()}
+	o.IOStreams.Out = &out
+	if err := o.fetchStoredLogs(context.Background(), "run-uid", ""); err != nil {
+		t.Fatalf("fetchStoredLogs() error = %v", err)
+	}
+	if !strings.Contains(out.String(), "all phases") {
+		t.Errorf("output = %q, want all-phase record", out.String())
+	}
+}
+
+func TestLogs_FetchStoredLogs_Paginates(t *testing.T) {
+	requests := 0
+	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests++
+		if got := r.URL.Query().Get("limit"); got != "1000" {
+			t.Errorf("limit = %q, want 1000", got)
+		}
+		var page string
+		switch r.URL.Query().Get("after") {
+		case "":
+			page = `{"agentic_run_id":"run-uid","records":[{"id":10,"phase":"analysis","timestamp":"2026-09-16T07:29:21Z","body":"first"}],"has_more":true}`
+		case "10":
+			page = `{"agentic_run_id":"run-uid","records":[{"id":20,"phase":"execution","timestamp":"2026-09-16T07:29:22Z","body":"second"}],"has_more":false}`
+		default:
+			t.Errorf("unexpected after=%q", r.URL.Query().Get("after"))
+		}
+		if _, err := w.Write([]byte(page)); err != nil {
+			t.Errorf("write response: %v", err)
+		}
+	}))
+	defer server.Close()
+
+	var out strings.Builder
+	o := &LogsOptions{adminEndpoint: server.URL, httpClient: server.Client()}
+	o.IOStreams.Out = &out
+	if err := o.fetchStoredLogs(context.Background(), "run-uid", "execution"); err != nil {
+		t.Fatalf("fetchStoredLogs() error = %v", err)
+	}
+	if requests != 2 {
+		t.Errorf("requests = %d, want 2", requests)
+	}
+	if !strings.Contains(out.String(), "===== analysis =====") || !strings.Contains(out.String(), "===== execution =====") || !strings.Contains(out.String(), "first") || !strings.Contains(out.String(), "second") {
+		t.Errorf("output = %q, want both pages", out.String())
 	}
 }
 
