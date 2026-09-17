@@ -308,6 +308,12 @@ func (o *LogsOptions) fetchAllStoredLogs(ctx context.Context, runUID, phase stri
 		return fmt.Errorf("write stored logs: %w", err)
 	}
 	currentPhase := ""
+	if phase != "" {
+		if _, err := fmt.Fprintf(o.Out, "===== %s =====\n\n", phase); err != nil {
+			return fmt.Errorf("write stored logs: %w", err)
+		}
+		currentPhase = phase
+	}
 	for _, record := range records {
 		recordPhase := record.Phase
 		if recordPhase == "" {

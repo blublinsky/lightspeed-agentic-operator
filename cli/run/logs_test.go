@@ -116,6 +116,25 @@ func TestLogs_FetchStoredLogs(t *testing.T) {
 	}
 }
 
+func TestLogs_FetchStoredLogs_EmptyExplicitPhase(t *testing.T) {
+	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if _, err := w.Write([]byte(`{"agentic_run_id":"run-uid","records":[],"has_more":false}`)); err != nil {
+			t.Errorf("write response: %v", err)
+		}
+	}))
+	defer server.Close()
+
+	var out strings.Builder
+	o := &LogsOptions{adminEndpoint: server.URL, httpClient: server.Client()}
+	o.IOStreams.Out = &out
+	if err := o.fetchStoredLogs(context.Background(), "run-uid", "execution"); err != nil {
+		t.Fatalf("fetchStoredLogs() error = %v", err)
+	}
+	if !strings.Contains(out.String(), "===== execution =====") {
+		t.Errorf("output = %q, want empty execution phase header", out.String())
+	}
+}
+
 func TestLogs_FetchStoredLogs_AllPhases(t *testing.T) {
 	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if _, ok := r.URL.Query()["phase"]; ok {
