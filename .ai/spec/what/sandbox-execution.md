@@ -92,10 +92,9 @@ Behavioral specification for how workflow steps run inside ephemeral **sandboxes
 43c. **Pod Running**: [PLANNED: OLS-3743] Compute the hard deadline from the main container `startedAt`, the effective Agent step budget, and the one-minute margin. Release the sandbox with `SandboxTimeout` if exceeded. Otherwise wait and requeue after the smaller of 30 seconds or the remaining running budget.
 43d. **Pod Succeeded, no Result CR**: Informer propagation delay — the Result CR may not have synced yet. First time seeing this state → annotate run with timestamp, return `RequeueAfter(10s)`. If already waited 10s+ → fail run with reason `SandboxFailed` ("sandbox exited without creating result").
 43e. **Pod Failed, no Result CR**: Read `pod.status.containerStatuses[0].state.terminated` for exit code, reason, and termination message (`/dev/termination-log`). Apply rule 43f before generic failure handling. For another failure, set the step condition to `False` with reason `SandboxFailed` and the termination message. Fail the run.
-43f. [PLANNED: OLS-3928] A safety-inspection failure uses a nonzero exit status, no Result CR, and the exact termination message `ToolResultSafetyInspectionFailed`. The operator MUST match this message before it assigns `SandboxFailed`. It MUST set the step condition to `False` with reason `ToolResultSafetyInspectionFailed`.
-43g. The condition message MUST contain only `Lightspeed stopped the operation because a tool result failed the safety inspection.`
-43h. The operator MUST NOT copy rejected content or classifier details into conditions, events, or logs.
-43i. This failed step MUST fail the complete `AgenticRun`; later workflow steps MUST NOT start.
+43f. [PLANNED: OLS-3928] Failure handling MUST conform to `openshift/ols/.ai/spec/what/tool-result-inspection.md`. A safety-inspection failure uses a nonzero exit status, no Result CR, and the exact termination message `ToolResultSafetyInspectionFailed`. The operator MUST match this message before it assigns `SandboxFailed`. It MUST set the step condition to `False` with reason `ToolResultSafetyInspectionFailed`.
+43g. The condition message MUST use the controlled user-facing message from the normative contract.
+43h. This failed step MUST fail the complete `AgenticRun`. Later workflow steps MUST NOT start.
 
 ### Race Conditions [OLS-3066]
 
