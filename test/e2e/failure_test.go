@@ -197,11 +197,11 @@ func TestRapidDelete(t *testing.T) {
 	t.Log("PASS: rapid delete handled, no orphaned resources")
 }
 
-// TestPendingPodTimeout validates that the operator detects a sandbox pod
+// TestPendingPodStartupTimeout validates that the operator detects a sandbox pod
 // stuck in Pending (cannot be scheduled) and times out via podStartTimeout.
 // Uses a nodeSelector that matches no nodes to force Pending.
-func TestPendingPodTimeout(t *testing.T) {
-	t.Log("=== TestPendingPodTimeout: validates unschedulable pod → SandboxTimeout ===")
+func TestPendingPodStartupTimeout(t *testing.T) {
+	t.Log("=== TestPendingPodStartupTimeout: validates unschedulable pod → SandboxStartupTimeout ===")
 	c := newClient(t)
 	ctx := context.Background()
 
@@ -245,9 +245,9 @@ func TestPendingPodTimeout(t *testing.T) {
 	t.Log("Phase reached: Failed")
 
 	assertStepCondition(t, updated.Status.Conditions, agenticv1alpha1.AgenticRunConditionAnalyzed,
-		metav1.ConditionFalse, "SandboxTimeout")
+		metav1.ConditionFalse, "SandboxStartupTimeout")
 
-	t.Log("PASS: pending pod timeout detected, phase=Failed, reason=SandboxTimeout")
+	t.Log("PASS: pending pod startup timeout detected, phase=Failed, reason=SandboxStartupTimeout")
 }
 
 // assertStepCondition checks that a condition with the given type, status, and
