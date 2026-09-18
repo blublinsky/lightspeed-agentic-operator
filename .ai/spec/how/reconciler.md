@@ -8,7 +8,7 @@ Audience: AI agents. Behavioral rules and phase semantics live in **what/** spec
 
 - Parses flags: `metrics-bind-address`, `health-probe-bind-address`, `namespace` (falls back to `POD_NAMESPACE`).
 - Builds controller-runtime `Manager` with core + `agenticv1alpha1` scheme.
-- Creates `configuration.Cache` (starts nil). Eagerly attempts `configwatch.TryLoad` for the `lightspeed-agentic-configuration` ConfigMap. Registers `configwatch.Watcher` for runtime changes.
+- Creates `configuration.Cache` (starts nil). Eagerly attempts `configwatch.TryLoad` for the `lightspeed-agentic-configuration` ConfigMap. Registers `configwatch.Watcher` for runtime changes. [PLANNED: OLS-3928] The cache also holds the effective tool-result inspection value.
 - Wires **dependency injection** directly (no `controller/setup.go`):
   - `agenticrun.NewSandboxManager(mgr.GetClient(), cfgCache, namespace, auditLogger)` → `SandboxLifecycle`.
   - `&agenticrun.SandboxAgentCaller{Sandbox, K8sClient, ClientFactory, Namespace, Audit}` → satisfies `agenticrun.AgentCaller`.
@@ -111,7 +111,7 @@ Unified sandbox lifecycle manager. Fully encapsulates SA, RBAC, ConfigMap, and p
 
 ### `PodSpecBuilder` (internal to `SandboxManager`)
 
-- **Build:** Takes base `*corev1.PodSpec` (from config cache) and overlays agent-specific configuration: LLM env vars, credential mounts, skills volumes, MCP config, required secrets, input ConfigMap volume mount [OLS-3066], SA. [OLS-3066] HTTP readiness/liveness probes are no longer set. [PLANNED: OLS-3743] It always injects operator-resolved `LIGHTSPEED_AGENT_TIMEOUT_SECONDS` and `LIGHTSPEED_AGENT_MAX_TURNS` for the selected step Agent.
+- **Build:** Takes base `*corev1.PodSpec` (from config cache) and overlays agent-specific configuration: LLM env vars, credential mounts, skills volumes, MCP config, required secrets, input ConfigMap volume mount [OLS-3066], SA. [OLS-3066] HTTP readiness/liveness probes are no longer set. [PLANNED: OLS-3743] It always injects operator-resolved `LIGHTSPEED_AGENT_TIMEOUT_SECONDS` and `LIGHTSPEED_AGENT_MAX_TURNS` for the selected step Agent. [PLANNED: OLS-3928] It also injects `LIGHTSPEED_TOOL_OUTPUT_INSPECTION_ENABLED` from the configuration cache.
 - Also defines label constants (`LabelManaged`, `LabelRun`, etc.) and shared helpers (`credentialsSecretName`, `providerURL`, `providerTypeString`).
 
 **No log streaming in controller:** logs are cluster-side (`kubectl` / CLI); [OLS-3066] manager watches for Result CR creation, not endpoint readiness.
@@ -218,4 +218,5 @@ AgenticRunReconciler.Reconcile
 - **[OLS-3066] No sandbox FQDN or endpoint:** With the batch model, the operator does not construct agent URLs or connect to sandbox pods over HTTP. The former `Sandbox FQDN` note is obsolete.
 - **Logs CLI vs status:** CLI `logs` uses `SandboxInfo.ClaimName` as **pod name** in `GetLogs`; ensure cluster layout matches (if claim name ≠ pod name, logs command would need revision — operational detail for agents touching `logs.go`). [OLS-3066] Log tailing is unchanged — sandbox pods still write progress to stdout during execution.
 - **Tests:** `state_machine_test.go` is the primary lifecycle matrix; `testAgentCaller` implements `AgentCaller` with injectable errors/results; fake client uses `WithStatusSubresource` for run and result types.
+- **Tool-result inspection failure [PLANNED: OLS-3928]:** This path conforms to `openshift/ols/.ai/spec/what/tool-result-inspection.md`. The sandbox exits nonzero, publishes no Result CR, and writes `ToolResultSafetyInspectionFailed` as the termination message. `pod_handler.go` matches this message before generic `SandboxFailed` handling and uses it as the step condition reason. The condition uses the contract-defined controlled message.
 - **[PLANNED: OLS-3743] Limit resolution:** Resolve timeout and max-turn defaults in one operator helper from the selected `resolvedStep.Agent`, including approval agent overrides. The resolved timeout drives both pod env injection and hard-deadline calculation; these paths MUST NOT resolve independently.

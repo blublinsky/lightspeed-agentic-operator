@@ -40,6 +40,7 @@ Behavioral specification for how workflow steps run inside ephemeral **sandboxes
     | `LIGHTSPEED_REASONING_CONFIG` | When `Agent.spec.reasoningConfig` is set | `Agent.spec.reasoningConfig` serialized as JSON string |
     | `LIGHTSPEED_AGENT_TIMEOUT_SECONDS` | Yes [PLANNED: OLS-3743] | Effective timeout for this step: selected `Agent.spec.timeouts` field or operator default |
     | `LIGHTSPEED_AGENT_MAX_TURNS` | Yes [PLANNED: OLS-3743] | `Agent.spec.maxTurns`, defaulting to 200 when omitted |
+    | `LIGHTSPEED_TOOL_OUTPUT_INSPECTION_ENABLED` | Yes [PLANNED: OLS-3928] | `tool-output-inspection-enabled` from `lightspeed-agentic-configuration` |
 
     Provider type mapping from CRD `spec.type`:
 
@@ -90,7 +91,10 @@ Behavioral specification for how workflow steps run inside ephemeral **sandboxes
 43b. **Pod Pending**: Check for `ImagePullBackOff` → fail immediately. [PLANNED: OLS-3743] Check the five-minute startup deadline → release the sandbox with `SandboxStartupTimeout` if exceeded. Otherwise wait and requeue after the smaller of 30 seconds or the remaining startup budget.
 43c. **Pod Running**: [PLANNED: OLS-3743] Compute the hard deadline from the main container `startedAt`, the effective Agent step budget, and the one-minute margin. Release the sandbox with `SandboxTimeout` if exceeded. Otherwise wait and requeue after the smaller of 30 seconds or the remaining running budget.
 43d. **Pod Succeeded, no Result CR**: Informer propagation delay — the Result CR may not have synced yet. First time seeing this state → annotate run with timestamp, return `RequeueAfter(10s)`. If already waited 10s+ → fail run with reason `SandboxFailed` ("sandbox exited without creating result").
-43e. **Pod Failed, no Result CR**: Read `pod.status.containerStatuses[0].state.terminated` for exit code, reason, and termination message (`/dev/termination-log`). Set step condition to `False` with reason `SandboxFailed` and the termination message. Fail run.
+43e. **Pod Failed, no Result CR**: Read `pod.status.containerStatuses[0].state.terminated` for exit code, reason, and termination message (`/dev/termination-log`). Apply rule 43f before generic failure handling. For another failure, set the step condition to `False` with reason `SandboxFailed` and the termination message. Fail the run.
+43f. [PLANNED: OLS-3928] Failure handling MUST conform to `openshift/ols/.ai/spec/what/tool-result-inspection.md`. A safety-inspection failure uses a nonzero exit status, no Result CR, and the exact termination message `ToolResultSafetyInspectionFailed`. The operator MUST match this message before it assigns `SandboxFailed`. It MUST set the step condition to `False` with reason `ToolResultSafetyInspectionFailed`.
+43g. The condition message MUST use the controlled user-facing message from the normative contract.
+43h. This failed step MUST fail the complete `AgenticRun`. Later workflow steps MUST NOT start.
 
 ### Race Conditions [OLS-3066]
 
@@ -102,6 +106,10 @@ Behavioral specification for how workflow steps run inside ephemeral **sandboxes
 ### Sandbox Mode
 
 31. **Sandbox mode selection**: The sandbox mode (`bare-pod` or `sandbox-claim`) is read from the `sandbox-mode` key in the `lightspeed-agentic-configuration` ConfigMap (produced by lightspeed-operator). When the key is omitted or empty, the operator MUST default to `bare-pod` mode. There is no CLI flag — the ConfigMap is the single source of truth.
+31a. [PLANNED: OLS-3928] The configuration cache MUST read `tool-output-inspection-enabled` from the same ConfigMap.
+31b. The value MUST be `"true"` or `"false"`. A missing or invalid value MUST resolve to `"true"`.
+31c. `PodSpecBuilder` MUST inject the effective value as `LIGHTSPEED_TOOL_OUTPUT_INSPECTION_ENABLED` into every sandbox pod.
+31d. The sandbox applies the value only to DeepAgents. The operator MUST NOT add warnings for Gemini ADK or OpenAI Agents.
 32. **Unified sandbox lifecycle**: `SandboxManager.Create` fully encapsulates sandbox setup for every step: (a) creates a per-step ServiceAccount (`ls-{step}-{namespace}-{runUID}`) with owner reference to the pod/claim, (b) adds the per-step SA to all **eligible** reader ClusterRoleBindings (rule 21a), (c) for execution: creates cross-namespace Roles/ClusterRoles and persists the RBAC namespaces annotation, (d) builds and creates the input ConfigMap with owner reference, (e) reads the base PodSpec from the config cache, overlays agent-specific configuration via `PodSpecBuilder.Build`, and creates either a bare Pod or a SandboxClaim+SandboxTemplate depending on the configured mode. Resource name MUST follow the pattern `ls-{step}-{agenticRunName}` truncated to 63 characters. `Release` encapsulates sandbox teardown: deletes the pod/claim (GC cascades to SA, ConfigMap, result RBAC via owner refs), removes the per-step SA from reader CRBs, and for execution: explicitly cleans up cross-namespace Roles/ClusterRoles. Both resource types MUST carry controller `ownerReferences` to their `AgenticRun` (`controller: true`, `blockOwnerDeletion: true`). [OLS-3066] `WaitReady` is removed — the operator does not poll for pod readiness; it watches for pod completion and Result CR creation.
 33. **[OLS-3066, OLS-4070] Bare pod completion**: In `bare-pod` mode, `handlePodEvent` watches pods by `LabelRun`/`LabelStep` labels. Pod `Succeeded` or `Failed` triggers `completeStep`. The controller then checks for the Result CR per the re-entry logic (rule 43). If the pod is `NotFound` during re-entry, the controller MUST treat it as a terminal error. If the pod has a non-zero `DeletionTimestamp`, the controller MUST treat it as terminal.
 33a. **[OLS-4070] Sandbox-claim completion**: In `sandbox-claim` mode, `handlePodEvent` detects sandbox-managed pods via `resolveSandboxPodMetadata`, which follows the pod's ownerRef chain: Pod → Sandbox → SandboxClaim. The SandboxClaim carries operator labels (`LabelRun`, `LabelStep`) and `AnnotationRunName`, mapping the pod back to the `AgenticRun`. Pod `Succeeded` or `Failed` triggers `completeStep` — the same path as bare-pod mode. Pods created by the Sandbox operator do NOT carry operator labels directly — the ownerRef chain resolution is required to discover the AgenticRun association.
@@ -115,7 +123,7 @@ Behavioral specification for how workflow steps run inside ephemeral **sandboxes
 ## Configuration Surface
 
 - Operator process: namespace (operator install namespace)
-- `lightspeed-agentic-configuration` ConfigMap: `sandbox-mode` (`bare-pod` default, `sandbox-claim` optional), `sandbox-pod-spec` (base PodSpec JSON)
+- `lightspeed-agentic-configuration` ConfigMap: `sandbox-mode`, `sandbox-pod-spec`, and [PLANNED: OLS-3928] `tool-output-inspection-enabled` (`true` by default)
 - `AgenticRun.metadata.namespace` (secrets + result CRs)
 - `spec.tools`, per-step `spec.*.tools` (`SkillsSource`, `MCPServerConfig`, `SecretRequirement`)
 - `spec.targetNamespaces` and RBAC materialization targets
@@ -135,6 +143,10 @@ Behavioral specification for how workflow steps run inside ephemeral **sandboxes
 - [OLS-3066] Per-step ServiceAccounts MUST have `create` and `patch/status` permissions on their step-specific Result CRD in the AgenticRun namespace.
 - [OLS-3066] Input ConfigMap size is bounded by the Kubernetes 1MB ConfigMap limit. Agent payloads (query + context + schema + template) are typically KB-sized; exceeding the limit is an operator error.
 
+## Verification
+
+- [PLANNED: OLS-3928] Tests cover missing, invalid, true, and false handoff values; environment injection in both sandbox modes; controlled reason propagation; complete-run failure; and absence of rejected content from status, events, and logs.
+
 ## Planned Changes
 
 - [PLANNED: OLS-2957] **Sandbox template management** UX and CRD ergonomics (base/derived lifecycle, versioning) may change operator/template coupling described in rules 2–4.
@@ -152,3 +164,4 @@ Behavioral specification for how workflow steps run inside ephemeral **sandboxes
 - [PLANNED: OLS-3743] Layer Agent-configured cooperative execution budgets under fixed operator sandbox startup and hard running deadlines; wire `maxTurns`; distinguish timeout sources in status.
 - [PLANNED: OLS-3298, OLS-4018] Shared hard-stop cleanup: zero-grace Pod deletion, SandboxClaim/backing-workload deletion, sandbox access revocation, dual resource discovery, idempotency, and retries after terminal status. See `agentic-run-termination.md`.
 - [DONE: OLS-4070] Dual-mode pod handler — `pod_handler.go` handles both bare-pod and sandbox-claim modes via a single `handlePodEvent` watcher. Bare-pod mode reads labels directly (`resolveBarePodMetadata`); sandbox-claim mode resolves Pod → Sandbox → SandboxClaim ownerRef chain (`resolveSandboxPodMetadata`). Both paths feed into `completeStep`. `timeout_handler.go` provides a mode-dispatching timeout loop with `listBarePods` / `listSandboxPods` helpers. See rules 9, 33, 33a, 40.
+- [PLANNED: OLS-3928] Inject the cluster-wide tool-result inspection value and preserve its controlled failure reason.
