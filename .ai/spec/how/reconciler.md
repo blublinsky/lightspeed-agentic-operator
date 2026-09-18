@@ -27,7 +27,7 @@ Audience: AI agents. Behavioral rules and phase semantics live in **what/** spec
 | `handlers.go` | (methods on `AgenticRunReconciler`) | `handleAnalysis`, `handleRevision`, `handleExecution`, `handleVerification`, `handleEscalation`, `handleFailed`, `denyAgenticRun`, `conditionTime`, `hasMutationSuccess`, `isObservationAction`, `analysisFailureMessage`, `executionFailureMessage` |
 | `helpers.go` | `revisionData`, `analysisQuery`, `executionQuery`, `verificationQuery`, `escalationData`; embedded templates via `//go:embed templates/*.tmpl` | `renderTemplate`, `failStep`, `statusPatch`, `hasSandboxClaims`, `isTerminal`, `setVerificationSkipped`, `getLatestAnalysisResult`, `selectedOption`, `trimNonSelectedOptions`, `resetExecutionAndVerification`, `buildEscalationRequest`, `needsRevision`, `buildRevisionContext`, `buildAnalysisQuery`, `buildExecutionQuery`, `buildVerificationQuery`, `prettyJSON` |
 | `approval.go` | — | `getApprovalPolicy`, `getAgenticRunApproval`, `ensureAgenticRunApproval`, `isStageApproved`, `isStageDenied`, `getStageOverrideAgent`, `getStageOption` |
-| `resolve.go` | `resolvedStep`, `resolvedWorkflow` | `resolveAgenticRun`, `stepAgentName` |
+| `resolve.go` | `resolvedStep`, `resolvedWorkflow` | `resolveAgenticRun`, `stepAgentName`; [PLANNED: OLS-4060] resolves one run-level `ToolsSpec` from `AgenticRun.spec.tools` for all steps |
 | `agent.go` | `AgentCaller`, `StubAgentCaller`; `AnalysisOutput`, `ExecutionOutput`, `VerificationOutput`, `EscalationOutput` | Interface methods on `StubAgentCaller` |
 | `sandbox_manager.go` | `SandboxManager` | `NewSandboxManager`, `Create`, `Release`, `createBarePod`, `createSandboxClaim`, `releaseBarePod`, `releaseSandboxClaim`, `ensureSA`, `setSAOwner`, `buildInputConfigMap`, `createInputConfigMap`, `podSpecToUnstructured` |
 | `sandbox_agent.go` | `SandboxLifecycle` interface; `SandboxAgentCaller` | `Analyze`, `Execute`, `Verify`, `Escalate`, `ReleaseSandboxes`, `launchSandbox`, `patchSandboxInfo`, `buildAgentContext`, `collectFailedResults`, `stepString` |
@@ -173,7 +173,7 @@ Two handlers — a unified pod watcher and a timeout loop.
 - **`AgentCaller`:** Boundary between reconciler and runtime (stub vs sandbox+batch). Methods mirror workflow steps (`Analyze`, `Execute`, `Verify`, `Escalate`) plus `ReleaseSandbox(ctx, run, step)` and `ReleaseSandboxes`. No `serviceAccount` parameter — SA management is fully encapsulated in `SandboxManager`. [OLS-3066] Production implementation no longer makes HTTP calls — it launches sandboxes via `SandboxManager.Create`, then returns. Result processing happens on re-entry when the Result CR appears.
 - **`SandboxLifecycle`:** Interface (`Create(ctx, run, step, agent, llm, tools, deadline, query, agentCtx)` / `Release(ctx, run, step)`) for swappable sandbox management (tests can fake). Production implementation: `SandboxManager`. `Create` fully encapsulates SA, RBAC, ConfigMap, and pod lifecycle. All resources use the `ls-` name prefix; `Release` dispatches by reading `cfg.Sandbox.Mode` from the config cache. [OLS-3066] `WaitReady` is removed — the operator watches for pod completion and Result CR creation instead of polling.
 - **`PodSpecBuilder`:** Internal to `SandboxManager`. Takes base `*corev1.PodSpec` from config cache and overlays agent config. Produces typed `corev1.PodSpec`; the mode then determines delivery (bare Pod or SandboxTemplate conversion).
-- **`resolveAgenticRun`:** Produces `resolvedWorkflow` with cached `Agent` + `LLMProvider` per name; applies per-stage agent overrides from `AgenticRunApproval` via `getStageOverrideAgent`; `Execution`/`Verification` steps nil when corresponding spec sections are zero.
+- **`resolveAgenticRun`:** Produces `resolvedWorkflow` with cached `Agent` + `LLMProvider` per name; applies per-stage agent overrides from `AgenticRunApproval` via `getStageOverrideAgent`; `Execution`/`Verification` steps nil when corresponding spec sections are zero. [PLANNED: OLS-4060] Tool resolution is run-level only: every resolved step receives `AgenticRun.spec.tools`; step records do not carry or override tools.
 
 ---
 
@@ -191,7 +191,7 @@ cmd/main.go
 
 AgenticRunReconciler.Reconcile
   ├─ config guard: cfgCache.Available() → false: fail with clear error
-  ├─ approval.go, resolve.go
+  ├─ approval.go, resolve.go [PLANNED: OLS-4060: run-level tools for all steps]
   ├─ handlers.go → results.go (read Result CRs), rbac.go, helpers.go (status, option trim)
   └─ Agent (SandboxAgentCaller) [OLS-3066: batch model]
         ├─ First entry: launchSandbox
