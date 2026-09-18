@@ -60,6 +60,24 @@ fi
 echo "Deploying operator..."
 make deploy IMG="${IMG}" OPERATOR_NAMESPACE="${OPERATOR_NAMESPACE}" SANDBOX_MODE="${SANDBOX_MODE}"
 
+# Grant cluster-admin to the operator SA in the disposable E2E cluster.
+# The operator dynamically creates bindings for sandbox ServiceAccounts.
+echo "Granting cluster-admin to operator SA..."
+oc apply -f - <<EOF
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: lightspeed-agentic-operator-admin
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: cluster-admin
+subjects:
+- kind: ServiceAccount
+  name: controller-manager
+  namespace: ${OPERATOR_NAMESPACE}
+EOF
+
 # Grant cluster-reader to agent SA (required by execution RBAC discovery).
 echo "Granting cluster-reader to agent SA..."
 oc apply -f - <<EOF
@@ -76,6 +94,34 @@ subjects:
   name: lightspeed-agent
   namespace: ${OPERATOR_NAMESPACE}
 EOF
+
+# Validate the special RBAC delegation checks used by the sandbox lifecycle.
+# The operator creates and updates bindings dynamically, so ordinary create/update
+# permissions are not sufficient: Kubernetes also requires bind/escalate.
+OPERATOR_SUBJECT="system:serviceaccount:${OPERATOR_NAMESPACE}:controller-manager"
+check_operator_can() {
+  local description="$1"
+  shift
+  if ! oc auth can-i --quiet "$@" --as="${OPERATOR_SUBJECT}"; then
+    echo "ERROR: ${OPERATOR_SUBJECT} cannot ${description}" >&2
+    exit 1
+  fi
+}
+
+echo "Validating operator RBAC delegation..."
+check_operator_can "update the reader ClusterRoleBinding" \
+  update clusterrolebindings.rbac.authorization.k8s.io/lightspeed-agent-cluster-reader
+check_operator_can "bind the cluster-reader ClusterRole" \
+  bind clusterroles.rbac.authorization.k8s.io/cluster-reader
+check_operator_can "bind generated ClusterRoles" \
+  bind clusterroles.rbac.authorization.k8s.io
+check_operator_can "escalate generated ClusterRoles" \
+  escalate clusterroles.rbac.authorization.k8s.io
+check_operator_can "bind generated Roles in all namespaces" \
+  bind roles --all-namespaces
+check_operator_can "escalate generated Roles in all namespaces" \
+  escalate roles --all-namespaces
+echo "Operator RBAC delegation validated"
 
 # --- OTEL Collector (debug exporter for trace verification) ---
 
