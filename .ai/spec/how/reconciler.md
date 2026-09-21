@@ -22,7 +22,7 @@ Audience: AI agents. Behavioral rules and phase semantics live in **what/** spec
 ## Module map: `controller/agenticrun/`
 
 | File | Types / primary responsibilities | Key functions / methods |
-|------|----------------------------------|-------------------------|
+| ------ | ---------------------------------- | ------------------------- |
 | `reconciler.go` | `AgenticRunReconciler` (embeds `client.Client`, `Agent AgentCaller`, `Log`) | `Reconcile`, `SetupWithManager`, termination guard ordering |
 | `handlers.go` | (methods on `AgenticRunReconciler`) | `handleAnalysis`, `handleRevision`, `handleExecution`, `handleVerification`, `handleEscalation`, `handleFailed`, `denyAgenticRun`, `conditionTime`, `hasMutationSuccess`, `isObservationAction`, `analysisFailureMessage`, `executionFailureMessage` |
 | `helpers.go` | `revisionData`, `analysisQuery`, `executionQuery`, `verificationQuery`, `escalationData`; embedded templates via `//go:embed templates/*.tmpl` | `renderTemplate`, `failStep`, `statusPatch`, `hasSandboxClaims`, `isTerminal`, `setVerificationSkipped`, `getLatestAnalysisResult`, `selectedOption`, `trimNonSelectedOptions`, `resetExecutionAndVerification`, `buildEscalationRequest`, `needsRevision`, `buildRevisionContext`, `buildAnalysisQuery`, `buildExecutionQuery`, `buildVerificationQuery`, `prettyJSON` |
@@ -54,11 +54,10 @@ Audience: AI agents. Behavioral rules and phase semantics live in **what/** spec
 
 ---
 
-
 ## Module map: `controller/agenticolsconfig/`
 
 | File | Types | Key functions |
-|------|-------|----------------|
+| ------ | ------- | ---------------- |
 | `reconciler.go` | `Reconciler` (embeds `client.Client`, `EventRecorder`) | `Reconcile`, `SetupWithManager`, `handleActivation`, `handleDeactivation` |
 | `reconciler_test.go` | — | Activation/deactivation, event emission, non-terminal run requeue |
 
@@ -69,7 +68,7 @@ Audience: AI agents. Behavioral rules and phase semantics live in **what/** spec
 ## Module map: `controller/console/`
 
 | File | Types | Key functions |
-|------|-------|----------------|
+| ------ | ------- | ---------------- |
 | `reconciler.go` | `AgenticConsoleConfig` (Image, Namespace); constants for plugin name, cert, nginx config string | `EnsureAgenticConsole` (orchestrates ordered ensures), `labels`, `ensureConfigMap`, `ensureServiceAccount`, `ensureService`, `ensureDeployment`, `ensureConsolePlugin`, `ensureConsoleActivation` |
 | `reconciler_test.go` | — | Tests for idempotency, image updates, skip when no image |
 
@@ -173,6 +172,7 @@ Two handlers — a unified pod watcher and a timeout loop.
 - **`AgentCaller`:** Boundary between reconciler and runtime (stub vs sandbox+batch). Methods mirror workflow steps (`Analyze`, `Execute`, `Verify`, `Escalate`) plus `ReleaseSandbox(ctx, run, step)` and `ReleaseSandboxes`. No `serviceAccount` parameter — SA management is fully encapsulated in `SandboxManager`. [OLS-3066] Production implementation no longer makes HTTP calls — it launches sandboxes via `SandboxManager.Create`, then returns. Result processing happens on re-entry when the Result CR appears.
 - **`SandboxLifecycle`:** Interface (`Create(ctx, run, step, agent, llm, tools, deadline, query, agentCtx)` / `Release(ctx, run, step)`) for swappable sandbox management (tests can fake). Production implementation: `SandboxManager`. `Create` fully encapsulates SA, RBAC, ConfigMap, and pod lifecycle. All resources use the `ls-` name prefix; `Release` dispatches by reading `cfg.Sandbox.Mode` from the config cache. [OLS-3066] `WaitReady` is removed — the operator watches for pod completion and Result CR creation instead of polling.
 - **`PodSpecBuilder`:** Internal to `SandboxManager`. Takes base `*corev1.PodSpec` from config cache and overlays agent config. Produces typed `corev1.PodSpec`; the mode then determines delivery (bare Pod or SandboxTemplate conversion).
+- **Provider-egress TLS [PLANNED: OLS-3041]:** The configuration cache reads the resolved TLS values and CA object-name references from `lightspeed-agentic-configuration`. `PodSpecBuilder` adds read-only source mounts below `/var/run/secrets/lightspeed/tls/` and passes `LIGHTSPEED_TLS_PROFILE`, `LIGHTSPEED_TLS_MIN_VERSION`, and `LIGHTSPEED_TLS_CIPHER_SUITES` unchanged. The agentic operator watches only the handoff ConfigMap; it does not inspect, aggregate, deduplicate, or watch referenced CA objects.
 - **`resolveAgenticRun`:** Produces `resolvedWorkflow` with cached `Agent` + `LLMProvider` per name; applies per-stage agent overrides from `AgenticRunApproval` via `getStageOverrideAgent`; `Execution`/`Verification` steps nil when corresponding spec sections are zero. [PLANNED: OLS-4060] Tool resolution is run-level only: every resolved step receives `AgenticRun.spec.tools`; step records do not carry or override tools.
 
 ---
