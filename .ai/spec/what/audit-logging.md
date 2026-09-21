@@ -36,7 +36,7 @@ Implementation spec for compliance audit logging and lifecycle trace production 
 
 9. For analysis, execution, verification, and escalation, the operator MUST create the input ConfigMap and then inject telemetry into the generated Pod or SandboxTemplate. When the shared OTLP connection is configured, the container MUST receive:
    - `OTEL_EXPORTER_OTLP_ENDPOINT` from `lightspeed-agentic-configuration.data.otel-collector-endpoint`
-   - `OTEL_EXPORTER_OTLP_CERTIFICATE` set to `/etc/certs/otel-collector-ca/service-ca.crt` from the mounted Secret named by `otel-ca-secret`
+   - the Secret named by `otel-ca-secret` mounted under the shared sandbox TLS root so the sandbox bundle builder can include its CA
    - `LIGHTSPEED_AGENTICRUN_UID` with the literal AgenticRun UID
    - `LIGHTSPEED_AGENTICRUN_STEP` with the current phase
    - `TRACEPARENT` from the active phase span

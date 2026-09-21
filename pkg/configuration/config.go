@@ -38,13 +38,22 @@ type RHOKPConfig struct {
 	CASecretName string
 }
 
+// TLSConfig holds the normalized TLS handoff values from the ConfigMap.
+type TLSConfig struct {
+	Profile      string
+	MinVersion   string
+	CipherSuites string
+}
+
 // Config holds the parsed contents of the lightspeed-agentic-configuration
 // ConfigMap. Nil means the ConfigMap has not been seen yet.
 type Config struct {
-	Sandbox SandboxConfig
-	OTEL    OTELConfig
-	MCP     MCPConfig
-	RHOKP   RHOKPConfig
+	Sandbox               SandboxConfig
+	TLS                   TLSConfig
+	AdditionalCAConfigMap string
+	OTEL                  OTELConfig
+	MCP                   MCPConfig
+	RHOKP                 RHOKPConfig
 }
 
 // Cache is a thread-safe holder for the parsed ConfigMap contents.
@@ -119,6 +128,12 @@ func parseConfigMap(cm *corev1.ConfigMap) (*Config, error) {
 		Sandbox: SandboxConfig{
 			Mode: cm.Data[KeySandboxMode],
 		},
+		TLS: TLSConfig{
+			Profile:      cm.Data[KeyTLSProfile],
+			MinVersion:   cm.Data[KeyTLSMinVersion],
+			CipherSuites: cm.Data[KeyTLSCipherSuites],
+		},
+		AdditionalCAConfigMap: cm.Data[KeyAdditionalCAConfigMap],
 		OTEL: OTELConfig{
 			CollectorEndpoint: cm.Data[KeyOtelCollectorEndpoint],
 			AdminEndpoint:     cm.Data[KeyOtelAdminEndpoint],
