@@ -178,7 +178,7 @@ func (b *PodSpecBuilder) Build(
 		container.Env = append(container.Env, secEnv...)
 	}
 
-	appendOTELEnvVars(container, &volumes, otelCfg, runUID)
+	appendOTELEnvVars(container, &volumes, otelCfg, runUID, step)
 	appendRHOKPEnvVars(container, &volumes, rhokpCfg)
 
 	podSpec.Volumes = mergeVolumes(podSpec.Volumes, volumes)
@@ -244,13 +244,14 @@ const (
 	otelCASecretKey  = "otel-ca.crt"
 )
 
-func appendOTELEnvVars(container *corev1.Container, volumes *[]corev1.Volume, otelCfg *configuration.OTELConfig, runUID string) {
+func appendOTELEnvVars(container *corev1.Container, volumes *[]corev1.Volume, otelCfg *configuration.OTELConfig, runUID, step string) {
 	if otelCfg == nil || otelCfg.CollectorEndpoint == "" {
 		return
 	}
 	container.Env = append(container.Env,
 		corev1.EnvVar{Name: "OTEL_EXPORTER_OTLP_ENDPOINT", Value: otelCfg.CollectorEndpoint},
 		corev1.EnvVar{Name: "LIGHTSPEED_AGENTICRUN_UID", Value: runUID},
+		corev1.EnvVar{Name: "LIGHTSPEED_AGENTICRUN_STEP", Value: step},
 	)
 
 	if otelCfg.CASecretName != "" {

@@ -275,6 +275,9 @@ func TestCreate_OTELEnvVars(t *testing.T) {
 	if v := envMap["LIGHTSPEED_AGENTICRUN_UID"]; v != string(run.UID) {
 		t.Fatalf("expected run UID %q, got %q", run.UID, v)
 	}
+	if v := envMap["LIGHTSPEED_AGENTICRUN_STEP"]; v != "analysis" {
+		t.Fatalf("expected run step %q, got %q", "analysis", v)
+	}
 	if v := envMap["OTEL_EXPORTER_OTLP_CERTIFICATE"]; v != otelCAMountPath+"/"+otelCASecretKey {
 		t.Fatalf("expected OTEL CA cert path, got %q", v)
 	}
@@ -322,8 +325,9 @@ func TestCreate_NoOTEL_NoEnvVars(t *testing.T) {
 	}
 
 	for _, e := range pod.Spec.Containers[0].Env {
-		if e.Name == "OTEL_EXPORTER_OTLP_ENDPOINT" {
-			t.Fatal("OTEL env var should not be present when endpoint is empty")
+		switch e.Name {
+		case "OTEL_EXPORTER_OTLP_ENDPOINT", "LIGHTSPEED_AGENTICRUN_UID", "LIGHTSPEED_AGENTICRUN_STEP":
+			t.Fatalf("%s should not be present when the endpoint is empty", e.Name)
 		}
 	}
 }
@@ -372,6 +376,9 @@ func TestCreate_OTELEnvVars_SandboxClaim(t *testing.T) {
 	}
 	if v := envMap["LIGHTSPEED_AGENTICRUN_UID"]; v != string(run.UID) {
 		t.Fatalf("expected run UID %q in SandboxTemplate, got %q", run.UID, v)
+	}
+	if v := envMap["LIGHTSPEED_AGENTICRUN_STEP"]; v != "analysis" {
+		t.Fatalf("expected run step %q in SandboxTemplate, got %q", "analysis", v)
 	}
 	if v := envMap["OTEL_EXPORTER_OTLP_CERTIFICATE"]; v != otelCAMountPath+"/"+otelCASecretKey {
 		t.Fatalf("expected OTEL CA cert path in SandboxTemplate, got %q", v)
