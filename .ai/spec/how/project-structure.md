@@ -12,7 +12,7 @@
 | `controller/agenticrun/` | `AgenticRunReconciler`, `SandboxAgentCaller`, `SandboxManager`, `SandboxLifecycle`, `PodSpecBuilder`, `PodEventHandler`, `TimeoutHandler` | AgenticRun reconciler, unified sandbox management (SA, RBAC, ConfigMap, pod), unified pod event handler (pod_handler.go handles both bare-pod labels and sandbox-claim ownerRef chain), mode-dispatching timeout loop (timeout_handler.go), results |
 | `controller/console/` | `EnsureAgenticConsole`, `AgenticConsoleConfig` | Console plugin deployment (Deployment, Service, ConfigMap, ConsolePlugin CR) |
 | `controller/sandbox/` | Legacy bootstrap helpers | SA creation inlined into `cmd/main.go` |
-| `pkg/configuration/` | `Config`, `Cache`, `OnConfigMapChange` | ConfigMap-driven config cache (sandbox mode, PodSpec, OTEL, MCP) |
+| `pkg/configuration/` | `Config`, `Cache`, `OnConfigMapChange` | ConfigMap-driven cache for sandbox mode, PodSpec, OTEL, MCP, and [PLANNED: OLS-3928] tool-result inspection |
 | `pkg/configwatch/` | `Watcher`, `TryLoad` | Generic ConfigMap watcher utility |
 | `cli/` | `NewRootCmd` | CLI root command |
 | `cli/run/` | `CreateOptions`, `ListOptions`, `GetOptions`, `ApproveOptions`, `DenyOptions`, `WatchOptions`, `LogsOptions`, `DeleteOptions` | CLI subcommands for run lifecycle operations |
@@ -31,6 +31,7 @@
 **Operator binary** (`cmd/main.go`):
 - Parses flags (`--namespace`, `--metrics-bind-address`, `--health-probe-bind-address`, `--agentic-console-image`)
 - Creates `configuration.Cache` and registers ConfigMap watcher for `lightspeed-agentic-configuration`
+- [PLANNED: OLS-3928] Reads `tool-output-inspection-enabled` and makes its effective value available to `PodSpecBuilder`
 - Wires `SandboxManager` → `SandboxAgentCaller` → `AgenticRunReconciler` directly (no `controller/setup.go`)
 - Ensures `lightspeed-agent` ServiceAccount unconditionally (discovery seed for reader CRBs)
 - Registers console plugin, health/readiness probes, and webhook

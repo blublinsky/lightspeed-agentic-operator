@@ -53,8 +53,8 @@ spec:
           value: '{"COMPUTE_NODE_TYPE": "m5.2xlarge", "HYPERSHIFT_NODE_COUNT": "3", "HOSTED_MANAGEMENT_CLUSTER": "hosted-mgmt2"}'
         - name: releases
           value: '{"latest":{"release":{"channel":"stable","version":"$(params.openshift-version-prefix)","architecture":"multi"}}}'
-    - name: install-and-test
-      description: Install operator from SNAPSHOT, run e2e tests.
+    - name: install-operator
+      description: Install operator from SNAPSHOT.
       runAfter:
         - provision-ephemeral-cluster
       taskSpec:
@@ -74,9 +74,6 @@ spec:
           - name: cluster-credentials
             secret:
               secretName: $(params.clusterCredentialsSecretRef)
-          - name: ols-konflux-artifacts-bot-creds
-            secret:
-              secretName: ols-konflux-artifacts-bot
         steps:
           - name: install-operator
             results:
@@ -127,6 +124,35 @@ spec:
               SANDBOX_IMAGE="${SANDBOX_IMAGE}" \
               SANDBOX_MODE="${SANDBOX_MODE}" \
               bash .tekton/integration-tests/scripts/install-operator.sh
+      params:
+        - name: SNAPSHOT
+          value: $(params.SNAPSHOT)
+        - name: clusterCredentialsSecretRef
+          value: $(tasks.provision-ephemeral-cluster.results.secretRef)
+        - name: namespace
+          value: "$(params.namespace)"
+        - name: sandbox-mode
+          value: "$(params.sandbox-mode)"
+    - name: run-e2e-tests
+      description: Run e2e tests and publish cluster diagnostics.
+      runAfter:
+        - install-operator
+      taskSpec:
+        params:
+          - name: commit
+            type: string
+          - name: clusterCredentialsSecretRef
+            type: string
+          - name: namespace
+            type: string
+        volumes:
+          - name: cluster-credentials
+            secret:
+              secretName: $(params.clusterCredentialsSecretRef)
+          - name: ols-konflux-artifacts-bot-creds
+            secret:
+              secretName: ols-konflux-artifacts-bot
+        steps:
           - name: run-e2e-tests
             resources:
               requests:
@@ -144,11 +170,16 @@ spec:
                 value: "$(params.namespace)"
               - name: OPERATOR_NAMESPACE
                 value: "$(params.namespace)"
+              - name: COMMIT
+                value: "$(params.commit)"
             image: registry.redhat.io/openshift4/ose-cli:latest
             script: |
               set -euo pipefail
               dnf -y install git make golang
+              git clone --depth=1 https://github.com/openshift/lightspeed-agentic-operator.git /workspace/repo
               cd /workspace/repo
+              git fetch --depth=1 origin "${COMMIT}"
+              git checkout "${COMMIT}"
               mkdir -p /workspace/konflux-artifacts
               make test-e2e 2>&1 | tee /workspace/konflux-artifacts/e2e-test-output.log
           - name: gather-cluster-resources
@@ -200,7 +231,7 @@ spec:
               - name: workdir-path
                 value: /workspace/konflux-artifacts
               - name: oci-ref
-                value: "quay.io/openshift-lightspeed/ols-operator-artifacts:agentic-$(steps.install-operator.results.commit)"
+                value: "quay.io/openshift-lightspeed/ols-operator-artifacts:agentic-$(params.commit)"
               - name: credentials-volume-name
                 value: ols-konflux-artifacts-bot-creds
           - name: fail-if-any-step-failed
@@ -214,14 +245,12 @@ spec:
                 - name: pathInRepo
                   value: stepactions/fail-if-any-step-failed/0.1/fail-if-any-step-failed.yaml
       params:
-        - name: SNAPSHOT
-          value: $(params.SNAPSHOT)
+        - name: commit
+          value: $(tasks.install-operator.results.commit)
         - name: clusterCredentialsSecretRef
           value: $(tasks.provision-ephemeral-cluster.results.secretRef)
         - name: namespace
           value: "$(params.namespace)"
-        - name: sandbox-mode
-          value: "$(params.sandbox-mode)"
   finally:
     - name: deprovision-ephemeral-cluster
       taskRef:
