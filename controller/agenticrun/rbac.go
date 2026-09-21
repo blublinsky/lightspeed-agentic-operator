@@ -77,87 +77,89 @@ var spokeReaderBindingNames = []string{
 	"lightspeed-hub:cluster-monitoring-view",
 }
 
-// addReaderSubjectOnSpoke adds the SA to the known spoke reader
-// ClusterRoleBindings. Uses hardcoded CRB names (no global cache).
-func addReaderSubjectOnSpoke(ctx context.Context, spokeClient client.Client, saName, spokeNS string) error {
+// perRunCRBName returns the name for a per-run ClusterRoleBinding created
+// from a source CRB. Format: ls-reader-{step}-{runUID}-{index}.
+// Each source CRB gets its own per-run CRB so there are no concurrent
+// mutations on shared resources.
+func perRunCRBName(runUID, step string, index int) string {
+	return truncateK8sName(fmt.Sprintf("ls-reader-%s-%s-%d", stepAbbrev(step), runUID, index))
+}
+
+// addReaderSubjectOnSpoke creates per-run ClusterRoleBindings on the spoke,
+// one for each source CRB. Each per-run CRB copies the RoleRef from its
+// source and has a single subject: the per-step SA. Source CRBs are never
+// modified. Idempotent (Create + ignore AlreadyExists).
+func addReaderSubjectOnSpoke(ctx context.Context, spokeClient client.Client, runUID, step, saName, spokeNS string, extraLabels map[string]string) error {
 	subject := rbacv1.Subject{
 		Kind:      rbacv1.ServiceAccountKind,
 		Name:      saName,
 		Namespace: spokeNS,
 	}
-	for _, name := range spokeReaderBindingNames {
-		if err := addSubjectToBinding(ctx, spokeClient, name, subject); err != nil {
-			return err
+
+	var created []string // track for rollback on partial failure
+	for i, sourceName := range spokeReaderBindingNames {
+		// Read source CRB for its RoleRef.
+		source := &rbacv1.ClusterRoleBinding{}
+		if err := spokeClient.Get(ctx, client.ObjectKey{Name: sourceName}, source); err != nil {
+			cleanupCreatedCRBs(ctx, spokeClient, created)
+			return fmt.Errorf("%s: get source %s: %w", ErrAddReaderSubject, sourceName, err)
 		}
+
+		crbName := perRunCRBName(runUID, step, i)
+		labels := rbacLabels(runUID, "reader-rbac")
+		for k, v := range extraLabels {
+			labels[k] = v
+		}
+
+		crb := &rbacv1.ClusterRoleBinding{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:   crbName,
+				Labels: labels,
+			},
+			RoleRef:  source.RoleRef,
+			Subjects: []rbacv1.Subject{subject},
+		}
+		if err := spokeClient.Create(ctx, crb); err != nil {
+			if apierrors.IsAlreadyExists(err) {
+				// Don't track pre-existing CRBs for rollback —
+				// we didn't create them, so we shouldn't delete them.
+				continue
+			}
+			cleanupCreatedCRBs(ctx, spokeClient, created)
+			return fmt.Errorf("%s %s: %w", ErrCreateClusterRoleBinding, crbName, err)
+		}
+		created = append(created, crbName)
 	}
 	return nil
 }
 
-// removeReaderSubjectOnSpoke removes the SA from the known spoke reader
-// ClusterRoleBindings. Processes all bindings even if one fails (best-effort
-// cleanup). Uses hardcoded CRB names (no global cache).
-func removeReaderSubjectOnSpoke(ctx context.Context, spokeClient client.Client, saName, spokeNS string) error {
+// cleanupCreatedCRBs is a rollback helper for addReaderSubjectOnSpoke —
+// deletes per-run CRBs created before a failure. Best-effort.
+func cleanupCreatedCRBs(ctx context.Context, c client.Client, names []string) {
+	log := logf.FromContext(ctx)
+	for _, name := range names {
+		if err := deleteIfExists(ctx, c, &rbacv1.ClusterRoleBinding{
+			ObjectMeta: metav1.ObjectMeta{Name: name},
+		}); err != nil {
+			log.Error(err, "rollback: failed to delete per-run CRB", LogKeyName, name)
+		}
+	}
+}
+
+// removeReaderSubjectOnSpoke deletes per-run ClusterRoleBindings created by
+// addReaderSubjectOnSpoke. Processes all CRBs even if one fails (best-effort
+// cleanup). Idempotent (ignore NotFound).
+func removeReaderSubjectOnSpoke(ctx context.Context, spokeClient client.Client, runUID, step string) error {
 	var firstErr error
-	for _, name := range spokeReaderBindingNames {
-		if err := removeSubjectFromBinding(ctx, spokeClient, name, saName, spokeNS); err != nil {
-			if firstErr == nil {
-				firstErr = err
-			}
+	for i := range spokeReaderBindingNames {
+		crbName := perRunCRBName(runUID, step, i)
+		if err := deleteIfExists(ctx, spokeClient, &rbacv1.ClusterRoleBinding{
+			ObjectMeta: metav1.ObjectMeta{Name: crbName},
+		}); err != nil && firstErr == nil {
+			firstErr = fmt.Errorf("%s %s: %w", ErrDeleteClusterRoleBinding, crbName, err)
 		}
 	}
 	return firstErr
-}
-
-// addSubjectToBinding is retained for spoke bindings, whose names are
-// managed by the hub and whose subjects are still maintained in place.
-func addSubjectToBinding(ctx context.Context, c client.Client, bindingName string, subject rbacv1.Subject) error {
-	for attempts := 0; attempts < 3; attempts++ {
-		crb := &rbacv1.ClusterRoleBinding{}
-		if err := c.Get(ctx, client.ObjectKey{Name: bindingName}, crb); err != nil {
-			return fmt.Errorf("%s %s: %w", ErrAddReaderSubject, bindingName, err)
-		}
-		for _, s := range crb.Subjects {
-			if s.Kind == subject.Kind && s.Name == subject.Name && s.Namespace == subject.Namespace {
-				return nil
-			}
-		}
-		crb.Subjects = append(crb.Subjects, subject)
-		if err := c.Update(ctx, crb); err == nil {
-			return nil
-		} else if !apierrors.IsConflict(err) {
-			return fmt.Errorf("%s %s: %w", ErrAddReaderSubject, bindingName, err)
-		}
-	}
-	return fmt.Errorf("%s: conflict after retries", ErrAddReaderSubject)
-}
-
-func removeSubjectFromBinding(ctx context.Context, c client.Client, bindingName, saName, namespace string) error {
-	for attempts := 0; attempts < 3; attempts++ {
-		crb := &rbacv1.ClusterRoleBinding{}
-		if err := c.Get(ctx, client.ObjectKey{Name: bindingName}, crb); err != nil {
-			if apierrors.IsNotFound(err) {
-				return nil
-			}
-			return fmt.Errorf("%s %s: %w", ErrRemoveReaderSubject, bindingName, err)
-		}
-		filtered := make([]rbacv1.Subject, 0, len(crb.Subjects))
-		for _, s := range crb.Subjects {
-			if s.Kind == rbacv1.ServiceAccountKind && s.Name == saName && s.Namespace == namespace {
-				continue
-			}
-			filtered = append(filtered, s)
-		}
-		if len(filtered) == len(crb.Subjects) {
-			return nil
-		}
-		crb.Subjects = filtered
-		if err := c.Update(ctx, crb); err == nil {
-			return nil
-		} else if !apierrors.IsConflict(err) {
-			return fmt.Errorf("%s %s: %w", ErrRemoveReaderSubject, bindingName, err)
-		}
-	}
-	return fmt.Errorf("%s: conflict after retries", ErrRemoveReaderSubject)
 }
 
 // resolveReaderBindings returns all ClusterRoleBindings that list the
