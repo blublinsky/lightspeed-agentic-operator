@@ -736,7 +736,9 @@ func (m *SandboxManager) Release(ctx context.Context, run *agenticv1alpha1.Agent
 	// Delete the sandbox kubeconfig Secret eagerly. Owner-ref GC would
 	// clean it up when the AgenticRun is deleted, but the Secret contains
 	// a 24h spoke token — no reason to keep it after the step completes.
-	if spoke != nil {
+	// Use TargetCluster (not spoke != nil) so the Secret is deleted even
+	// when the spoke is unreachable — the Secret is a hub resource.
+	if run.Spec.TargetCluster != "" {
 		kcName := sandboxKubeconfigSecretName(string(run.UID), step)
 		kcSecret := &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: kcName, Namespace: m.namespace}}
 		if err := m.client.Delete(ctx, kcSecret); err != nil && !apierrors.IsNotFound(err) && firstErr == nil {
