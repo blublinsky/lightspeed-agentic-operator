@@ -8,6 +8,10 @@ const (
 	// ConfigMap keys (lightspeed-agentic-configuration)
 	KeySandboxMode           = "sandbox-mode"
 	KeySandboxPodSpec        = "sandbox-pod-spec"
+	KeyTLSProfile            = "tls-profile"
+	KeyTLSMinVersion         = "tls-min-version"
+	KeyTLSCipherSuites       = "tls-cipher-suites"
+	KeyAdditionalCAConfigMap = "additional-ca-configmap"
 	KeyOtelCollectorEndpoint = "otel-collector-endpoint"
 	KeyOtelAdminEndpoint     = "otel-admin-endpoint"
 	KeyOtelCASecret          = "otel-ca-secret"

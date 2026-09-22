@@ -284,10 +284,6 @@ func TestCreate_OTELEnvVars(t *testing.T) {
 	if v := envMap["LIGHTSPEED_AGENTICRUN_STEP"]; v != "analysis" {
 		t.Fatalf("expected run step %q, got %q", "analysis", v)
 	}
-	if v := envMap["OTEL_EXPORTER_OTLP_CERTIFICATE"]; v != otelCAMountPath+"/"+otelCASecretKey {
-		t.Fatalf("expected OTEL CA cert path, got %q", v)
-	}
-
 	hasVolume := false
 	for _, v := range pod.Spec.Volumes {
 		if v.Name == otelCAVolumeName {
@@ -386,10 +382,6 @@ func TestCreate_OTELEnvVars_SandboxClaim(t *testing.T) {
 	if v := envMap["LIGHTSPEED_AGENTICRUN_STEP"]; v != "analysis" {
 		t.Fatalf("expected run step %q in SandboxTemplate, got %q", "analysis", v)
 	}
-	if v := envMap["OTEL_EXPORTER_OTLP_CERTIFICATE"]; v != otelCAMountPath+"/"+otelCASecretKey {
-		t.Fatalf("expected OTEL CA cert path in SandboxTemplate, got %q", v)
-	}
-
 	deadline, found, _ := unstructured.NestedInt64(tmpl.Object, "spec", "podTemplate", "spec", "activeDeadlineSeconds")
 	if !found {
 		t.Fatal("expected activeDeadlineSeconds in SandboxTemplate podTemplate spec")

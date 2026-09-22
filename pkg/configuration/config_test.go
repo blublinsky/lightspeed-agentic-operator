@@ -131,6 +131,44 @@ func TestReadFromConfigMap_MissingOptionalFields(t *testing.T) {
 	}
 }
 
+func TestParseConfigMap_TLSFields(t *testing.T) {
+	cm := &corev1.ConfigMap{
+		Data: map[string]string{
+			KeyTLSProfile:            "IntermediateType",
+			KeyTLSMinVersion:         "VersionTLS12",
+			KeyTLSCipherSuites:       `["TLS_AES_128_GCM_SHA256"]`,
+			KeyAdditionalCAConfigMap: "custom-ca",
+		},
+	}
+
+	cfg, err := parseConfigMap(cm)
+	if err != nil {
+		t.Fatalf("parseConfigMap: %v", err)
+	}
+	if cfg.TLS.Profile != "IntermediateType" {
+		t.Errorf("TLS.Profile = %q", cfg.TLS.Profile)
+	}
+	if cfg.TLS.MinVersion != "VersionTLS12" {
+		t.Errorf("TLS.MinVersion = %q", cfg.TLS.MinVersion)
+	}
+	if cfg.TLS.CipherSuites != `["TLS_AES_128_GCM_SHA256"]` {
+		t.Errorf("TLS.CipherSuites = %q", cfg.TLS.CipherSuites)
+	}
+	if cfg.AdditionalCAConfigMap != "custom-ca" {
+		t.Errorf("AdditionalCAConfigMap = %q", cfg.AdditionalCAConfigMap)
+	}
+}
+
+func TestParseConfigMap_TLSAdditionalCAConfigMapOmitted(t *testing.T) {
+	cfg, err := parseConfigMap(&corev1.ConfigMap{})
+	if err != nil {
+		t.Fatalf("parseConfigMap: %v", err)
+	}
+	if cfg.AdditionalCAConfigMap != "" {
+		t.Errorf("AdditionalCAConfigMap = %q, want empty", cfg.AdditionalCAConfigMap)
+	}
+}
+
 func TestParseConfigMap_RHOKPFields(t *testing.T) {
 	cm := &corev1.ConfigMap{
 		Data: map[string]string{
