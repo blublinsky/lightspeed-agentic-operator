@@ -1409,35 +1409,85 @@ func spokeReaderBindings() []*rbacv1.ClusterRoleBinding {
 	}
 }
 
-func TestAddReaderSubjectOnSpoke(t *testing.T) {
+func TestAddReaderSubjectOnSpoke_CreatesPerRunCRBs(t *testing.T) {
 	ctx := context.Background()
 	bindings := spokeReaderBindings()
 	fc := fake.NewClientBuilder().WithScheme(testScheme()).WithObjects(bindings[0], bindings[1]).Build()
 
-	if err := addReaderSubjectOnSpoke(ctx, fc, "ls-anl-uid1", "openshift-lightspeed-managed"); err != nil {
+	runUID := "uid-spoke-1"
+	step := "analysis"
+	extraLabels := map[string]string{LabelSpokeCluster: "prod-spoke", LabelAgenticRun: "my-run"}
+
+	if err := addReaderSubjectOnSpoke(ctx, fc, runUID, step, "ls-anl-uid-spoke-1", spokeManagedNamespace, extraLabels); err != nil {
 		t.Fatalf("addReaderSubjectOnSpoke: %v", err)
 	}
 
-	// Verify both CRBs have the new subject.
-	for _, name := range spokeReaderBindingNames {
+	// Verify per-run CRBs created, one per source.
+	for i, sourceName := range spokeReaderBindingNames {
+		crbName := perRunCRBName(runUID, step, i)
 		var crb rbacv1.ClusterRoleBinding
-		if err := fc.Get(ctx, types.NamespacedName{Name: name}, &crb); err != nil {
-			t.Fatalf("get %s: %v", name, err)
+		if err := fc.Get(ctx, types.NamespacedName{Name: crbName}, &crb); err != nil {
+			t.Fatalf("per-run CRB %s not found: %v", crbName, err)
 		}
-		found := false
-		for _, s := range crb.Subjects {
-			if s.Name == "ls-anl-uid1" && s.Namespace == "openshift-lightspeed-managed" {
-				found = true
-				break
+		// Single subject.
+		if len(crb.Subjects) != 1 {
+			t.Fatalf("CRB %s: expected 1 subject, got %d", crbName, len(crb.Subjects))
+		}
+		if crb.Subjects[0].Name != "ls-anl-uid-spoke-1" {
+			t.Fatalf("CRB %s: subject = %q, want ls-anl-uid-spoke-1", crbName, crb.Subjects[0].Name)
+		}
+		if crb.Subjects[0].Namespace != spokeManagedNamespace {
+			t.Fatalf("CRB %s: subject ns = %q, want %q", crbName, crb.Subjects[0].Namespace, spokeManagedNamespace)
+		}
+		// RoleRef copied from source.
+		var source rbacv1.ClusterRoleBinding
+		if err := fc.Get(ctx, types.NamespacedName{Name: sourceName}, &source); err != nil {
+			t.Fatalf("get source %s: %v", sourceName, err)
+		}
+		if crb.RoleRef != source.RoleRef {
+			t.Fatalf("CRB %s: RoleRef mismatch: got %+v, want %+v", crbName, crb.RoleRef, source.RoleRef)
+		}
+		// Labels include run + component + spoke extras.
+		if crb.Labels[LabelRun] != runUID {
+			t.Errorf("CRB %s: run label = %q, want %q", crbName, crb.Labels[LabelRun], runUID)
+		}
+		if crb.Labels[LabelComponent] != "reader-rbac" {
+			t.Errorf("CRB %s: component label = %q, want reader-rbac", crbName, crb.Labels[LabelComponent])
+		}
+		if crb.Labels[LabelSpokeCluster] != "prod-spoke" {
+			t.Errorf("CRB %s: spoke-cluster label = %q, want prod-spoke", crbName, crb.Labels[LabelSpokeCluster])
+		}
+	}
+
+	// Source CRBs must NOT be modified.
+	for _, sourceName := range spokeReaderBindingNames {
+		var source rbacv1.ClusterRoleBinding
+		if err := fc.Get(ctx, types.NamespacedName{Name: sourceName}, &source); err != nil {
+			t.Fatalf("get source %s: %v", sourceName, err)
+		}
+		for _, s := range source.Subjects {
+			if s.Name == "ls-anl-uid-spoke-1" {
+				t.Fatalf("source CRB %s was modified — subject added", sourceName)
 			}
-		}
-		if !found {
-			t.Fatalf("subject ls-anl-uid1 not added to spoke CRB %s", name)
 		}
 	}
 }
 
-func TestAddReaderSubjectOnSpoke_DoesNotPollutHubCache(t *testing.T) {
+func TestAddReaderSubjectOnSpoke_Idempotent(t *testing.T) {
+	ctx := context.Background()
+	bindings := spokeReaderBindings()
+	fc := fake.NewClientBuilder().WithScheme(testScheme()).WithObjects(bindings[0], bindings[1]).Build()
+
+	extraLabels := map[string]string{LabelSpokeCluster: "s"}
+	if err := addReaderSubjectOnSpoke(ctx, fc, "uid1", "analysis", "sa1", spokeManagedNamespace, extraLabels); err != nil {
+		t.Fatalf("first call: %v", err)
+	}
+	if err := addReaderSubjectOnSpoke(ctx, fc, "uid1", "analysis", "sa1", spokeManagedNamespace, extraLabels); err != nil {
+		t.Fatalf("second call (idempotent): %v", err)
+	}
+}
+
+func TestAddReaderSubjectOnSpoke_DoesNotPolluteHubCache(t *testing.T) {
 	ctx := context.Background()
 	resetReaderBindings()
 
@@ -1452,7 +1502,7 @@ func TestAddReaderSubjectOnSpoke_DoesNotPollutHubCache(t *testing.T) {
 	// Set up a spoke client with spoke CRBs.
 	bindings := spokeReaderBindings()
 	spokeFC := fake.NewClientBuilder().WithScheme(testScheme()).WithObjects(bindings[0], bindings[1]).Build()
-	if err := addReaderSubjectOnSpoke(ctx, spokeFC, "ls-anl-uid1", "openshift-lightspeed-managed"); err != nil {
+	if err := addReaderSubjectOnSpoke(ctx, spokeFC, "uid1", "analysis", "ls-anl-uid1", spokeManagedNamespace, nil); err != nil {
 		t.Fatalf("spoke add: %v", err)
 	}
 
@@ -1468,43 +1518,93 @@ func TestAddReaderSubjectOnSpoke_DoesNotPollutHubCache(t *testing.T) {
 	}
 }
 
-func TestRemoveReaderSubjectOnSpoke(t *testing.T) {
+func TestAddReaderSubjectOnSpoke_SourceCRBNotFound(t *testing.T) {
+	ctx := context.Background()
+	// No source CRBs exist.
+	fc := fake.NewClientBuilder().WithScheme(testScheme()).Build()
+
+	err := addReaderSubjectOnSpoke(ctx, fc, "uid1", "analysis", "sa1", spokeManagedNamespace, nil)
+	if err == nil {
+		t.Fatal("expected error when source CRB is missing")
+	}
+	if !strings.Contains(err.Error(), ErrAddReaderSubject) {
+		t.Fatalf("error should contain %q, got: %v", ErrAddReaderSubject, err)
+	}
+}
+
+func TestAddReaderSubjectOnSpoke_RollbackOnPartialFailure(t *testing.T) {
 	ctx := context.Background()
 	bindings := spokeReaderBindings()
-	// Pre-add the subject to both bindings.
-	for _, b := range bindings {
-		b.Subjects = append(b.Subjects, rbacv1.Subject{
-			Kind: rbacv1.ServiceAccountKind, Name: "ls-anl-uid1", Namespace: "openshift-lightspeed-managed",
-		})
+	// Only first source CRB exists — second is missing, which triggers rollback.
+	fc := fake.NewClientBuilder().WithScheme(testScheme()).WithObjects(bindings[0]).Build()
+
+	err := addReaderSubjectOnSpoke(ctx, fc, "uid1", "analysis", "sa1", spokeManagedNamespace, nil)
+	if err == nil {
+		t.Fatal("expected error when second source CRB is missing")
 	}
+
+	// First per-run CRB should have been rolled back.
+	crbName := perRunCRBName("uid1", "analysis", 0)
+	var crb rbacv1.ClusterRoleBinding
+	if err := fc.Get(ctx, types.NamespacedName{Name: crbName}, &crb); err == nil {
+		t.Fatalf("per-run CRB %s should have been cleaned up on rollback", crbName)
+	}
+}
+
+func TestRemoveReaderSubjectOnSpoke_DeletesPerRunCRBs(t *testing.T) {
+	ctx := context.Background()
+	bindings := spokeReaderBindings()
 	fc := fake.NewClientBuilder().WithScheme(testScheme()).WithObjects(bindings[0], bindings[1]).Build()
 
-	if err := removeReaderSubjectOnSpoke(ctx, fc, "ls-anl-uid1", "openshift-lightspeed-managed"); err != nil {
+	// Create per-run CRBs first.
+	if err := addReaderSubjectOnSpoke(ctx, fc, "uid1", "analysis", "sa1", spokeManagedNamespace, nil); err != nil {
+		t.Fatalf("setup: %v", err)
+	}
+
+	// Remove them.
+	if err := removeReaderSubjectOnSpoke(ctx, fc, "uid1", "analysis"); err != nil {
 		t.Fatalf("removeReaderSubjectOnSpoke: %v", err)
 	}
 
+	// Per-run CRBs should be gone.
+	for i := range spokeReaderBindingNames {
+		crbName := perRunCRBName("uid1", "analysis", i)
+		var crb rbacv1.ClusterRoleBinding
+		if err := fc.Get(ctx, types.NamespacedName{Name: crbName}, &crb); err == nil {
+			t.Fatalf("per-run CRB %s should be deleted", crbName)
+		}
+	}
+
+	// Source CRBs should still exist.
 	for _, name := range spokeReaderBindingNames {
 		var crb rbacv1.ClusterRoleBinding
 		if err := fc.Get(ctx, types.NamespacedName{Name: name}, &crb); err != nil {
-			t.Fatalf("get %s: %v", name, err)
-		}
-		for _, s := range crb.Subjects {
-			if s.Name == "ls-anl-uid1" {
-				t.Fatalf("subject ls-anl-uid1 should have been removed from %s", name)
-			}
+			t.Fatalf("source CRB %s should still exist: %v", name, err)
 		}
 	}
 }
 
-func TestRemoveReaderSubjectOnSpoke_BindingGone(t *testing.T) {
+func TestRemoveReaderSubjectOnSpoke_IdempotentWhenGone(t *testing.T) {
 	ctx := context.Background()
-	// Only one of the two CRBs exists — the other was already deleted.
-	bindings := spokeReaderBindings()
-	fc := fake.NewClientBuilder().WithScheme(testScheme()).WithObjects(bindings[0]).Build()
+	// No per-run CRBs exist.
+	fc := fake.NewClientBuilder().WithScheme(testScheme()).Build()
 
-	// Should not error — missing CRB is tolerated by removeSubjectFromBinding.
-	if err := removeReaderSubjectOnSpoke(ctx, fc, "ls-anl-uid1", "openshift-lightspeed-managed"); err != nil {
-		t.Fatalf("expected no error when CRB is gone, got: %v", err)
+	// Should not error — NotFound is tolerated.
+	if err := removeReaderSubjectOnSpoke(ctx, fc, "uid1", "analysis"); err != nil {
+		t.Fatalf("expected no error when CRBs are gone, got: %v", err)
+	}
+}
+
+func TestPerRunCRBName(t *testing.T) {
+	name := perRunCRBName("abc-123", "analysis", 0)
+	if name != "ls-reader-anl-abc-123-0" {
+		t.Fatalf("perRunCRBName = %q, want ls-reader-anl-abc-123-0", name)
+	}
+	// Long UID should be truncated.
+	longUID := strings.Repeat("x", 60)
+	longName := perRunCRBName(longUID, "execution", 1)
+	if len(longName) > 63 {
+		t.Fatalf("name exceeds 63 chars: %d", len(longName))
 	}
 }
 

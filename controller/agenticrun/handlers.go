@@ -317,20 +317,19 @@ func (r *AgenticRunReconciler) handleFailed(
 		log.Error(spokeErr, "RBAC cleanup: spoke unreachable")
 	}
 
-	// Spoke path: clean SAs, reader CRB subjects, and execution RBAC
-	// for all steps via the shared helper.
-	if spoke != nil {
-		for _, step := range []string{"analysis", "execution", "verification", "escalation"} {
-			if err := spokeCleanupStep(ctx, spoke, run, sandboxSAName(run, step), step == "execution"); err != nil {
-				log.Error(err, "spoke cleanup on failure", LogKeyStep, step)
-			}
+	// Clean SAs, reader CRBs, and execution RBAC for all steps.
+	// Spoke: per-run CRBs + SAs on spoke. Hub: per-run CRBs + execution RBAC.
+	for _, step := range []string{"analysis", "execution", "verification", "escalation"} {
+		// Hub path: only clean execution RBAC if annotation is present (SAs are GC'd via owner refs).
+		// Spoke path: always clean all steps.
+		if spoke == nil && step != "execution" {
+			continue
 		}
-	}
-
-	// Hub path: execution RBAC only (SAs are GC'd via owner refs).
-	if spoke == nil && run.Annotations[rbacNamespacesAnnotation] != "" {
-		if err := cleanupExecutionRBAC(ctx, r.Client, run); err != nil {
-			log.Error(err, "RBAC cleanup on failure")
+		if spoke == nil && run.Annotations[rbacNamespacesAnnotation] == "" {
+			continue
+		}
+		if err := cleanupStepRBAC(ctx, spoke, r.Client, r.Namespace, run, step); err != nil {
+			log.Error(err, "RBAC cleanup on failure", LogKeyStep, step)
 		}
 	}
 
