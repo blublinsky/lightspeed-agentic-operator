@@ -131,6 +131,38 @@ func TestReadFromConfigMap_MissingOptionalFields(t *testing.T) {
 	}
 }
 
+func TestParseConfigMap_ToolOutputInspectionEnabled(t *testing.T) {
+	tests := []struct {
+		name    string
+		value   string
+		present bool
+		want    bool
+	}{
+		{name: "true", value: "true", present: true, want: true},
+		{name: "false", value: "false", present: true, want: false},
+		{name: "trimmed mixed case false", value: " False ", present: true, want: false},
+		{name: "missing defaults enabled", want: true},
+		{name: "empty defaults enabled", value: "", present: true, want: true},
+		{name: "malformed defaults enabled", value: "invalid", present: true, want: true},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			data := map[string]string{}
+			if tc.present {
+				data[KeyToolOutputInspectionEnabled] = tc.value
+			}
+			cfg, err := parseConfigMap(&corev1.ConfigMap{Data: data})
+			if err != nil {
+				t.Fatalf("parseConfigMap: %v", err)
+			}
+			if cfg.ToolOutputInspectionEnabled != tc.want {
+				t.Fatalf("ToolOutputInspectionEnabled = %v, want %v", cfg.ToolOutputInspectionEnabled, tc.want)
+			}
+		})
+	}
+}
+
 func TestParseConfigMap_TLSFields(t *testing.T) {
 	cm := &corev1.ConfigMap{
 		Data: map[string]string{
