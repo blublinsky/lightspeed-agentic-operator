@@ -2,8 +2,12 @@ package agenticrun
 
 import (
 	"context"
+	stderrors "errors"
 	"fmt"
+	"slices"
 
+	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
@@ -30,69 +34,135 @@ type resolvedWorkflow struct {
 	Verification *resolvedStep // nil = skip verification
 }
 
-func resolveAgenticRun(ctx context.Context, c client.Client, run *agenticv1alpha1.AgenticRun, approval *agenticv1alpha1.AgenticRunApproval) (*resolvedWorkflow, error) {
-	agentCache := map[string]*agenticv1alpha1.Agent{}
-	llmCache := map[string]*agenticv1alpha1.LLMProvider{}
-
-	resolveAgent := func(agentName string) (*agenticv1alpha1.Agent, *agenticv1alpha1.LLMProvider, error) {
-		if agentName == "" {
-			agentName = "default"
+func validateAgentDependencies(ctx context.Context, c client.Client, namespace, agentName string) (*agenticv1alpha1.Agent, *agenticv1alpha1.LLMProvider, []error) {
+	if agentName == "" {
+		agentName = "default"
+	}
+	var issues []error
+	agent := &agenticv1alpha1.Agent{}
+	var llm *agenticv1alpha1.LLMProvider
+	if err := c.Get(ctx, types.NamespacedName{Name: agentName}, agent); err != nil {
+		if apierrors.IsNotFound(err) {
+			issues = append(issues, fmt.Errorf("Agent %q not found", agentName))
+		} else {
+			issues = append(issues, fmt.Errorf("get Agent %q: %w", agentName, err))
 		}
-		agent, ok := agentCache[agentName]
-		if !ok {
-			agent = &agenticv1alpha1.Agent{}
-			if err := c.Get(ctx, types.NamespacedName{Name: agentName}, agent); err != nil {
-				return nil, nil, fmt.Errorf("%s %q: %w", ErrGetAgent, agentName, err)
-			}
-			agentCache[agentName] = agent
-		}
-
+	} else {
 		llmName := agent.Spec.LLMProvider.Name
-		llm, ok := llmCache[llmName]
-		if !ok {
-			llm = &agenticv1alpha1.LLMProvider{}
-			if err := c.Get(ctx, types.NamespacedName{Name: llmName}, llm); err != nil {
-				return nil, nil, fmt.Errorf("%s %q (referenced by Agent %q): %w", ErrGetLLMProvider, llmName, agentName, err)
+		llm = &agenticv1alpha1.LLMProvider{}
+		if err := c.Get(ctx, types.NamespacedName{Name: llmName}, llm); err != nil {
+			if apierrors.IsNotFound(err) {
+				issues = append(issues, fmt.Errorf("Agent %q references missing LLMProvider %q", agentName, llmName))
+			} else {
+				issues = append(issues, fmt.Errorf("get LLMProvider %q referenced by Agent %q: %w", llmName, agentName, err))
 			}
-			llmCache[llmName] = llm
+		} else {
+			secretName := credentialsSecretName(llm)
+			if secretName == "" {
+				issues = append(issues, fmt.Errorf("LLMProvider %q has no credentials Secret configured", llmName))
+			} else {
+				secret := &corev1.Secret{}
+				if err := c.Get(ctx, types.NamespacedName{Name: secretName, Namespace: namespace}, secret); err != nil {
+					if apierrors.IsNotFound(err) {
+						issues = append(issues, fmt.Errorf("LLMProvider %q references missing Secret %q in namespace %q", llmName, secretName, namespace))
+					} else {
+						issues = append(issues, fmt.Errorf("get Secret %q for LLMProvider %q: %w", secretName, llmName, err))
+					}
+				}
+			}
 		}
-
-		return agent, llm, nil
 	}
+	if len(issues) > 0 {
+		return nil, nil, issues
+	}
+	return agent, llm, nil
+}
 
-	toolsForStep := func(step agenticv1alpha1.AgenticRunStep) *agenticv1alpha1.ToolsSpec {
-		if !step.Tools.IsZero() {
-			return &step.Tools
+func toolsForStep(run *agenticv1alpha1.AgenticRun, step agenticv1alpha1.AgenticRunStep) *agenticv1alpha1.ToolsSpec {
+	if !step.Tools.IsZero() {
+		return &step.Tools
+	}
+	return &run.Spec.Tools
+}
+
+func validateAgenticRun(ctx context.Context, c client.Client, run *agenticv1alpha1.AgenticRun, approval *agenticv1alpha1.AgenticRunApproval, operatorNamespace string) ([]error, map[string]*agenticv1alpha1.Agent, map[string]*agenticv1alpha1.LLMProvider) {
+	errors := []error{}
+	validatedAgents := map[string]*agenticv1alpha1.Agent{}
+	validatedLLMProviders := map[string]*agenticv1alpha1.LLMProvider{}
+	agents := []string{}
+
+	steps := []struct {
+		stage      agenticv1alpha1.SandboxStep
+		step       agenticv1alpha1.AgenticRunStep
+		configured bool
+	}{
+		{agenticv1alpha1.SandboxStepAnalysis, run.Spec.Analysis, true},
+		{agenticv1alpha1.SandboxStepExecution, run.Spec.Execution, !run.Spec.Execution.IsZero()},
+		{agenticv1alpha1.SandboxStepVerification, run.Spec.Verification, !run.Spec.Verification.IsZero()},
+		{agenticv1alpha1.SandboxStepEscalation, run.Spec.Analysis, true},
+	}
+	for _, step := range steps {
+		if !step.configured {
+			continue
 		}
-		return &run.Spec.Tools
+		agentName := effectiveStepAgentName(approval, step.stage, step.step)
+		if agentName == "" || slices.Contains(agents, agentName) {
+			continue
+		}
+		agents = append(agents, agentName)
+		agent, llm, issues := validateAgentDependencies(ctx, c, operatorNamespace, agentName)
+		errors = append(errors, issues...)
+		if len(issues) == 0 {
+			validatedAgents[agentName] = agent
+			validatedLLMProviders[agent.Spec.LLMProvider.Name] = llm
+		}
 	}
+	return errors, validatedAgents, validatedLLMProviders
+}
 
-	effectiveAgent := func(stage agenticv1alpha1.SandboxStep, step agenticv1alpha1.AgenticRunStep) string {
-		return effectiveStepAgentName(approval, stage, step)
+func resolveAgenticRun(ctx context.Context, c client.Client, run *agenticv1alpha1.AgenticRun, approval *agenticv1alpha1.AgenticRunApproval, operatorNamespace string) (*resolvedWorkflow, error) {
+	validationErrors, agents, llmProviders := validateAgenticRun(ctx, c, run, approval, operatorNamespace)
+	if len(validationErrors) > 0 {
+		return nil, stderrors.Join(validationErrors...)
 	}
 
 	resolved := &resolvedWorkflow{}
 
-	agent, llm, err := resolveAgent(effectiveAgent(agenticv1alpha1.SandboxStepAnalysis, run.Spec.Analysis))
-	if err != nil {
-		return nil, fmt.Errorf("%s: %w", ErrResolveAnalysisStep, err)
+	agentName := effectiveStepAgentName(approval, agenticv1alpha1.SandboxStepAnalysis, run.Spec.Analysis)
+	agent, ok := agents[agentName]
+	if !ok {
+		return nil, fmt.Errorf("%s: %s %q", ErrResolveAnalysisStep, ErrGetAgent, agentName)
 	}
-	resolved.Analysis = resolvedStep{Agent: agent, LLM: llm, Tools: toolsForStep(run.Spec.Analysis)}
+	llm, ok := llmProviders[agent.Spec.LLMProvider.Name]
+	if !ok {
+		return nil, fmt.Errorf("%s: %s %q (referenced by Agent %q)", ErrResolveAnalysisStep, ErrGetLLMProvider, agent.Spec.LLMProvider.Name, agentName)
+	}
+	resolved.Analysis = resolvedStep{Agent: agent, LLM: llm, Tools: toolsForStep(run, run.Spec.Analysis)}
 
 	if !run.Spec.Execution.IsZero() {
-		agent, llm, err := resolveAgent(effectiveAgent(agenticv1alpha1.SandboxStepExecution, run.Spec.Execution))
-		if err != nil {
-			return nil, fmt.Errorf("%s: %w", ErrResolveExecutionStep, err)
+		agentName := effectiveStepAgentName(approval, agenticv1alpha1.SandboxStepExecution, run.Spec.Execution)
+		agent, ok = agents[agentName]
+		if !ok {
+			return nil, fmt.Errorf("%s: %s %q", ErrResolveExecutionStep, ErrGetAgent, agentName)
 		}
-		resolved.Execution = &resolvedStep{Agent: agent, LLM: llm, Tools: toolsForStep(run.Spec.Execution)}
+		llm, ok = llmProviders[agent.Spec.LLMProvider.Name]
+		if !ok {
+			return nil, fmt.Errorf("%s: %s %q (referenced by Agent %q)", ErrResolveExecutionStep, ErrGetLLMProvider, agent.Spec.LLMProvider.Name, agentName)
+		}
+		resolved.Execution = &resolvedStep{Agent: agent, LLM: llm, Tools: toolsForStep(run, run.Spec.Execution)}
 	}
 
 	if !run.Spec.Verification.IsZero() {
-		agent, llm, err := resolveAgent(effectiveAgent(agenticv1alpha1.SandboxStepVerification, run.Spec.Verification))
-		if err != nil {
-			return nil, fmt.Errorf("%s: %w", ErrResolveVerificationStep, err)
+		agentName := effectiveStepAgentName(approval, agenticv1alpha1.SandboxStepVerification, run.Spec.Verification)
+		agent, ok = agents[agentName]
+		if !ok {
+			return nil, fmt.Errorf("%s: %s %q", ErrResolveVerificationStep, ErrGetAgent, agentName)
 		}
-		resolved.Verification = &resolvedStep{Agent: agent, LLM: llm, Tools: toolsForStep(run.Spec.Verification)}
+		llm, ok = llmProviders[agent.Spec.LLMProvider.Name]
+		if !ok {
+			return nil, fmt.Errorf("%s: %s %q (referenced by Agent %q)", ErrResolveVerificationStep, ErrGetLLMProvider, agent.Spec.LLMProvider.Name, agentName)
+		}
+		resolved.Verification = &resolvedStep{Agent: agent, LLM: llm, Tools: toolsForStep(run, run.Spec.Verification)}
 	}
 
 	return resolved, nil

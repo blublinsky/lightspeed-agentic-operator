@@ -397,7 +397,7 @@ func (r *AgenticRunReconciler) handleEscalation(
 	escalated := meta.FindStatusCondition(run.Status.Conditions, agenticv1alpha1.AgenticRunConditionEscalated)
 	if escalated != nil {
 		if escalated.Status == metav1.ConditionUnknown &&
-			(escalated.Reason == reasonInProgress || escalated.Reason == ReasonRunning) {
+			(escalated.Reason == reasonInProgress || escalated.Reason == ReasonRunning || escalated.Reason == ReasonWaitingForSandbox) {
 			log.V(1).Info("escalation already in progress, waiting")
 			return ctrl.Result{}, nil
 		}

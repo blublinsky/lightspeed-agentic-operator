@@ -80,10 +80,11 @@ func TestHandleTerminalCleanupPreservesFailedSandbox(t *testing.T) {
 // --- Configurable agent stub for tests ---
 
 type testAgentCaller struct {
-	analyzeErr  error
-	executeErr  error
-	verifyErr   error
-	escalateErr error
+	analyzeErr    error
+	executeErr    error
+	verifyErr     error
+	escalateErr   error
+	escalateCalls int
 
 	// Optional result content — when set AND fc is non-nil, the step method
 	// simulates sandbox completion by creating a Result CR, recording a
@@ -181,6 +182,7 @@ func (ta *testAgentCaller) Verify(ctx context.Context, run *agenticv1alpha1.Agen
 }
 
 func (ta *testAgentCaller) Escalate(ctx context.Context, run *agenticv1alpha1.AgenticRun, _ resolvedStep) error {
+	ta.escalateCalls++
 	if ta.escalateErr != nil {
 		return ta.escalateErr
 	}
@@ -468,7 +470,7 @@ func testAutoApprovePolicy() *agenticv1alpha1.ApprovalPolicy {
 // objects needed to resolve a full workflow.
 func defaultObjects() []client.Object {
 	return []client.Object{
-		testDefaultAgent(), testLLM("smart"), testAutoApprovePolicy(), testReaderClusterRoleBinding(),
+		testDefaultAgent(), testLLM("smart"), &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: "llm-secret", Namespace: "default"}}, testAutoApprovePolicy(), testReaderClusterRoleBinding(),
 	}
 }
 
