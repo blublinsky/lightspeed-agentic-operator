@@ -78,13 +78,6 @@ func validateAgentDependencies(ctx context.Context, c client.Client, namespace, 
 	return agent, llm, nil
 }
 
-func toolsForStep(run *agenticv1alpha1.AgenticRun, step agenticv1alpha1.AgenticRunStep) *agenticv1alpha1.ToolsSpec {
-	if !step.Tools.IsZero() {
-		return &step.Tools
-	}
-	return &run.Spec.Tools
-}
-
 func validateAgenticRun(ctx context.Context, c client.Client, run *agenticv1alpha1.AgenticRun, approval *agenticv1alpha1.AgenticRunApproval, operatorNamespace string) ([]error, map[string]*agenticv1alpha1.Agent, map[string]*agenticv1alpha1.LLMProvider) {
 	errors := []error{}
 	validatedAgents := map[string]*agenticv1alpha1.Agent{}
@@ -127,6 +120,7 @@ func resolveAgenticRun(ctx context.Context, c client.Client, run *agenticv1alpha
 	}
 
 	resolved := &resolvedWorkflow{}
+	tools := &run.Spec.Tools
 
 	agentName := effectiveStepAgentName(approval, agenticv1alpha1.SandboxStepAnalysis, run.Spec.Analysis)
 	agent, ok := agents[agentName]
@@ -137,7 +131,7 @@ func resolveAgenticRun(ctx context.Context, c client.Client, run *agenticv1alpha
 	if !ok {
 		return nil, fmt.Errorf("%s: %s %q (referenced by Agent %q)", ErrResolveAnalysisStep, ErrGetLLMProvider, agent.Spec.LLMProvider.Name, agentName)
 	}
-	resolved.Analysis = resolvedStep{Agent: agent, LLM: llm, Tools: toolsForStep(run, run.Spec.Analysis)}
+	resolved.Analysis = resolvedStep{Agent: agent, LLM: llm, Tools: tools}
 
 	if !run.Spec.Execution.IsZero() {
 		agentName := effectiveStepAgentName(approval, agenticv1alpha1.SandboxStepExecution, run.Spec.Execution)
@@ -149,7 +143,7 @@ func resolveAgenticRun(ctx context.Context, c client.Client, run *agenticv1alpha
 		if !ok {
 			return nil, fmt.Errorf("%s: %s %q (referenced by Agent %q)", ErrResolveExecutionStep, ErrGetLLMProvider, agent.Spec.LLMProvider.Name, agentName)
 		}
-		resolved.Execution = &resolvedStep{Agent: agent, LLM: llm, Tools: toolsForStep(run, run.Spec.Execution)}
+		resolved.Execution = &resolvedStep{Agent: agent, LLM: llm, Tools: tools}
 	}
 
 	if !run.Spec.Verification.IsZero() {
@@ -162,7 +156,7 @@ func resolveAgenticRun(ctx context.Context, c client.Client, run *agenticv1alpha
 		if !ok {
 			return nil, fmt.Errorf("%s: %s %q (referenced by Agent %q)", ErrResolveVerificationStep, ErrGetLLMProvider, agent.Spec.LLMProvider.Name, agentName)
 		}
-		resolved.Verification = &resolvedStep{Agent: agent, LLM: llm, Tools: toolsForStep(run, run.Spec.Verification)}
+		resolved.Verification = &resolvedStep{Agent: agent, LLM: llm, Tools: tools}
 	}
 
 	return resolved, nil
