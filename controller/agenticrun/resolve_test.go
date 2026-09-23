@@ -232,27 +232,17 @@ func TestResolveAgenticRun_Inline_DefaultAgent(t *testing.T) {
 	}
 }
 
-func TestResolveAgenticRun_PerStepTools(t *testing.T) {
+func TestResolveAgenticRun_RunLevelTools(t *testing.T) {
 	run := &agenticv1alpha1.AgenticRun{
 		ObjectMeta: metav1.ObjectMeta{Name: "p1", Namespace: "default"},
 		Spec: agenticv1alpha1.AgenticRunSpec{
 			Request: "fix it",
 			Tools: agenticv1alpha1.ToolsSpec{
-				Skills: []agenticv1alpha1.SkillsSource{{Image: "shared:latest"}},
+				Skills: []agenticv1alpha1.SkillsSource{{Image: "shared:latest", Paths: []string{"/skills/remediation"}}},
 			},
-			Analysis: agenticv1alpha1.AgenticRunStep{
-				Agent: "default",
-				Tools: agenticv1alpha1.ToolsSpec{
-					Skills: []agenticv1alpha1.SkillsSource{{Image: "analysis-specific:v1", Paths: []string{"/skills/remediation"}}},
-				},
-			},
-			Execution: agenticv1alpha1.AgenticRunStep{Agent: "default"},
-			Verification: agenticv1alpha1.AgenticRunStep{
-				Agent: "default",
-				Tools: agenticv1alpha1.ToolsSpec{
-					Skills: []agenticv1alpha1.SkillsSource{{Image: "verify-specific:v2", Paths: []string{"/skills/compliance"}}},
-				},
-			},
+			Analysis:     agenticv1alpha1.AgenticRunStep{Agent: "default"},
+			Execution:    agenticv1alpha1.AgenticRunStep{Agent: "default"},
+			Verification: agenticv1alpha1.AgenticRunStep{Agent: "default"},
 		},
 	}
 
@@ -262,17 +252,16 @@ func TestResolveAgenticRun_PerStepTools(t *testing.T) {
 		t.Fatalf("resolveAgenticRun: %v", err)
 	}
 
-	if resolved.Analysis.Tools.Skills[0].Image != "analysis-specific:v1" {
-		t.Errorf("analysis should use per-step tools, got %s", resolved.Analysis.Tools.Skills[0].Image)
+	if resolved.Analysis.Tools != &run.Spec.Tools ||
+		resolved.Execution.Tools != &run.Spec.Tools ||
+		resolved.Verification.Tools != &run.Spec.Tools {
+		t.Fatal("analysis, execution, and verification must all use run-level tools")
 	}
-	if len(resolved.Analysis.Tools.Skills[0].Paths) != 1 || resolved.Analysis.Tools.Skills[0].Paths[0] != "/skills/remediation" {
-		t.Errorf("analysis tools should have specific paths, got %v", resolved.Analysis.Tools.Skills[0].Paths)
+	if got := resolved.Analysis.Tools.Skills[0].Image; got != "shared:latest" {
+		t.Errorf("run-level tools skill image = %s, want shared:latest", got)
 	}
-	if resolved.Execution.Tools.Skills[0].Image != "shared:latest" {
-		t.Errorf("execution should use shared tools (no per-step override), got %s", resolved.Execution.Tools.Skills[0].Image)
-	}
-	if resolved.Verification.Tools.Skills[0].Image != "verify-specific:v2" {
-		t.Errorf("verification should use per-step tools, got %s", resolved.Verification.Tools.Skills[0].Image)
+	if got := resolved.Analysis.Tools.Skills[0].Paths; len(got) != 1 || got[0] != "/skills/remediation" {
+		t.Errorf("run-level tools skill paths = %v, want [/skills/remediation]", got)
 	}
 }
 
