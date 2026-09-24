@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strconv"
+	"strings"
 	"sync/atomic"
 
 	corev1 "k8s.io/api/core/v1"
@@ -48,12 +50,13 @@ type TLSConfig struct {
 // Config holds the parsed contents of the lightspeed-agentic-configuration
 // ConfigMap. Nil means the ConfigMap has not been seen yet.
 type Config struct {
-	Sandbox               SandboxConfig
-	TLS                   TLSConfig
-	AdditionalCAConfigMap string
-	OTEL                  OTELConfig
-	MCP                   MCPConfig
-	RHOKP                 RHOKPConfig
+	Sandbox                     SandboxConfig
+	TLS                         TLSConfig
+	AdditionalCAConfigMap       string
+	OTEL                        OTELConfig
+	MCP                         MCPConfig
+	RHOKP                       RHOKPConfig
+	ToolOutputInspectionEnabled bool
 }
 
 // Cache is a thread-safe holder for the parsed ConfigMap contents.
@@ -123,6 +126,18 @@ func (c *Cache) update(cm *corev1.ConfigMap) error {
 	return nil
 }
 
+func parseToolOutputInspectionEnabled(data map[string]string) bool {
+	raw, ok := data[KeyToolOutputInspectionEnabled]
+	if !ok {
+		return true
+	}
+	enabled, err := strconv.ParseBool(strings.TrimSpace(raw))
+	if err != nil {
+		return true
+	}
+	return enabled
+}
+
 func parseConfigMap(cm *corev1.ConfigMap) (*Config, error) {
 	cfg := &Config{
 		Sandbox: SandboxConfig{
@@ -148,6 +163,7 @@ func parseConfigMap(cm *corev1.ConfigMap) (*Config, error) {
 			Endpoint:     cm.Data[KeyRHOKPEndpoint],
 			CASecretName: cm.Data[KeyRHOKPCASecret],
 		},
+		ToolOutputInspectionEnabled: parseToolOutputInspectionEnabled(cm.Data),
 	}
 
 	if podSpecJSON, ok := cm.Data[KeySandboxPodSpec]; ok && podSpecJSON != "" {
